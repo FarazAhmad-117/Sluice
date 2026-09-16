@@ -73,15 +73,23 @@ currently holds:
 | `aead.ts` | AES-256-GCM seal and unseal with associated data binding |
 | `token.ts` | Service token minting, the HKDF auth and unwrap key split, token parsing, handshake signing and verification |
 | `revocation.ts` | Signed revocation notices over a canonical, domain-separated encoding |
+| `muk.ts` | Argon2id master unlock key derivation, wrapped so it cannot be logged |
 
-**148 tests** across five test files, run with Vitest. The suite pins exact
+**187 tests** across seven test files, run with Vitest. The suite pins exact
 signed bytes rather than checking the module against itself, so a change to a
 domain separator fails a test instead of silently changing the protocol.
 
-Not built yet: password-derived key hierarchy, sealed boxes for member key
-wrapping, the Convex backend and schema, the web dashboard, the SDK, the agent
-and the CLI. The package's public surface in `src/index.ts` is still being
-assembled module by module, on purpose.
+The package has two dependencies, `@noble/hashes` and `@noble/curves`, both
+chosen because they are audited, dependency-free and short enough that a
+reviewer can read them. It has no dependency on Convex, Next.js, React or Node
+built-ins, and `@types/node` is deliberately absent so that a `node:` import
+fails to compile.
+
+Not built yet: sealed boxes for member key wrapping, the Convex backend and
+schema, the web dashboard, the SDK, the agent and the CLI. Argon2id currently
+runs in pure JavaScript and takes about eight seconds at the parameters in
+use, so a WASM backend inside a Web Worker is required before any of this is
+usable in a browser.
 
 ## Architecture sketch
 

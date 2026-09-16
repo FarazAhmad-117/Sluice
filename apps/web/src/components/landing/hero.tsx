@@ -1,3 +1,4 @@
+import { ParticleField } from "@/components/particle-field";
 import {
   Container,
   primaryAction,
@@ -51,25 +52,24 @@ export function Hero() {
         </div>
 
         <div className="lg:col-span-5">
-          {/* SLOT: <ParticleField /> mounts here, wired after merge */}
           {/*
-            The real component is <ParticleField state?: "idle" | "scattered"
-            className?: string />, built on the `particle` branch. It is not
-            imported here and must not be created here.
+            The particle field is the one visual on this page, and it is not
+            decoration. A sphere of points that holds coherent and then
+            scatters is what revocation looks like, which is why the design
+            doc chose it.
 
-            This placeholder holds the exact box the real one inherits: a
-            square that fills its column, capped so it never dwarfs the copy,
-            right-aligned from `lg` up where the split becomes asymmetric.
-            Swap the div for the component and keep the className.
+            It sizes itself from its wrapper, so the box below is load
+            bearing: an unsized host paints nothing rather than collapsing.
+            Do not pass `absolute` here. The component hardcodes `relative`
+            and Tailwind v4 resolves conflicts by source order, so `relative`
+            would win and the override would fail silently.
+
+            `state` is an edge trigger, not a held pose: passing "scattered"
+            detonates and reforms over roughly two seconds, then rests on the
+            sphere again. It is left at the "idle" default until there is a
+            real interaction worth spending it on.
           */}
-          <div
-            aria-hidden="true"
-            className="mx-auto flex aspect-square w-full max-w-[380px] items-center justify-center rounded-card border border-dashed border-hairline sm:max-w-[440px] lg:mr-0 lg:ml-auto lg:max-w-[520px]"
-          >
-            <span className="font-mono text-xs tracking-[0.18em] text-text-muted uppercase">
-              ParticleField
-            </span>
-          </div>
+          <ParticleField className="mx-auto aspect-square w-full max-w-[380px] sm:max-w-[440px] lg:mr-0 lg:ml-auto lg:max-w-[520px]" />
         </div>
       </Container>
     </section>

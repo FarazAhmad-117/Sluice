@@ -136,9 +136,11 @@ not going to be quietly fixed later.
   a secret, that process can leak it, log it, or send it anywhere. Sluice
   controls delivery, not use.
 - **A customer choosing a weak password.** The key hierarchy is rooted in a
-  password-derived key. A weak password is a weak root. A minimum is enforced
-  and SSO-backed key wrapping is planned, neither of which saves a password
-  that is guessable.
+  password-derived key, so a weak password is a weak root. Nothing enforces a
+  minimum today, because there is no signup path yet. A strength gate and
+  SSO-backed key wrapping are both planned, and neither saves a password that
+  is guessable: the salt is derived from a public user id, so the password is
+  the only entropy in the key.
 
 If a report depends on one of these four conditions, it is out of scope by
 design. If you can break one of the defended-against rows, that is exactly
