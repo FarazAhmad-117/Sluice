@@ -90,6 +90,44 @@ describe("input validation", () => {
     }
   });
 
+  it("rejects a token secret that is not 32 bytes", () => {
+    const tokenId = randomBytes(16);
+    for (const n of [0, 1, 8, 31, 33]) {
+      expect(() => deriveTokenKeys(tokenId, randomBytes(n))).toThrow(/32 bytes/);
+      expect(() => signHandshake(tokenId, randomBytes(n), 1_757_000_000)).toThrow(/32 bytes/);
+    }
+    expect(() => deriveTokenKeys(tokenId, randomBytes(32))).not.toThrow();
+  });
+
+  it("names the field and the length it got, like its siblings", () => {
+    expect(() => deriveTokenKeys(randomBytes(16), randomBytes(31))).toThrow(
+      "tokenSecret must be 32 bytes, got 31",
+    );
+  });
+
+  /**
+   * THE PROPERTY THE LENGTH CHECK EXISTS FOR, pinned separately so it cannot be
+   * lost to a refactor that keeps the guard but moves it.
+   *
+   * Before the guard, `deriveTokenKeys(tokenId, new Uint8Array(0))` returned a
+   * complete, self-consistent key pair and the handshake it signed VERIFIED.
+   * The token id is public -- it is uploaded to the server as
+   * `upload.tokenId` -- so anyone who saw one could recompute that token's
+   * `unwrapKey` and read customer plaintext. A zero-entropy secret must have no
+   * route to a verifying handshake at all, through any entry point on the
+   * public surface.
+   */
+  it("gives a zero-entropy secret no route to a verifying handshake", () => {
+    const tokenId = randomBytes(16);
+    const empty = new Uint8Array(0);
+    expect(() => deriveTokenKeys(tokenId, empty)).toThrow(/32 bytes/);
+    expect(() => signHandshake(tokenId, empty, 1_757_000_000)).toThrow(/32 bytes/);
+    // The other public route to a secret is the parser, which has always
+    // required 64 hex characters. Checked here so the two entry points are
+    // proven to agree rather than assumed to.
+    expect(() => parseToken(`slc_prod_${toHex(tokenId)}.`)).toThrow();
+  });
+
   it("returns false rather than throwing for a bad token id in verifyHandshake", () => {
     const minted = mintToken({ environment: "prod" });
     const signature = signHandshake(minted.tokenId, minted.tokenSecret, 1_757_000_000);

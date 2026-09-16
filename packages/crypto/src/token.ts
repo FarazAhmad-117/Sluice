@@ -50,6 +50,31 @@ function assertTokenId(tokenId: Uint8Array): void {
 }
 
 /**
+ * The token secret width, enforced rather than assumed.
+ *
+ * WHAT THIS STOPS, which is not a formality. Without it `deriveTokenKeys`
+ * accepted a secret of ANY length, including zero bytes, and returned a
+ * complete, self-consistent key pair: a `signHandshake` over an empty secret
+ * produced a signature that `verifyHandshake` accepted. Because the token id is
+ * public -- it is uploaded as `upload.tokenId` -- anyone who saw one could
+ * recompute that token's `unwrapKey` and read customer plaintext. HKDF is
+ * perfectly happy to expand nothing into 32 impressive-looking bytes; the
+ * entropy has to be checked, because the maths will not check it.
+ *
+ * {@link mintToken} always supplies 32 random bytes and {@link parseToken}
+ * enforces 64 hex characters, so the hole was unreachable until
+ * `deriveTokenKeys` became part of the public surface. Every other
+ * secret-bearing entry point in this package -- `importKey` in `aead.ts`,
+ * `signRevocation` in `revocation.ts`, `MasterUnlockKey` in `muk.ts` -- already
+ * checks its key length. This one checked only the PUBLIC id.
+ */
+function assertTokenSecret(tokenSecret: Uint8Array): void {
+  if (tokenSecret.length !== TOKEN_SECRET_BYTES) {
+    throw new Error(`tokenSecret must be ${TOKEN_SECRET_BYTES} bytes, got ${tokenSecret.length}`);
+  }
+}
+
+/**
  * Constrains a handshake timestamp to values the decimal encoding renders
  * injectively.
  *
@@ -91,6 +116,7 @@ export interface TokenKeys {
  */
 export function deriveTokenKeys(tokenId: Uint8Array, tokenSecret: Uint8Array): TokenKeys {
   assertTokenId(tokenId);
+  assertTokenSecret(tokenSecret);
   return {
     authSeed: hkdf(sha256, tokenSecret, tokenId, utf8.encode(AUTH_INFO), 32),
     unwrapKey: hkdf(sha256, tokenSecret, tokenId, utf8.encode(UNWRAP_INFO), 32),
