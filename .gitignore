@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build output
+.next/
+out/
+build/
+dist/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Convex
+.convex/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+
+# Design references (large binaries, not for the public repo)
+*.mp4
+*.mov
+references/
