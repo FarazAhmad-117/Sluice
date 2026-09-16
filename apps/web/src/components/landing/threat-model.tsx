@@ -130,7 +130,7 @@ export function ThreatModel() {
             <ColumnHeading
               id="threat-defended"
               title="Defended against"
-              note="What the architecture is built to hold against, and the reason it holds."
+              note="What the design holds against, and why. Written in the present tense because it describes the architecture, not shipped software. Only the crypto core exists today."
             />
             <dl className="mt-2 divide-y divide-hairline">
               {DEFENDED.map((item) => (

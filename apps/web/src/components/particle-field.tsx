@@ -43,7 +43,7 @@ export interface ParticleFieldProps {
 /* --- geometry and motion constants ---------------------------------------- */
 
 /** Upper bound on generated points. Also the capacity of every scratch buffer. */
-const MAX_POINTS = 2400;
+const MAX_POINTS = 3600;
 /** Lower bound, so a small canvas still reads as a sphere and not as noise. */
 const MIN_POINTS = 320;
 /**
@@ -52,9 +52,9 @@ const MIN_POINTS = 320;
  * Deliberately not scaled by devicePixelRatio: a retina phone should not pay
  * four times the per-point cost for the same apparent density.
  */
-const POINTS_PER_AREA = 26;
+const POINTS_PER_AREA = 10;
 /** Sphere radius as a fraction of the shorter canvas edge, in CSS pixels. */
-const SPHERE_FRACTION = 0.3;
+const SPHERE_FRACTION = 0.34;
 /** Retina is worth honouring, beyond 2x is fill rate spent for nothing. */
 const MAX_DPR = 2;
 
@@ -98,7 +98,7 @@ const TAU_RISE = 0.045;
 const TAU_FALL = 0.22;
 
 /** Dot edge in CSS pixels before perspective and burst scaling. */
-const DOT_CSS = 1.15;
+const DOT_CSS = 1.3;
 /** Hard cap on dot edge in device pixels. Dot matrix, not confetti. */
 const DOT_MAX = 4;
 
