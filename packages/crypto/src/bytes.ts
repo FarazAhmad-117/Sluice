@@ -39,8 +39,20 @@ export function concat(...parts: Uint8Array[]): Uint8Array {
  * on this to conceal the length of secret material. In practice every caller
  * compares fixed-width values (32-byte keys, 64-byte signatures) where length
  * is public anyway.
+ *
+ * EMPTY INPUT THROWS. It used to return `true` for two empty buffers, which is
+ * arithmetically defensible and operationally a trap: an SDK comparing two
+ * values it failed to read -- a missing environment variable, an absent header,
+ * a truncated database row -- got `true` and treated that as a successful
+ * authentication. No legitimate call compares nothing to nothing, so this is a
+ * caller bug and it says so instead of answering it. Either side being empty
+ * throws, because comparing a real secret against a value that failed to load
+ * is the same bug.
  */
 export function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length === 0 || b.length === 0) {
+    throw new Error("constantTimeEqual inputs must not be empty");
+  }
   if (a.length !== b.length) return false;
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= (a[i] as number) ^ (b[i] as number);

@@ -49,8 +49,25 @@ describe("constantTimeEqual", () => {
     expect(constantTimeEqual(fromHex("00ff"), fromHex("00"))).toBe(false);
   });
 
-  it("is true for two empty arrays", () => {
-    expect(constantTimeEqual(new Uint8Array(), new Uint8Array())).toBe(true);
+  /**
+   * WAS `true`, NOW THROWS, and the change is the point.
+   *
+   * Two empty buffers comparing equal is arithmetically defensible and
+   * operationally a trap: an SDK that compares two values it FAILED TO READ --
+   * a missing environment variable, an absent header, a truncated row -- got
+   * `true` and treated the comparison as a successful authentication. There is
+   * no legitimate call that compares nothing to nothing, so this is a caller
+   * bug and it fails loudly rather than answering it.
+   *
+   * Either side being empty throws, not just both: comparing a real secret
+   * against a value that failed to load is the same bug.
+   */
+  it("rejects empty input rather than calling it equal", () => {
+    expect(() => constantTimeEqual(new Uint8Array(), new Uint8Array())).toThrow(
+      /must not be empty/,
+    );
+    expect(() => constantTimeEqual(fromHex("00ff"), new Uint8Array())).toThrow(/must not be empty/);
+    expect(() => constantTimeEqual(new Uint8Array(), fromHex("00ff"))).toThrow(/must not be empty/);
   });
 });
 
