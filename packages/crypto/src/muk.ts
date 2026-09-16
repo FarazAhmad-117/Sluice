@@ -72,6 +72,90 @@ function mukSalt(userId: string): Uint8Array {
   return sha256(concat(utf8.encode(SALT_LABEL), utf8.encode(userId)));
 }
 
+/** Node's formatter and `console.log` look up exactly this symbol on a value. */
+const INSPECT_CUSTOM: unique symbol = Symbol.for("nodejs.util.inspect.custom");
+
+/** The MUK is exactly the Argon2id output width. Stated once, enforced once. */
+const MUK_BYTES = ARGON2_PARAMS.dkLen;
+
+/**
+ * The 32-byte Master Unlock Key, wrapped so it cannot be serialised by accident.
+ *
+ * This is a CLASS rather than a bare `Uint8Array` for the same reason
+ * {@link MintedToken} in `token.ts` is a class: so that `toJSON` and the inspect
+ * hook can live on the prototype. A bare `Uint8Array` renders through
+ * `JSON.stringify` as `{"0":223,"1":238,...}`, a complete and trivially
+ * reversible dump, and `console.log` prints every byte. One careless
+ * `logger.info({ muk })` would therefore put the ROOT OF THE ENTIRE HUMAN KEY
+ * HIERARCHY into a log aggregator -- strictly worse than the `MintedToken`
+ * leak, because the MUK unwraps everything the account can reach, including the
+ * private keys that unwrap every project data key.
+ *
+ * The raw bytes are reachable only through {@link bytes}. That name is
+ * deliberate: unwrapping the key is a decision, and `grep -rn '\.bytes'` finds
+ * every place anyone made it.
+ *
+ * LIMIT OF THE PROTECTION, STATED PLAINLY. Redaction lives on the prototype, so
+ * it is lost the moment the instance is reshaped, exactly as for
+ * `MintedToken`. What differs is the failure mode: the bytes live in a
+ * `#private` field, which is not an own property, so `{ ...muk }` and
+ * `structuredClone(muk)` both produce an EMPTY object rather than a dump. The
+ * copy is therefore silent and useless rather than silent and catastrophic --
+ * but it is still silent. THE RULE IS THE SAME: pass this instance, never a
+ * spread and never a copy.
+ *
+ * A `#private` field also means this value CANNOT cross a `postMessage`
+ * boundary. That matters, because `deriveMUK` should run in a Web Worker: the
+ * worker must post the raw bytes back and the main thread must re-wrap them
+ * with `new MasterUnlockKey(bytes)`. Posting the instance itself would deliver
+ * an empty object, and the length check in the constructor is what stops that
+ * mistake from being discovered later, by a decryption that quietly fails.
+ *
+ * Neither hook protects bytes a caller has already unwrapped. `muk.bytes` is an
+ * ordinary `Uint8Array` and dumps in full, and it is the LIVE array rather than
+ * a copy, so mutating it corrupts the key in place.
+ */
+export class MasterUnlockKey {
+  readonly #bytes: Uint8Array;
+
+  constructor(bytes: Uint8Array) {
+    // Checked here rather than trusted, because this constructor is public and
+    // is the rehydration path out of a Web Worker. A short key would otherwise
+    // flow on to AES-GCM, which accepts 16 and 24 byte keys and would silently
+    // downgrade to AES-128 instead of failing.
+    if (bytes.length !== MUK_BYTES) {
+      throw new Error(`master unlock key must be ${MUK_BYTES} bytes, got ${bytes.length}`);
+    }
+    this.#bytes = bytes;
+  }
+
+  /**
+   * The raw key. Every use of this accessor is a deliberate unwrap.
+   *
+   * Returns the live array, not a copy, so it can be zeroed by a caller that
+   * wants to and so an unwrap is never silently a different key. Never log,
+   * serialise, or transmit the result.
+   */
+  get bytes(): Uint8Array {
+    return this.#bytes;
+  }
+
+  /**
+   * Serialises to a placeholder, never to key material.
+   *
+   * Every JSON path -- a log line, an error report, a response body, a queue
+   * message -- routes through here, so the MUK cannot reach one by accident.
+   */
+  toJSON(): string {
+    return "[MasterUnlockKey redacted]";
+  }
+
+  /** Keeps `console.log(muk)` from printing the key bytes. */
+  [INSPECT_CUSTOM](): string {
+    return "[MasterUnlockKey redacted]";
+  }
+}
+
 /**
  * Derives the Master Unlock Key from a password and a user id.
  *
@@ -103,7 +187,7 @@ function mukSalt(userId: string): Uint8Array {
  * -- without a breaking API change. Callers on a main thread MUST assume this
  * blocks, and should run it in a Worker.
  */
-export async function deriveMUK(password: string, userId: string): Promise<Uint8Array> {
+export async function deriveMUK(password: string, userId: string): Promise<MasterUnlockKey> {
   // Both guards run before the derivation, not after. An empty password is
   // accepted by Argon2id without complaint, and validating afterwards would
   // make every rejected attempt cost a full multi-second grind on the user's
@@ -120,5 +204,10 @@ export async function deriveMUK(password: string, userId: string): Promise<Uint8
   // unrecoverable through a flaw rather than by design. Changing this to NFD,
   // or removing it, would lock out every existing user with a non-ASCII
   // password.
-  return argon2id(utf8.encode(password.normalize("NFC")), mukSalt(userId), { ...ARGON2_PARAMS });
+  // The derivation is untouched by the wrapper: the same bytes as before, handed
+  // to a constructor instead of to the caller. The known-answer vector in
+  // `muk.test.ts` reads straight through `.bytes` and must never move.
+  return new MasterUnlockKey(
+    argon2id(utf8.encode(password.normalize("NFC")), mukSalt(userId), { ...ARGON2_PARAMS }),
+  );
 }
