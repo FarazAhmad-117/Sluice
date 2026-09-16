@@ -1,0 +1,45 @@
+name: Feature request
+description: Suggest something Sluice should do
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Sluice is pre-release and most of the platform described in
+        `Implementation_Plan.md` is not built yet. Check that plan before
+        filing, in case what you want is already scheduled.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that you cannot do today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like to happen
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Including doing nothing, and what that costs you.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: zero-knowledge
+    attributes:
+      label: Zero-knowledge check
+      description: >
+        The server holds no key that can decrypt a secret, so anything needing
+        plaintext has to run on the customer's own machine. See section 7 of
+        `Implementation_Plan.md`.
+      options:
+        - label: This does not require the server to read a plaintext secret value, or it explains why the trade is worth making.
+          required: false

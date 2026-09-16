@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Typecheck and test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # No version input here on purpose. pnpm/action-setup reads the
+      # packageManager field in the root package.json, so CI runs the same
+      # pnpm the repository pins instead of a second number that can drift.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      # node-version-file reads .nvmrc for the same reason.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # Recursive on purpose. The workspace gains packages as the project is
+      # built, and a hardcoded package list would silently stop covering them.
+      - name: Typecheck
+        run: pnpm -r typecheck
+
+      - name: Test
+        run: pnpm -r test
