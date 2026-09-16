@@ -19,6 +19,29 @@ describe("hex", () => {
     expect(() => fromHex("zz")).toThrow();
   });
 
+  it("names the field and the length it got on an odd-length string", () => {
+    expect(() => fromHex("abc")).toThrow("hex must have an even number of characters, got 3");
+  });
+
+  /**
+   * NAMES THE POSITION, NEVER THE VALUE. `fromHex` decodes token ids and public
+   * keys, but nothing stops a caller handing it a string that is partly secret,
+   * and an error message ends up in logs, error reporters and support tickets.
+   * The position is already observable -- this function throws on the first bad
+   * pair, so its timing leaks the same information, as its doc comment says --
+   * whereas the content is not.
+   */
+  it("names the position of an invalid pair rather than echoing it", () => {
+    let message = "";
+    try {
+      fromHex("abzzcd");
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toContain("index 1");
+    expect(message).not.toContain("zz");
+  });
+
   it("handles the empty case", () => {
     expect(toHex(new Uint8Array())).toBe("");
     expect(fromHex("")).toEqual(new Uint8Array());

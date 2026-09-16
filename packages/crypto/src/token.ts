@@ -252,7 +252,14 @@ export function parseToken(token: string): {
   tokenSecret: Uint8Array;
 } {
   const match = /^slc_([a-z0-9-]+)_([0-9a-f]{32})\.([0-9a-f]{64})$/.exec(token);
-  if (!match) throw new Error("malformed token");
+  // Names the expected shape and NEVER the input. Every sibling guard names the
+  // field and what it got, and a bare "malformed token" told a customer nothing
+  // on the first call they ever make. But the value cannot be echoed: the
+  // second half of a token is the secret that reconstructs both derived keys,
+  // and an error message travels into logs, error reporters and support tickets.
+  if (!match) {
+    throw new Error("token must match slc_<environment>_<32 hex chars>.<64 hex chars>");
+  }
   return {
     environment: match[1] as string,
     tokenId: fromHex(match[2] as string),

@@ -10,11 +10,21 @@ export function toHex(bytes: Uint8Array): string {
  * (token ids, public keys) or supplied by the token holder themselves.
  */
 export function fromHex(hex: string): Uint8Array {
-  if (hex.length % 2 !== 0) throw new Error("hex string must have even length");
+  // Both messages name the field and the reason, like every other guard in this
+  // package, and NEITHER echoes the input. A caller may hand this a string that
+  // is partly secret, and an error message travels into logs, error reporters
+  // and support tickets. The position is safe to report -- this function throws
+  // on the first bad pair, so its timing already leaks exactly that -- while
+  // the content is not.
+  if (hex.length % 2 !== 0) {
+    throw new Error(`hex must have an even number of characters, got ${hex.length}`);
+  }
   const out = new Uint8Array(hex.length / 2);
   for (let i = 0; i < out.length; i++) {
     const pair = hex.slice(i * 2, i * 2 + 2);
-    if (!/^[0-9a-fA-F]{2}$/.test(pair)) throw new Error("invalid hex string");
+    if (!/^[0-9a-fA-F]{2}$/.test(pair)) {
+      throw new Error(`hex must contain only [0-9a-fA-F]; invalid pair at index ${i}`);
+    }
     out[i] = Number.parseInt(pair, 16);
   }
   return out;

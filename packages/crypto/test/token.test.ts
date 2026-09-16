@@ -74,6 +74,28 @@ describe("token format", () => {
     expect(() => parseToken("slc_prod_" + "A".repeat(32) + "." + "b".repeat(64))).toThrow();
   });
 
+  /**
+   * NAMES THE EXPECTED SHAPE, NEVER THE INPUT. Every sibling guard in this
+   * package names the field and what it got -- "tokenId must be 16 bytes, got
+   * 15" -- and a bare "malformed token" told a customer nothing on the first
+   * call they ever make. But the value must NOT be echoed: the second half of a
+   * token is the secret that reconstructs both derived keys, and an error
+   * message travels into logs, error reporters and support tickets.
+   */
+  it("names the expected shape in the parse error without echoing the token", () => {
+    const minted = mintToken({ environment: "prod" });
+    let message = "";
+    try {
+      parseToken(`${minted.token}trailing`);
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toContain("slc_");
+    expect(message).not.toContain(minted.token);
+    expect(message).not.toContain(toHex(minted.tokenSecret));
+    expect(message).not.toContain(toHex(minted.tokenId));
+  });
+
   it("rejects environments that parseToken could not read back", () => {
     for (const bad of ["my_env", "Prod", "", "-", "-prod", "prod-", "pro.d", "pr od"]) {
       expect(() => mintToken({ environment: bad })).toThrow();
