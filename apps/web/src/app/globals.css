@@ -1,26 +1,92 @@
 @import "tailwindcss";
 
+/* ---------------------------------------------------------------------------
+   Sluice design tokens.
+
+   Dark is the default set because the landing page is dark-locked. The
+   dashboard is dual-theme: it flips by putting data-theme="light" on a root
+   element, which re-points these same custom properties. Components never
+   name a colour, only a token, so light mode stays a token change instead of
+   a component rewrite.
+
+   Brand, status and radius are theme-independent, so the light block below
+   only overrides the values that actually change.
+   --------------------------------------------------------------------------- */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  color-scheme: dark;
+
+  /* Brand */
+  --brand: #2d7ff9;
+  --brand-hover: #4d92f9;
+  --brand-subtle: rgb(45 127 249 / 0.14);
+
+  /* Status */
+  --status-healthy: #10b981;
+  --status-warning: #f59e0b;
+  --status-danger: #ef4444;
+
+  /* Surfaces */
+  --surface-base: #0a0a0b;
+  --surface-panel: #131315;
+  --surface-card: #1a1a1d;
+  --hairline: #26262a;
+
+  /* Text */
+  --text-primary: #f4f4f5;
+  --text-muted: #8a8a93;
+  --text-on-brand: #0a0a0b;
 }
 
+[data-theme="light"] {
+  color-scheme: light;
+
+  --surface-base: #ffffff;
+  --surface-panel: #f7f7f8;
+  --surface-card: #ffffff;
+  --hairline: #e4e4e7;
+
+  --text-primary: #18181b;
+  --text-muted: #52525b;
+}
+
+/* Map the tokens onto Tailwind's namespaces. `inline` means the utility
+   carries var(--token) rather than a frozen value, so overriding the token
+   under [data-theme="light"] moves every utility with it. */
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-brand: var(--brand);
+  --color-brand-hover: var(--brand-hover);
+  --color-brand-subtle: var(--brand-subtle);
+
+  --color-status-healthy: var(--status-healthy);
+  --color-status-warning: var(--status-warning);
+  --color-status-danger: var(--status-danger);
+
+  --color-surface-base: var(--surface-base);
+  --color-surface-panel: var(--surface-panel);
+  --color-surface-card: var(--surface-card);
+  --color-hairline: var(--hairline);
+
+  --color-text-primary: var(--text-primary);
+  --color-text-muted: var(--text-muted);
+  --color-text-on-brand: var(--text-on-brand);
+
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* Radius never changes with theme, so it is declared as a real theme scale.
+   That emits --radius-input, --radius-card and --radius-modal on :root and
+   generates rounded-input, rounded-card and rounded-modal in one step.
+   Rows and dividers use Tailwind's built-in rounded-none. */
+@theme static {
+  --radius-input: 4px;
+  --radius-card: 8px;
+  --radius-modal: 12px;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background-color: var(--surface-base);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
 }
