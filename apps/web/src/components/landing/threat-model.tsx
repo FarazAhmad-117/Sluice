@@ -174,7 +174,8 @@ export function ThreatModel() {
           The design has a standing cost too. Server-side secret scanning,
           server-side rotation of third-party credentials and push sync to
           other platforms cannot be built on a server that holds no key.
-          Anything needing plaintext has to run on the customer's own machine.
+          Anything needing plaintext has to run on the customer&apos;s own
+          machine.
         </p>
       </Container>
     </section>
