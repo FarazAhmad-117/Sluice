@@ -44,7 +44,7 @@ Expected: Node 20 or newer, pnpm 9 or newer. If pnpm is missing, run `npm i -g p
 {
   "name": "sluice",
   "private": true,
-  "packageManager": "pnpm@9.12.0",
+  "packageManager": "pnpm@10.30.3",
   "scripts": {
     "test": "pnpm -r test",
     "build": "pnpm -r build",
@@ -64,7 +64,7 @@ packages:
 `.nvmrc`:
 
 ```
-20
+22
 ```
 
 **Step 3: Write the shared TypeScript config**
@@ -135,7 +135,7 @@ git commit -m "chore: scaffold pnpm workspace"
     "@noble/curves": "^1.6.0"
   },
   "devDependencies": {
-    "typescript": "^5.6.0",
+    "typescript": "^5.9.0",
     "vitest": "^2.1.0"
   }
 }
@@ -339,7 +339,7 @@ git commit -m "feat(crypto): add byte helpers with constant-time comparison"
 
 ---
 
-### Task 4: AEAD seal and open
+### Task 4: AEAD seal and unseal
 
 **Files:**
 - Create: `packages/crypto/src/aead.ts`
@@ -352,14 +352,14 @@ git commit -m "feat(crypto): add byte helpers with constant-time comparison"
 ```ts
 import { describe, expect, it } from "vitest";
 import { randomBytes, utf8 } from "../src/bytes.js";
-import { seal, open } from "../src/aead.js";
+import { seal, unseal } from "../src/aead.js";
 
-describe("seal and open", () => {
+describe("seal and unseal", () => {
   it("round-trips a payload", async () => {
     const key = randomBytes(32);
     const message = utf8.encode("sk_live_not_a_real_key");
     const box = await seal(key, message);
-    expect(await open(key, box)).toEqual(message);
+    expect(await unseal(key, box)).toEqual(message);
   });
 
   it("produces a fresh nonce on every call", async () => {
@@ -373,7 +373,7 @@ describe("seal and open", () => {
 
   it("rejects a wrong key", async () => {
     const box = await seal(randomBytes(32), utf8.encode("secret"));
-    await expect(open(randomBytes(32), box)).rejects.toThrow();
+    await expect(unseal(randomBytes(32), box)).rejects.toThrow();
   });
 
   it("rejects a tampered ciphertext", async () => {
@@ -381,15 +381,15 @@ describe("seal and open", () => {
     const box = await seal(key, utf8.encode("secret"));
     const tampered = new Uint8Array(box.ciphertext);
     tampered[0] = (tampered[0] as number) ^ 0x01;
-    await expect(open(key, { ...box, ciphertext: tampered })).rejects.toThrow();
+    await expect(unseal(key, { ...box, ciphertext: tampered })).rejects.toThrow();
   });
 
   it("binds associated data", async () => {
     const key = randomBytes(32);
     const aad = utf8.encode("environment:prod");
     const box = await seal(key, utf8.encode("secret"), aad);
-    await expect(open(key, box, utf8.encode("environment:dev"))).rejects.toThrow();
-    expect(await open(key, box, aad)).toEqual(utf8.encode("secret"));
+    await expect(unseal(key, box, utf8.encode("environment:dev"))).rejects.toThrow();
+    expect(await unseal(key, box, aad)).toEqual(utf8.encode("secret"));
   });
 
   it("rejects a key that is not 32 bytes", async () => {
@@ -440,7 +440,7 @@ export async function seal(
   return { ciphertext: new Uint8Array(ciphertext), nonce };
 }
 
-export async function open(
+export async function unseal(
   key: Uint8Array,
   box: SealedBox,
   associatedData?: Uint8Array,
@@ -455,6 +455,20 @@ export async function open(
 
 Note: WebCrypto appends the GCM tag to the ciphertext rather than returning it separately. The schema sketch in `Implementation_Plan.md` section 5 lists `tag` as its own column. Drop that column. Storing `{ciphertext, nonce}` is correct for this implementation and one fewer field to get wrong.
 
+**Amendments applied during review. The shipped code includes all of these.**
+
+The implementation above is the starting point, not the final state. Review found three gaps and one build trap, all reproduced empirically before fixing:
+
+1. **`unseal` must enforce the nonce length.** GCM permits arbitrary IV lengths, so a box carrying a 16 or 32 byte nonce decrypts happily. A `SealedBox` is reconstituted from an untrusted database row, so the module enforces its own advertised invariant rather than trusting what is stored. Guard on `box.nonce.length !== NONCE_BYTES`.
+
+2. **A zero-length `associatedData` must be rejected in both functions.** An empty AAD is cryptographically identical to no AAD, so a caller computing AAD from an environment id that turns out to be an empty string would get an unbound ciphertext and no error. Since AAD binding is the whole reason the parameter exists, this fails loudly. Implemented as one shared helper called from both paths so they cannot drift.
+
+3. **`Uint8Array` does not satisfy `BufferSource` on TypeScript 5.7 or newer.** 5.7 made `Uint8Array` generic over its backing buffer, and DOM's `BufferSource` excludes `SharedArrayBuffer`. Every `crypto.subtle` argument position needs a narrowing helper returning `Uint8Array<ArrayBuffer>`. This affects every later task touching WebCrypto.
+
+4. **Pin TypeScript to `^5.9.0`, not `^5.6.0`.** The `Uint8Array<ArrayBuffer>` generic does not exist before 5.7, so the earlier pin let a fresh install resolve a compiler that cannot build the package. Run `pnpm install --lockfile-only` after changing it, or `--frozen-lockfile` in CI fails on the drifted specifier.
+
+Also decided here: **`SealedBox` carries no version field.** It is a crypto primitive, not a storage format. The storage layer binds the algorithm version into the AAD alongside the environment id, which makes the version authenticated rather than a mutable column an attacker could edit independently of the ciphertext.
+
 **Step 4: Verify**
 
 Run: `pnpm --filter @sluice/crypto test`
@@ -464,7 +478,7 @@ Expected: PASS.
 
 ```bash
 git add packages/crypto
-git commit -m "feat(crypto): add AES-256-GCM seal and open with AAD binding"
+git commit -m "feat(crypto): add AES-256-GCM seal and unseal with AAD binding"
 ```
 
 ---
@@ -912,7 +926,7 @@ describe("public surface", () => {
         "deriveTokenKeys",
         "fromHex",
         "mintToken",
-        "open",
+        "unseal",
         "parseToken",
         "randomBytes",
         "seal",
@@ -943,7 +957,7 @@ Expected: FAIL, received array contains only `VERSION`.
 export const VERSION = "sluice-crypto/v1";
 
 export { concat, constantTimeEqual, fromHex, randomBytes, toHex, utf8 } from "./bytes.js";
-export { seal, open, type SealedBox } from "./aead.js";
+export { seal, unseal, type SealedBox } from "./aead.js";
 export { deriveMUK, ARGON2_PARAMS } from "./muk.js";
 export {
   mintToken,
