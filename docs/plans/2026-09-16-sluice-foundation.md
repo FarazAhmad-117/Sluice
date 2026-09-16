@@ -1147,6 +1147,28 @@ Each of these needs its own plan, and each depends on decisions that are better 
 - **Convex-native with a `repo/` layer.** Plain functions, no interface, no adapter. The point is an enumerable surface, not portability.
 - **`MintedToken` is a class, not an interface.** It carries `toJSON` and a Node inspect hook on its prototype so that a stray `logger.info({ minted })` cannot dump a customer's unwrap key into a log aggregator. Consequences: it is a value as well as a type, and structural construction from an object literal no longer compiles. Build one with `mintToken()`.
 - **Redaction does not survive reshaping, and this is the sharp edge.** Verified: `JSON.stringify(minted)` is redacted, but `JSON.stringify({ ...minted })` and `structuredClone` both emit the full token string, which contains the token id and secret in hex and is therefore everything needed to derive the unwrap key. Any serialisation, queueing or telemetry layer that spreads or clones objects generically will break this. Such a layer must take `minted.upload` explicitly.
+### Argon2id performance, decided 2026-09-16
+
+Measured on a desktop x64 under Node 22 with noble's pure-JS Argon2id:
+
+```
+plan params  m=64MiB t=3 p=4  ->  7909 ms
+OWASP A      m=46MiB t=1 p=1  ->  2205 ms
+OWASP B      m=19MiB t=2 p=1  ->  1876 ms
+```
+
+**Decision: keep the parameters, move the work to a WASM implementation inside a Web Worker.** The parameters are the security property and are not the thing to trade away. A WASM Argon2 at identical parameters runs roughly ten times faster, which puts desktop under a second and mobile in the low seconds.
+
+Three facts that force this, all verified rather than assumed:
+
+- **`argon2idAsync` does not yield.** Its yield point is an empty async function, so awaiting it yields a microtask, and microtasks drain before the browser paints or dispatches input. Measured: a 20 ms timer fired **zero times** during 7.5 seconds of "async" work, while costing more wall time than the synchronous call. Anyone who swaps it in believing it frees the tab ships a regression and a false sense of safety.
+- **A Web Worker is a requirement, not an optimisation.** `m=65536` allocates a single 64 MiB contiguous typed array per derivation. On iOS Safari that can kill the tab outright. In a Worker the same failure surfaces as a catchable error instead of losing the user's session.
+- **Noble stays as the reference implementation.** The known-answer vector pinned in `test/muk.test.ts` is what proves a WASM backend produces byte-identical keys. Any backend swap that fails that vector would orphan every existing account, so the vector is the gate.
+
+Supporting requirements for whoever builds this: single-flight the derivation so a double-clicked signup button cannot start two, probe the 64 MiB allocation before the user has typed a password, make signup transactional so a tab dying mid-derivation cannot leave an account with no client keys, and never silently fall back to weaker parameters on a low-memory device. Silent fallback would give the weakest devices the weakest keys with no record of which accounts got which.
+
+Two further known limitations, accepted rather than solved. Noble never zeroises its 64 MiB working buffer, and the final blocks of that buffer are the MUK in recoverable form, so a heap snapshot or a swapped page shortly after signup can contain it. JavaScript offers no reliable remedy, which is another argument for the Worker, whose heap dies with it. And Argon2id cannot rescue a weak password: the salt is public and derivable from the user id, so the password is the only entropy in the MUK. A strength gate at signup is a security control of the same rank as `ARGON2_PARAMS` and must be a named requirement, not an assumption.
+
 ### Hard requirements for the SDK and schema tasks, found while building revocation
 
 These are design-level, not code-level. Every one of them can be violated with the entire crypto suite still passing green, which is exactly why they are written down here.
