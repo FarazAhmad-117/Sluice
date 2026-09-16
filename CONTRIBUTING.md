@@ -103,10 +103,13 @@ export to it is a decision, not a side effect of writing a new file. The file
 stays small and explicit, one named export at a time, so that widening the
 public surface is a one-line diff a reviewer cannot miss.
 
-That surface is covered by `test/smoke.test.ts`, and a pull request that adds
-an export is expected to extend that test to pin the new one. If your change
+That surface is pinned by `packages/crypto/test/index.test.ts`, which asserts
+the exact sorted list of exported names. Adding an export therefore fails the
+suite until you extend that list, which is the point: on a security package an
+accidentally exported internal is how key material escapes. If your change
 widens the public surface, say why in the description. Internal helpers stay
-unexported.
+unexported, and shared internals that no consumer should reach live in
+`packages/crypto/src/internal.ts`, which no barrel re-exports.
 
 ## Pull requests
 
