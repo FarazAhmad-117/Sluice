@@ -10,6 +10,24 @@ import {
   verifyHandshake,
 } from "../src/token.js";
 
+/**
+ * Node's formatter (and therefore `console.log`) looks up exactly this symbol
+ * on a value and uses its return in place of the default dump. `util.inspect`
+ * itself cannot be imported here: `@types/node` is not a dependency of this
+ * package and adding one purely for a test is not worth it. Calling the hook
+ * directly exercises the same contract `console.log` would.
+ */
+const INSPECT_CUSTOM = Symbol.for("nodejs.util.inspect.custom");
+
+function inspectLike(value: object): string {
+  const hook = (value as unknown as Record<symbol, unknown>)[INSPECT_CUSTOM];
+  // Deliberately fails instead of falling back to String(value). A fallback
+  // would make the redaction test pass even when the hook is missing entirely,
+  // which is the exact "proves nothing" trap called out above.
+  if (typeof hook !== "function") throw new Error("no inspect hook: value is not redacted");
+  return String((hook as () => unknown).call(value));
+}
+
 describe("token format", () => {
   it("round-trips through parseToken", () => {
     const minted = mintToken({ environment: "prod" });
@@ -37,6 +55,81 @@ describe("token format", () => {
     expect(() => parseToken("slc_prod_" + "a".repeat(32) + "." + "b".repeat(62))).toThrow();
     expect(() => parseToken("slc_prod_" + "A".repeat(32) + "." + "b".repeat(64))).toThrow();
   });
+
+  it("rejects environments that parseToken could not read back", () => {
+    for (const bad of ["my_env", "Prod", "", "-", "-prod", "prod-", "pro.d", "pr od"]) {
+      expect(() => mintToken({ environment: bad })).toThrow();
+    }
+  });
+
+  it("names the offending environment in the error", () => {
+    expect(() => mintToken({ environment: "my_env" })).toThrow(/my_env/);
+  });
+
+  it("accepts well-formed environments", () => {
+    for (const good of ["prod", "staging-eu", "a"]) {
+      expect(() => mintToken({ environment: good })).not.toThrow();
+    }
+  });
+
+  it("guarantees every environment it accepts survives a round trip", () => {
+    for (const env of ["prod", "staging-eu", "a", "eu-west-1"]) {
+      const minted = mintToken({ environment: env });
+      expect(toHex(parseToken(minted.token).tokenId)).toBe(toHex(minted.tokenId));
+      expect(toHex(parseToken(minted.token).tokenSecret)).toBe(toHex(minted.tokenSecret));
+    }
+  });
+});
+
+describe("input validation", () => {
+  it("rejects a token id that is not 16 bytes", () => {
+    const secret = randomBytes(32);
+    for (const n of [0, 15, 17, 32]) {
+      expect(() => deriveTokenKeys(randomBytes(n), secret)).toThrow(/16 bytes/);
+      expect(() => signHandshake(randomBytes(n), secret, 1_757_000_000)).toThrow(/16 bytes/);
+    }
+  });
+
+  it("returns false rather than throwing for a bad token id in verifyHandshake", () => {
+    const minted = mintToken({ environment: "prod" });
+    const signature = signHandshake(minted.tokenId, minted.tokenSecret, 1_757_000_000);
+    for (const n of [0, 15, 17, 32]) {
+      expect(
+        verifyHandshake(minted.upload.publicKey, randomBytes(n), 1_757_000_000, signature),
+      ).toBe(false);
+    }
+  });
+
+  it("rejects timestamps that are not non-negative safe integers", () => {
+    const minted = mintToken({ environment: "prod" });
+    const bad = [-0, -1, 1.5, NaN, Infinity, -Infinity, 1e21, Number.MAX_SAFE_INTEGER + 1];
+    for (const timestamp of bad) {
+      expect(() => signHandshake(minted.tokenId, minted.tokenSecret, timestamp)).toThrow(
+        /timestamp/,
+      );
+    }
+  });
+
+  it("returns false rather than throwing for a bad timestamp in verifyHandshake", () => {
+    const minted = mintToken({ environment: "prod" });
+    const signature = signHandshake(minted.tokenId, minted.tokenSecret, 1_757_000_000);
+    const bad = [-0, -1, 1.5, NaN, Infinity, -Infinity, 1e21, Number.MAX_SAFE_INTEGER + 1];
+    for (const timestamp of bad) {
+      expect(verifyHandshake(minted.upload.publicKey, minted.tokenId, timestamp, signature)).toBe(
+        false,
+      );
+    }
+  });
+
+  it("still accepts zero and the largest safe integer as timestamps", () => {
+    const minted = mintToken({ environment: "prod" });
+    for (const timestamp of [0, Number.MAX_SAFE_INTEGER]) {
+      const signature = signHandshake(minted.tokenId, minted.tokenSecret, timestamp);
+      expect(verifyHandshake(minted.upload.publicKey, minted.tokenId, timestamp, signature)).toBe(
+        true,
+      );
+    }
+  });
 });
 
 describe("the zero-knowledge boundary", () => {
@@ -53,7 +146,20 @@ describe("the zero-knowledge boundary", () => {
     expect(Object.keys(minted.upload).sort()).toEqual(["publicKey", "tokenId"]);
   });
 
-  it("cannot derive the unwrap key from what the server holds", () => {
+  // NOTE ON WHAT THIS PROVES, WHICH IS LESS THAN IT LOOKS.
+  //
+  // This assertion passes for ANY implementation, including a catastrophically
+  // broken one, because an accidental 256-bit collision is impossible whatever
+  // the code does. It documents intent; it is not a proof and must not be read
+  // as one during an audit.
+  //
+  // The real guarantee rests on the preimage resistance of HMAC-SHA256: the
+  // server holds only the token id and a public key, and recovering the unwrap
+  // key from those would require inverting the KDF.
+  //
+  // The load-bearing test in this file is "uploads only a token id and a public
+  // key" -- that one actually fails when the boundary is breached.
+  it("documents that server-held material is not the KDF input", () => {
     const minted = mintToken({ environment: "prod" });
     // Everything the server has: the token id and the Ed25519 public key.
     // Feeding both through the same KDF must not reproduce the unwrap key.
@@ -108,6 +214,63 @@ describe("the zero-knowledge boundary", () => {
     const a = deriveTokenKeys(randomBytes(16), secret);
     const b = deriveTokenKeys(randomBytes(16), secret);
     expect(toHex(a.unwrapKey)).not.toBe(toHex(b.unwrapKey));
+  });
+});
+
+describe("minted token redaction", () => {
+  it("does not expose secrets through JSON.stringify", () => {
+    const minted = mintToken({ environment: "prod" });
+    const json = JSON.stringify(minted);
+    expect(json).not.toContain(toHex(minted.unwrapKey));
+    expect(json).not.toContain(toHex(minted.tokenSecret));
+    expect(json).not.toContain(toHex(minted.authSeed));
+    expect(json).not.toContain(minted.token);
+  });
+
+  it("does not expose secrets when nested inside a logged object", () => {
+    const minted = mintToken({ environment: "prod" });
+    const json = JSON.stringify({ event: "token.minted", minted });
+    expect(json).not.toContain(toHex(minted.unwrapKey));
+    expect(json).not.toContain(toHex(minted.tokenSecret));
+    expect(json).not.toContain(toHex(minted.authSeed));
+    expect(json).not.toContain(minted.token);
+  });
+
+  it("does not expose raw byte arrays, which JSON would otherwise dump", () => {
+    // A bare Uint8Array serialises to {"0":12,"1":244,...}, which is a complete
+    // and reversible dump. Guard against a regression that drops toJSON.
+    const minted = mintToken({ environment: "prod" });
+    const json = JSON.stringify(minted);
+    expect(json).not.toContain(`"0":${minted.tokenSecret[0] as number}`);
+    expect(json).not.toContain("unwrapKey");
+    expect(json).not.toContain("tokenSecret");
+    expect(json).not.toContain("authSeed");
+  });
+
+  it("does not expose secrets through the console.log inspect hook", () => {
+    const minted = mintToken({ environment: "prod" });
+    const shown = inspectLike(minted);
+    expect(shown).not.toContain(toHex(minted.unwrapKey));
+    expect(shown).not.toContain(toHex(minted.tokenSecret));
+    expect(shown).not.toContain(toHex(minted.authSeed));
+    expect(shown).not.toContain(minted.token);
+  });
+
+  it("still surfaces the upload payload through JSON", () => {
+    const minted = mintToken({ environment: "prod" });
+    const parsed = JSON.parse(JSON.stringify(minted)) as {
+      upload: { tokenId: string; publicKey: string };
+    };
+    expect(parsed.upload.tokenId).toBe(minted.upload.tokenId);
+    expect(parsed.upload.publicKey).toBe(minted.upload.publicKey);
+  });
+
+  it("keeps the secret fields readable to code that asks for them directly", () => {
+    const minted = mintToken({ environment: "prod" });
+    expect(minted.tokenSecret).toHaveLength(32);
+    expect(minted.unwrapKey).toHaveLength(32);
+    expect(minted.authSeed).toHaveLength(32);
+    expect(minted.token.startsWith("slc_prod_")).toBe(true);
   });
 });
 
