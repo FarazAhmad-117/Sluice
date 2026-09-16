@@ -50,7 +50,7 @@ export function Revocation() {
       <Container className="py-20 sm:py-24">
         <Eyebrow>Kill switch</Eyebrow>
 
-        <SectionHeading className="mt-4 max-w-[20ch]">
+        <SectionHeading id="revocation-heading" className="mt-4 max-w-[20ch]">
           Rotating a value is not revoking a token
         </SectionHeading>
 
@@ -106,9 +106,9 @@ export function Revocation() {
         </div>
 
         <p className="mt-12 max-w-[62ch] text-base leading-relaxed text-text-muted sm:text-lg">
-          Losing the connection is a fourth thing again, and it is not
-          revocation. A dropped socket keeps the last known good values,
-          reconnects with backoff and alarms. Only a revocation notice carrying
+          Losing the connection is a fourth thing, and it is not revocation. A
+          dropped socket keeps the last known good values, reconnects with
+          backoff and alarms. Only a revocation notice carrying
           a valid signature from a customer-held key starts a shutdown, which
           is what stops the operator of Sluice, a platform compromise or a
           network attacker from killing a fleet. Section 4 of the{" "}

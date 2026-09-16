@@ -108,10 +108,11 @@ export async function Contributors() {
         </SectionHeading>
 
         <p className="mt-6 max-w-[62ch] text-base leading-relaxed text-text-muted sm:text-lg">
-          That is the whole list, and it is short because the project is young.
-          The crypto core is where review is worth the most right now, so a
-          test case, a reproduction or an argument with a domain separator is a
-          more useful contribution than a large feature. Vulnerabilities go to{" "}
+          The list below is the whole of it, and it is short because the
+          project is young. The crypto core is where review is worth the most
+          right now, so a test case, a reproduction or an argument with a
+          domain separator is a more useful contribution than a large feature.
+          Vulnerabilities go to{" "}
           <a
             href={SECURITY_URL}
             target="_blank"

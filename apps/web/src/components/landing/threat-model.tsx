@@ -73,7 +73,7 @@ const NOT_DEFENDED = [
   {
     adversary: "A customer choosing a weak password",
     detail:
-      "The key hierarchy is rooted in a password-derived key. A weak password is a weak root. A minimum is enforced and SSO-backed key wrapping is planned, neither of which saves a password that is guessable.",
+      "The key hierarchy is rooted in a password-derived key, so a weak password is a weak root. A minimum length and SSO-backed key wrapping are both planned, and neither saves a password that is guessable.",
   },
 ];
 
@@ -106,10 +106,7 @@ export function ThreatModel() {
       <Container className="py-20 sm:py-24">
         <Eyebrow>Threat model</Eyebrow>
 
-        <SectionHeading
-          id="threat-model-heading"
-          className="mt-4 max-w-[24ch]"
-        >
+        <SectionHeading id="threat-model-heading" className="mt-4 max-w-[24ch]">
           What Sluice defends against, and what it does not
         </SectionHeading>
 

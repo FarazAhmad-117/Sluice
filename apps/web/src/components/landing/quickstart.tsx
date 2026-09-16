@@ -40,7 +40,7 @@ export function Quickstart() {
     >
       <Container className="py-20 sm:py-24">
         <div className="mx-auto max-w-3xl">
-          <SectionHeading className="text-center">
+          <SectionHeading id="quickstart-heading" className="text-center">
             Clone it and run the tests
           </SectionHeading>
 
@@ -80,9 +80,9 @@ export function Quickstart() {
           <p className="mt-8 text-base leading-relaxed text-text-muted">
             That runs 187 tests across seven files in{" "}
             <code className="font-mono text-text-primary">packages/crypto</code>
-            , the only package that exists. It has no dependency on Convex,
-            Next.js, React or Node built-ins, so it runs unchanged in a browser,
-            in Node and in Bun.
+            , which is all there is. No backend, no dashboard, no SDK. The
+            package has no dependency on Convex, Next.js, React or Node
+            built-ins, so it runs unchanged in a browser, in Node and in Bun.
           </p>
 
           <p className="mt-5 rounded-card border border-hairline bg-surface-card p-5 text-base leading-relaxed text-text-primary">
