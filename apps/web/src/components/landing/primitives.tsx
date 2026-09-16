@@ -64,13 +64,16 @@ export function Eyebrow({ children }: { children: ReactNode }) {
 /** Section heading. One size, so the page has one heading rhythm. */
 export function SectionHeading({
   children,
+  id,
   className = "",
 }: {
   children: ReactNode;
+  id?: string;
   className?: string;
 }) {
   return (
     <h2
+      id={id}
       className={`text-[1.75rem] leading-[1.15] font-medium tracking-[-0.02em] text-text-primary sm:text-4xl ${className}`}
     >
       {children}
