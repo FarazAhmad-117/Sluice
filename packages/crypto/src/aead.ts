@@ -7,6 +7,13 @@ import { randomBytes } from "./bytes.js";
  * authentication tag to the ciphertext rather than returning it separately, so
  * `ciphertext` is always `plaintext.length + 16` bytes and the tag travels with
  * it. Splitting them apart would only create a way to store them inconsistently.
+ *
+ * There is deliberately no algorithm or format version field either, and none
+ * should be added. This is a crypto primitive, not a storage format; folding a
+ * storage concern in here makes the auditable core harder to review. The storage
+ * layer binds the algorithm version into the associated data alongside the
+ * environment id instead, which makes the version authenticated rather than a
+ * mutable database column an attacker could edit independently of the ciphertext.
  */
 export interface SealedBox {
   ciphertext: Uint8Array;
@@ -14,6 +21,16 @@ export interface SealedBox {
 }
 
 const KEY_BYTES = 32;
+
+/**
+ * 96 bits, the size GCM is designed around.
+ *
+ * Because nonces are random rather than counted, the birthday bound applies:
+ * roughly 2^32 messages under a single key before collision probability reaches
+ * about 2^-32, and a repeated nonce under one key is catastrophic. No caller
+ * approaches that here, since keys are per environment. A key that ever seals a
+ * high-volume stream needs rotation, not a larger nonce.
+ */
 const NONCE_BYTES = 12;
 
 /**
@@ -45,6 +62,20 @@ async function importKey(key: Uint8Array): Promise<CryptoKey> {
 }
 
 /**
+ * Rejects a present-but-empty `associatedData`.
+ *
+ * GCM treats empty AAD and absent AAD as the same input, so an empty array binds
+ * nothing at all. A caller deriving AAD from an environment id that turned out to
+ * be an empty string would get an unbound ciphertext and no error -- silently
+ * losing the one property the parameter exists to provide. Fail loudly instead.
+ */
+function checkAssociatedData(associatedData: Uint8Array | undefined): void {
+  if (associatedData && associatedData.length === 0) {
+    throw new Error("associatedData must not be empty; omit it instead");
+  }
+}
+
+/**
  * Encrypts `plaintext` under `key`, optionally binding it to `associatedData`.
  *
  * `associatedData` is authenticated but not encrypted. Binding a ciphertext to
@@ -61,6 +92,7 @@ export async function seal(
   plaintext: Uint8Array,
   associatedData?: Uint8Array,
 ): Promise<SealedBox> {
+  checkAssociatedData(associatedData);
   const cryptoKey = await importKey(key);
   const nonce = randomBytes(NONCE_BYTES);
   // Built conditionally rather than passing `additionalData: undefined`:
@@ -81,11 +113,20 @@ export async function seal(
  * as a decryption oracle. Callers must treat any rejection as "this data is not
  * authentic" and must never fall back to using the undecrypted bytes.
  */
-export async function open(
+export async function unseal(
   key: Uint8Array,
   box: SealedBox,
   associatedData?: Uint8Array,
 ): Promise<Uint8Array> {
+  checkAssociatedData(associatedData);
+  // A SealedBox is reconstituted from an untrusted database, so the module
+  // enforces its own advertised invariant rather than trusting the row. GCM
+  // accepts arbitrary IV lengths -- it derives J0 through GHASH when the IV is
+  // not 96 bits -- so without this check a tampered row carrying a longer nonce
+  // would decrypt perfectly happily.
+  if (box.nonce.length !== NONCE_BYTES) {
+    throw new Error(`nonce must be ${NONCE_BYTES} bytes, got ${box.nonce.length}`);
+  }
   const cryptoKey = await importKey(key);
   const params: AesGcmParams = { name: "AES-GCM", iv: asBufferSource(box.nonce), tagLength: 128 };
   if (associatedData) params.additionalData = asBufferSource(associatedData);
