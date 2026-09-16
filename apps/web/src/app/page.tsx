@@ -1,30 +1,45 @@
+import { Contributors } from "@/components/landing/contributors";
+import { Hero } from "@/components/landing/hero";
+import { Quickstart } from "@/components/landing/quickstart";
+import { Revocation } from "@/components/landing/revocation";
+import { SiteFooter } from "@/components/landing/site-footer";
+import { SiteNav } from "@/components/landing/site-nav";
+import { ThreatModel } from "@/components/landing/threat-model";
+
+/**
+ * The Sluice landing page.
+ *
+ * Seven sections, seven layout families, in this order:
+ *
+ *   SiteNav       horizontal bar, two rows below 768px
+ *   Hero          asymmetric split, copy against the particle field slot
+ *   Quickstart    centred single column around one mono block
+ *   Revocation    three-row ledger, plus an empty recording slot
+ *   ThreatModel   symmetric two-column opposition on a raised surface
+ *   Contributors  hairline roster list
+ *   SiteFooter    link grid
+ *
+ * No two of them share a family and no two consecutive ones are a split.
+ * Two eyebrows are spent, on Revocation and ThreatModel, against a budget of
+ * three.
+ *
+ * There is no sponsors section. GitHub Sponsors is not enabled for this
+ * account, there is no FUNDING.yml and no Open Collective, so the section
+ * would have been an invitation with nowhere to go, and the alternative,
+ * placeholder avatars, is a worse lie than an absent section.
+ */
 export default function Home() {
   return (
-    <main className="mx-auto flex min-h-[100dvh] w-full max-w-2xl flex-col justify-center gap-6 px-4 py-16">
-      <h1 className="font-sans text-4xl font-medium tracking-tight text-text-primary">
-        Token smoke test
-      </h1>
-      <p className="font-sans text-base text-text-muted">
-        This page exists to prove the tokens resolve. Surface, text, brand and
-        radius all come from custom properties. Nothing here names a colour.
-      </p>
-      <p className="font-mono text-base text-text-muted">
-        SLUICE_TOKEN revoked at 2026-09-16T14:02:11Z
-      </p>
-      <div className="flex items-center gap-6">
-        <button
-          type="button"
-          className="w-fit cursor-pointer rounded-input bg-brand-solid px-4 py-2 font-sans text-base font-medium text-text-on-brand-solid transition-colors hover:bg-brand-solid-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
-        >
-          Filled control
-        </button>
-        <a
-          href="https://github.com/FarazAhmad-117/Sluice"
-          className="cursor-pointer font-sans text-base text-brand underline underline-offset-4 transition-colors hover:text-brand-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
-        >
-          Brand as link text
-        </a>
-      </div>
-    </main>
+    <>
+      <SiteNav />
+      <main>
+        <Hero />
+        <Quickstart />
+        <Revocation />
+        <ThreatModel />
+        <Contributors />
+      </main>
+      <SiteFooter />
+    </>
   );
 }
