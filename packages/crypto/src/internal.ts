@@ -24,3 +24,29 @@
  * used as a computed property name in a class declaration.
  */
 export const INSPECT_CUSTOM: unique symbol = Symbol.for("nodejs.util.inspect.custom");
+
+/**
+ * The one legal spelling of an Ed25519 public key on this package's boundary:
+ * exactly 64 LOWERCASE hex characters, fully anchored.
+ *
+ * WHY REJECTION AND NOT NORMALISATION. `fromHex` accepts `[0-9a-fA-F]`, so an
+ * uppercased public key decodes to identical bytes and used to verify exactly
+ * as well as the lowercase form `toHex` emits. Two strings, one identity, both
+ * returning true. Lowercasing the input before decoding would therefore change
+ * nothing observable -- the second spelling has to STOP VERIFYING for the
+ * ambiguity to be gone. Callers key real state on these strings: a replay
+ * cache, a rate-limit bucket, a per-token epoch table. Two spellings means two
+ * entries, and each one misses what the other recorded.
+ *
+ * This matches the strictness `parseToken` and revocation's `TOKEN_ID_PATTERN`
+ * already apply to the values THEY accept, so the whole surface now agrees.
+ * Nothing this package produces is affected: `toHex` only ever emits lowercase.
+ *
+ * The length is pinned here too, which makes the guard the single place that
+ * states what a public key looks like rather than leaving it to Noble to throw
+ * about point decoding.
+ *
+ * No `g` flag, deliberately: a global regex carries `lastIndex` across `.test`
+ * calls and would alternate between pass and fail on the same input.
+ */
+export const PUBLIC_KEY_HEX_PATTERN = /^[0-9a-f]{64}$/;

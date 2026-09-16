@@ -1,5 +1,6 @@
 import { ed25519 } from "@noble/curves/ed25519";
 import { fromHex, utf8 } from "./bytes.js";
+import { PUBLIC_KEY_HEX_PATTERN } from "./internal.js";
 
 /**
  * A signed instruction to stop using a service token.
@@ -181,12 +182,19 @@ export function signRevocation(orgPrivateKey: Uint8Array, notice: RevocationNoti
  * validator without forcing this one to throw.
  *
  * A `false` here means DO NOT SHUT DOWN. It never means "maybe".
+ *
+ * The org public key must be CANONICAL lowercase hex, matching the strictness
+ * {@link TOKEN_ID_PATTERN} already applies to the token id in the notice. An
+ * uppercased key decodes to the same bytes and would otherwise verify, giving
+ * one organisation two spellings that a caller's cache would treat as two.
+ * See {@link PUBLIC_KEY_HEX_PATTERN}.
  */
 export function verifyRevocation(
   orgPublicKeyHex: string,
   notice: RevocationNotice,
   signature: Uint8Array,
 ): boolean {
+  if (!PUBLIC_KEY_HEX_PATTERN.test(orgPublicKeyHex)) return false;
   try {
     assertValidNotice(notice);
     return ed25519.verify(signature, encode(notice), fromHex(orgPublicKeyHex));

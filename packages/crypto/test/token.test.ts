@@ -347,6 +347,47 @@ describe("handshake", () => {
     expect(verifyHandshake(minted.upload.publicKey, minted.tokenId, 1_757_000_000, randomBytes(8))).toBe(false);
   });
 
+  /**
+   * ONE IDENTITY, ONE SPELLING. See the matching test in `revocation.test.ts`.
+   *
+   * `fromHex` is case-insensitive, so an uppercased public key used to verify
+   * just as well as the lowercase form `toHex` emits -- two strings for one
+   * token, both true, and a server keying a replay cache or a rate-limit
+   * bucket on that string gets two buckets for one identity.
+   *
+   * Rejection, not coercion: lowercasing before decoding would be a no-op,
+   * since `fromHex` already maps both spellings to the same bytes.
+   */
+  it("returns false for an uppercase or mixed-case public key", () => {
+    const minted = mintToken({ environment: "prod" });
+    const timestamp = 1_757_000_000;
+    const signature = signHandshake(minted.tokenId, minted.tokenSecret, timestamp);
+    const key = minted.upload.publicKey;
+    expect(verifyHandshake(key, minted.tokenId, timestamp, signature)).toBe(true);
+    expect(verifyHandshake(key.toUpperCase(), minted.tokenId, timestamp, signature)).toBe(false);
+    // Uppercase exactly one hex LETTER, found by search rather than by slicing
+    // a fixed prefix: a fixed prefix is all digits about 2% of the time, which
+    // makes `mixed` identical to `key` and the assertion flake.
+    const at = key.search(/[a-f]/);
+    expect(at).toBeGreaterThanOrEqual(0);
+    const mixed = key.slice(0, at) + (key[at] as string).toUpperCase() + key.slice(at + 1);
+    expect(mixed).not.toBe(key);
+    expect(verifyHandshake(mixed, minted.tokenId, timestamp, signature)).toBe(false);
+  });
+
+  it("returns false for a public key that is not exactly 32 bytes of hex", () => {
+    const minted = mintToken({ environment: "prod" });
+    const timestamp = 1_757_000_000;
+    const signature = signHandshake(minted.tokenId, minted.tokenSecret, timestamp);
+    for (const key of [
+      minted.upload.publicKey.slice(0, 62),
+      minted.upload.publicKey + "ab",
+      toHex(randomBytes(31)),
+    ]) {
+      expect(verifyHandshake(key, minted.tokenId, timestamp, signature)).toBe(false);
+    }
+  });
+
   it("returns false rather than throwing on a malformed public key", () => {
     const minted = mintToken({ environment: "prod" });
     const signature = signHandshake(minted.tokenId, minted.tokenSecret, 1_757_000_000);

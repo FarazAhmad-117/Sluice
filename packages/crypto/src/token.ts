@@ -2,7 +2,7 @@ import { hkdf } from "@noble/hashes/hkdf";
 import { sha256 } from "@noble/hashes/sha256";
 import { ed25519 } from "@noble/curves/ed25519";
 import { concat, fromHex, randomBytes, toHex, utf8 } from "./bytes.js";
-import { INSPECT_CUSTOM } from "./internal.js";
+import { INSPECT_CUSTOM, PUBLIC_KEY_HEX_PATTERN } from "./internal.js";
 
 const TOKEN_ID_BYTES = 16;
 const TOKEN_SECRET_BYTES = 32;
@@ -302,6 +302,11 @@ export function signHandshake(
  * have to distinguish those, and turning a malformed input into an exception
  * would give an attacker a way to tell "bad encoding" apart from "bad
  * signature". The `catch` is load-bearing, not defensive decoration.
+ *
+ * The public key must be CANONICAL lowercase hex. An uppercased key decodes to
+ * the same bytes and would otherwise verify, giving one token two spellings
+ * that a caller's replay cache or rate-limit bucket would treat as two
+ * identities. See {@link PUBLIC_KEY_HEX_PATTERN}.
  */
 export function verifyHandshake(
   publicKeyHex: string,
@@ -309,6 +314,7 @@ export function verifyHandshake(
   timestamp: number,
   signature: Uint8Array,
 ): boolean {
+  if (!PUBLIC_KEY_HEX_PATTERN.test(publicKeyHex)) return false;
   try {
     return ed25519.verify(signature, handshakeMessage(tokenId, timestamp), fromHex(publicKeyHex));
   } catch {

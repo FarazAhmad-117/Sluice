@@ -348,6 +348,39 @@ describe("revocation malformed crypto inputs", () => {
     expect(verifyRevocation("", n, signRevocation(org.privateKey, n))).toBe(false);
   });
 
+  /**
+   * ONE IDENTITY, ONE SPELLING.
+   *
+   * `fromHex` accepts `[0-9a-fA-F]`, so before this guard an UPPERCASED org
+   * public key verified exactly as well as the lowercase one `toHex` emits.
+   * Two strings, one identity, both returning true. A caller that keys anything
+   * on that string -- a replay cache, a rate-limit bucket, a per-org epoch
+   * table -- gets two entries for one organisation and each one silently misses
+   * what the other recorded.
+   *
+   * The fix is rejection, not coercion. Lowercasing the input before decoding
+   * would change nothing observable, because `fromHex` already decodes both
+   * spellings to the same bytes; the second spelling has to stop verifying for
+   * the ambiguity to actually be gone. `toHex` emits lowercase, so no value
+   * this package produces is affected.
+   */
+  it("returns false for an uppercase or mixed-case public key", () => {
+    const org = orgKeyPair();
+    const n = notice();
+    const signature = signRevocation(org.privateKey, n);
+    expect(verifyRevocation(org.publicKeyHex, n, signature)).toBe(true);
+    expect(verifyRevocation(org.publicKeyHex.toUpperCase(), n, signature)).toBe(false);
+    // Uppercase exactly one hex LETTER, found by search rather than by slicing
+    // a fixed prefix: a fixed prefix is all digits about 2% of the time, which
+    // makes `mixed` identical to the key and the assertion flake.
+    const key = org.publicKeyHex;
+    const at = key.search(/[a-f]/);
+    expect(at).toBeGreaterThanOrEqual(0);
+    const mixed = key.slice(0, at) + (key[at] as string).toUpperCase() + key.slice(at + 1);
+    expect(mixed).not.toBe(key);
+    expect(verifyRevocation(mixed, n, signature)).toBe(false);
+  });
+
   it("returns false for a 31 byte public key instead of throwing", () => {
     const org = orgKeyPair();
     const n = notice();
