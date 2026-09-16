@@ -240,11 +240,24 @@ export function mintToken(opts: { environment: string }): MintedToken {
  *
  * The environment class here is looser than {@link ENVIRONMENT_PATTERN} on
  * purpose, so this can still read tokens issued before the minter tightened.
+ *
+ * `environment` is RETURNED rather than discarded. It is in the token, the
+ * minter validates it, and leaving it out meant any consumer who needed it
+ * would write `token.split("_")[1]` -- re-implementing this module's parsing,
+ * without the anchored pattern, on a string whose second half is a secret.
  */
-export function parseToken(token: string): { tokenId: Uint8Array; tokenSecret: Uint8Array } {
-  const match = /^slc_[a-z0-9-]+_([0-9a-f]{32})\.([0-9a-f]{64})$/.exec(token);
+export function parseToken(token: string): {
+  environment: string;
+  tokenId: Uint8Array;
+  tokenSecret: Uint8Array;
+} {
+  const match = /^slc_([a-z0-9-]+)_([0-9a-f]{32})\.([0-9a-f]{64})$/.exec(token);
   if (!match) throw new Error("malformed token");
-  return { tokenId: fromHex(match[1] as string), tokenSecret: fromHex(match[2] as string) };
+  return {
+    environment: match[1] as string,
+    tokenId: fromHex(match[2] as string),
+    tokenSecret: fromHex(match[3] as string),
+  };
 }
 
 /**

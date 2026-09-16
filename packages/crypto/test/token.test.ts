@@ -36,6 +36,24 @@ describe("token format", () => {
     expect(toHex(parsed.tokenSecret)).toBe(toHex(minted.tokenSecret));
   });
 
+  /**
+   * The environment is IN the token, is validated by the minter, and was
+   * unreachable from the parser's result. Every consumer that needed it would
+   * have written `token.split("_")[1]` and re-implemented this module's parsing
+   * without the anchored pattern -- on a string whose second half is a secret.
+   * Returning it closes that off.
+   */
+  it("returns the environment alongside the id and the secret", () => {
+    for (const environment of ["prod", "staging-eu", "a", "eu-west-1"]) {
+      expect(parseToken(mintToken({ environment }).token).environment).toBe(environment);
+    }
+  });
+
+  it("returns exactly the three fields a caller needs", () => {
+    const parsed = parseToken(mintToken({ environment: "prod" }).token);
+    expect(Object.keys(parsed).sort()).toEqual(["environment", "tokenId", "tokenSecret"]);
+  });
+
   it("prefixes the token with the environment", () => {
     expect(mintToken({ environment: "prod" }).token.startsWith("slc_prod_")).toBe(true);
     expect(mintToken({ environment: "staging-eu" }).token.startsWith("slc_staging-eu_")).toBe(true);
