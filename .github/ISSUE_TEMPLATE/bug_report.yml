@@ -1,0 +1,56 @@
+name: Bug report
+description: Something does not behave the way it is documented to
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Do not report security vulnerabilities here
+
+        Issues are public. A vulnerability filed here is visible to everyone,
+        including anyone who would use it, before there is a fix.
+
+        Email **faraz@cupupmarketing.com** instead, and read the
+        [security policy](https://github.com/FarazAhmad-117/Sluice/security/policy)
+        first.
+
+  - type: checkboxes
+    id: not-a-vulnerability
+    attributes:
+      label: Confirm
+      options:
+        - label: This is not a security vulnerability.
+          required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: A minimal reproduction is worth more than a description.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Commit or version
+      description: The commit SHA you tested, since there is no release yet.
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, Node version, pnpm version, runtime.
+      placeholder: macOS 15, Node 22.17.1, pnpm 10.30.3
+    validations:
+      required: false
