@@ -16,10 +16,25 @@
 :root {
   color-scheme: dark;
 
-  /* Brand */
+  /* Brand
+     Two tokens, because no single blue does both jobs. A blue light enough to
+     read as link text on the near-black base is too light to carry white
+     button text, and a blue dark enough for white text disappears against the
+     base. Measured, not guessed:
+
+       --brand       on --surface-base   5.20:1  PASS AA   link text
+       --brand       white text on it    3.81:1  FAIL      never fill with this
+       --brand-solid white text on it    5.38:1  PASS AA   button label
+       --brand-solid vs --surface-base   3.68:1  PASS      WCAG 1.4.11 needs 3:1
+
+     Use --brand for links, focus rings and active nav. Use --brand-solid only
+     for filled controls, always with --text-on-brand-solid. */
   --brand: #2d7ff9;
   --brand-hover: #4d92f9;
   --brand-subtle: rgb(45 127 249 / 0.14);
+  --brand-solid: #2060e8;
+  --brand-solid-hover: #2d7ff9;
+  --text-on-brand-solid: #ffffff;
 
   /* Status */
   --status-healthy: #10b981;
@@ -57,6 +72,8 @@
   --color-brand: var(--brand);
   --color-brand-hover: var(--brand-hover);
   --color-brand-subtle: var(--brand-subtle);
+  --color-brand-solid: var(--brand-solid);
+  --color-brand-solid-hover: var(--brand-solid-hover);
 
   --color-status-healthy: var(--status-healthy);
   --color-status-warning: var(--status-warning);
@@ -70,6 +87,7 @@
   --color-text-primary: var(--text-primary);
   --color-text-muted: var(--text-muted);
   --color-text-on-brand: var(--text-on-brand);
+  --color-text-on-brand-solid: var(--text-on-brand-solid);
 
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);

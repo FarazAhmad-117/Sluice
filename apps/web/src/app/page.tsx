@@ -11,12 +11,20 @@ export default function Home() {
       <p className="font-mono text-base text-text-muted">
         SLUICE_TOKEN revoked at 2026-09-16T14:02:11Z
       </p>
-      <button
-        type="button"
-        className="w-fit cursor-pointer rounded-input bg-brand px-4 py-2 font-sans text-base font-medium text-text-on-brand transition-colors hover:bg-brand-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
-      >
-        Brand button
-      </button>
+      <div className="flex items-center gap-6">
+        <button
+          type="button"
+          className="w-fit cursor-pointer rounded-input bg-brand-solid px-4 py-2 font-sans text-base font-medium text-text-on-brand-solid transition-colors hover:bg-brand-solid-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+        >
+          Filled control
+        </button>
+        <a
+          href="https://github.com/FarazAhmad-117/Sluice"
+          className="cursor-pointer font-sans text-base text-brand underline underline-offset-4 transition-colors hover:text-brand-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+        >
+          Brand as link text
+        </a>
+      </div>
     </main>
   );
 }
