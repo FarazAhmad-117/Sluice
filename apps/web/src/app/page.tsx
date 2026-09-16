@@ -1,3 +1,4 @@
+import { Contributors } from "@/components/landing/contributors";
 import { Hero } from "@/components/landing/hero";
 import { Quickstart } from "@/components/landing/quickstart";
 import { Revocation } from "@/components/landing/revocation";
@@ -13,6 +14,7 @@ export default function Home() {
         <Quickstart />
         <Revocation />
         <ThreatModel />
+        <Contributors />
       </main>
     </>
   );
