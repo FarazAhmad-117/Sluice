@@ -62,25 +62,43 @@ async function importKey(key: Uint8Array): Promise<CryptoKey> {
 }
 
 /**
- * Rejects a present-but-empty `associatedData`.
+ * Requires `associatedData`, and requires it to be non-empty.
  *
  * GCM treats empty AAD and absent AAD as the same input, so an empty array binds
  * nothing at all. A caller deriving AAD from an environment id that turned out to
  * be an empty string would get an unbound ciphertext and no error -- silently
- * losing the one property the parameter exists to provide. Fail loudly instead.
+ * losing the one property the parameter exists to provide.
+ *
+ * ABSENT IS NOW REJECTED TOO, and the two cases share a message because they
+ * are the same bug. Accepting an absent AAD while rejecting an empty one was
+ * incoherent: both produce a ciphertext bound to nothing, and the absent case
+ * was the easier one to reach -- a forgotten argument, an optional chain, a
+ * config lookup that returned `undefined`. Every secret in Sluice belongs to an
+ * environment, and binding it is what stops a `dev` blob being replayed into
+ * `prod` by someone with database write access. There is no unbound use in this
+ * product worth that footgun.
+ *
+ * The parameter is required in the TYPE as well, which catches a TypeScript
+ * caller at compile time. This runtime check is for the JavaScript ones, where
+ * `undefined` arrives without a compiler to stop it. If a genuinely unbound use
+ * ever appears it gets its own explicitly named function, so that it is a
+ * decision someone makes at a call site rather than by forgetting an argument.
  */
-function checkAssociatedData(associatedData: Uint8Array | undefined): void {
-  if (associatedData && associatedData.length === 0) {
-    throw new Error("associatedData must not be empty; omit it instead");
+function checkAssociatedData(associatedData: Uint8Array): void {
+  if (!associatedData || associatedData.length === 0) {
+    throw new Error("associatedData is required and must not be empty");
   }
 }
 
 /**
  * Encrypts `plaintext` under `key`, optionally binding it to `associatedData`.
  *
- * `associatedData` is authenticated but not encrypted. Binding a ciphertext to
- * something like an environment id means a `dev` blob cannot be replayed into
- * `prod`, even by someone with write access to the database.
+ * `associatedData` is REQUIRED and authenticated but not encrypted. Binding a
+ * ciphertext to something like an environment id means a `dev` blob cannot be
+ * replayed into `prod`, even by someone with write access to the database. It
+ * is not optional because a forgotten argument would silently produce an
+ * unbound ciphertext, which is the one failure this parameter exists to
+ * prevent.
  *
  * The nonce is generated fresh per call from the CSPRNG. Nonce reuse under one
  * key is catastrophic for GCM -- it leaks the XOR of the two plaintexts and the
@@ -90,16 +108,17 @@ function checkAssociatedData(associatedData: Uint8Array | undefined): void {
 export async function seal(
   key: Uint8Array,
   plaintext: Uint8Array,
-  associatedData?: Uint8Array,
+  associatedData: Uint8Array,
 ): Promise<SealedBox> {
   checkAssociatedData(associatedData);
   const cryptoKey = await importKey(key);
   const nonce = randomBytes(NONCE_BYTES);
-  // Built conditionally rather than passing `additionalData: undefined`:
-  // exactOptionalPropertyTypes rejects an explicit undefined for an optional
-  // property.
-  const params: AesGcmParams = { name: "AES-GCM", iv: asBufferSource(nonce), tagLength: 128 };
-  if (associatedData) params.additionalData = asBufferSource(associatedData);
+  const params: AesGcmParams = {
+    name: "AES-GCM",
+    iv: asBufferSource(nonce),
+    tagLength: 128,
+    additionalData: asBufferSource(associatedData),
+  };
   const ciphertext = await crypto.subtle.encrypt(params, cryptoKey, asBufferSource(plaintext));
   return { ciphertext: new Uint8Array(ciphertext), nonce };
 }
@@ -116,7 +135,7 @@ export async function seal(
 export async function unseal(
   key: Uint8Array,
   box: SealedBox,
-  associatedData?: Uint8Array,
+  associatedData: Uint8Array,
 ): Promise<Uint8Array> {
   checkAssociatedData(associatedData);
   // A SealedBox is reconstituted from an untrusted database, so the module
@@ -128,8 +147,12 @@ export async function unseal(
     throw new Error(`nonce must be ${NONCE_BYTES} bytes, got ${box.nonce.length}`);
   }
   const cryptoKey = await importKey(key);
-  const params: AesGcmParams = { name: "AES-GCM", iv: asBufferSource(box.nonce), tagLength: 128 };
-  if (associatedData) params.additionalData = asBufferSource(associatedData);
+  const params: AesGcmParams = {
+    name: "AES-GCM",
+    iv: asBufferSource(box.nonce),
+    tagLength: 128,
+    additionalData: asBufferSource(associatedData),
+  };
   const plaintext = await crypto.subtle.decrypt(params, cryptoKey, asBufferSource(box.ciphertext));
   return new Uint8Array(plaintext);
 }
