@@ -2,6 +2,7 @@ import { hkdf } from "@noble/hashes/hkdf";
 import { sha256 } from "@noble/hashes/sha256";
 import { ed25519 } from "@noble/curves/ed25519";
 import { concat, fromHex, randomBytes, toHex, utf8 } from "./bytes.js";
+import { INSPECT_CUSTOM } from "./internal.js";
 
 const TOKEN_ID_BYTES = 16;
 const TOKEN_SECRET_BYTES = 32;
@@ -122,9 +123,6 @@ export function deriveTokenKeys(tokenId: Uint8Array, tokenSecret: Uint8Array): T
     unwrapKey: hkdf(sha256, tokenSecret, tokenId, utf8.encode(UNWRAP_INFO), 32),
   };
 }
-
-/** Node's formatter and `console.log` look up exactly this symbol on a value. */
-const INSPECT_CUSTOM: unique symbol = Symbol.for("nodejs.util.inspect.custom");
 
 /**
  * The result of minting, containing secret material.

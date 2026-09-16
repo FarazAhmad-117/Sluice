@@ -99,6 +99,26 @@ describe("public API surface", () => {
     expect(typeof api.MintedToken.prototype.toJSON).toBe("function");
   });
 
+  /**
+   * A CHARACTERISATION TEST, NOT A DRIVER. This passed before `INSPECT_CUSTOM`
+   * was hoisted into `src/internal.ts` and passes after, because both classes
+   * always used `Symbol.for`, which is global and therefore interned across
+   * modules. It is here so the invariant the hoist exists to guarantee -- ONE
+   * symbol, so a third redacting class cannot quietly key its hook off a
+   * different one and print raw bytes -- is asserted somewhere rather than
+   * relied on.
+   *
+   * This file is the only place in the package that can see both classes at
+   * once, which is why the cross-module assertion lives here.
+   */
+  it("keys both redaction hooks off the one shared inspect symbol", () => {
+    const INSPECT = Symbol.for("nodejs.util.inspect.custom");
+    for (const Cls of [api.MasterUnlockKey, api.MintedToken]) {
+      const hook = (Cls.prototype as unknown as Record<symbol, unknown>)[INSPECT];
+      expect(typeof hook).toBe("function");
+    }
+  });
+
   it("re-exports the same function objects the modules define", () => {
     // Guards against a barrel that wraps or shadows rather than re-exports.
     expect(api.VERSION).toBe("sluice-crypto/v1");

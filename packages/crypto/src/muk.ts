@@ -1,6 +1,7 @@
 import { argon2id } from "@noble/hashes/argon2";
 import { sha256 } from "@noble/hashes/sha256";
 import { concat, utf8 } from "./bytes.js";
+import { INSPECT_CUSTOM } from "./internal.js";
 
 /**
  * Argon2id parameters, tuned per section 3.1 of Implementation_Plan.md.
@@ -71,9 +72,6 @@ const SALT_LABEL = "sluice/muk-salt/v1";
 function mukSalt(userId: string): Uint8Array {
   return sha256(concat(utf8.encode(SALT_LABEL), utf8.encode(userId)));
 }
-
-/** Node's formatter and `console.log` look up exactly this symbol on a value. */
-const INSPECT_CUSTOM: unique symbol = Symbol.for("nodejs.util.inspect.custom");
 
 /** The MUK is exactly the Argon2id output width. Stated once, enforced once. */
 const MUK_BYTES = ARGON2_PARAMS.dkLen;
