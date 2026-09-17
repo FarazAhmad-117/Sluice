@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { convexTest } from "convex-test";
 import {
   mintToken,
@@ -45,6 +45,35 @@ beforeEach(() => {
 afterEach(() => {
   delete process.env.JWT_SIGNING_KEY;
 });
+
+/**
+ * THE CLOCK IS FROZEN FOR THIS WHOLE FILE, AND THAT IS NOT A CONVENIENCE.
+ *
+ * The acceptance window is sixty seconds either side of SERVER time, and the
+ * server reads its clock after the test has read its own. With a real clock the
+ * boundary cases are races rather than assertions: a request built at `now + 61`
+ * becomes `now + 60` and is ACCEPTED if a single second boundary happens to pass
+ * between the two reads, so the test that proves the window is closed is exactly
+ * the one that fails intermittently. The past side drifts the safe way and the
+ * future side does not, which is the kind of asymmetry that gets diagnosed as
+ * "flaky" and retried rather than read.
+ *
+ * Freezing removes the elapsed time entirely, so `+61` means `+61` at both ends
+ * and the boundary is a fact rather than a probability. Verified that
+ * `convex-test` is happy with a stopped clock: it assigns commit timestamps
+ * from `Date.now()` and explicitly bumps by one when the clock has not moved.
+ */
+const FROZEN_NOW = Date.parse("2026-09-18T12:00:00.000Z");
+
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime(FROZEN_NOW);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 
 type Actor = { userId: Id<"users">; sessionToken: string };
 
@@ -246,6 +275,23 @@ describe("the handshake", () => {
         handshakeBody(minted, nowSeconds() + offset),
       );
       expect(response.status).toBe(400);
+    }
+  });
+
+  it("accepts the two timestamps exactly on the boundary", async () => {
+    const t = convexTest(schema, modules);
+    const { admin, environmentId } = await world(t);
+    const { minted } = await issueToken(t, admin, environmentId);
+
+    // The other half of the assertion above. Without it, a window of zero
+    // seconds would pass every rejection test in this file, and the first
+    // machine with a one second clock offset would find out in production.
+    for (const offset of [-60, 60]) {
+      const response = await handshake(
+        t,
+        handshakeBody(minted, nowSeconds() + offset),
+      );
+      expect(response.status, `offset ${offset}`).toBe(200);
     }
   });
 

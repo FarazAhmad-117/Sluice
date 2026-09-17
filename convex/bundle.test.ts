@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { convexTest } from "convex-test";
 import {
   mintToken,
@@ -36,6 +36,24 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.JWT_SIGNING_KEY;
+});
+
+/**
+ * Frozen, for the reason `http.test.ts` sets out at length: every fixture here
+ * goes through the real handshake, whose acceptance window is measured against
+ * server time read after the test read its own. A stopped clock turns elapsed
+ * time into zero, so nothing in this file can depend on how long a machine
+ * under load took to get from one line to the next.
+ */
+const FROZEN_NOW = Date.parse("2026-09-18T12:00:00.000Z");
+
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime(FROZEN_NOW);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 const NAME_CIPHERTEXT = "aa".repeat(24);
