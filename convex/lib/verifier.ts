@@ -98,13 +98,18 @@ export function decoyVerifierHash(): string {
  * True when `candidate` and `stored` are the same digest, compared in time
  * that does not depend on where they differ.
  *
- * A stored hash that is not canonical hex cannot be decoded, so it compares
- * against the decoy instead and fails. The alternative is `fromHex` throwing a
- * different error for a corrupted row, which would be one more way for the
- * caller to tell two accounts apart.
+ * `fallback` is the caller's decoy, passed in rather than derived here so that
+ * a corrupted row costs exactly the same as a good one. A stored hash that is
+ * not canonical hex cannot be decoded, so it compares against the fallback and
+ * fails; letting `fromHex` throw instead would give a corrupted row its own
+ * error and one more way to tell two accounts apart.
  */
-export function verifierHashEquals(candidate: string, stored: string): boolean {
-  const comparable = CANONICAL_HEX_32.test(stored) ? stored : decoyVerifierHash();
+export function verifierHashEquals(
+  candidate: string,
+  stored: string,
+  fallback: string,
+): boolean {
+  const comparable = CANONICAL_HEX_32.test(stored) ? stored : fallback;
   return constantTimeEqual(fromHex(candidate), fromHex(comparable));
 }
 

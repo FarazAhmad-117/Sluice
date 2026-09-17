@@ -134,7 +134,11 @@ export const login = mutation({
     // a miss would make this endpoint answer measurably faster for an address
     // nobody has registered, which is the same oracle as a distinct error
     // message, only harder to notice.
-    const matches = verifierHashEquals(candidate, user?.authVerifierHash ?? decoy);
+    const matches = verifierHashEquals(
+      candidate,
+      user?.authVerifierHash ?? decoy,
+      decoy,
+    );
 
     if (user === null || !matches) {
       throw new ConvexError(AUTH_FAILED);
