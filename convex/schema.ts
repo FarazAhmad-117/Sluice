@@ -17,9 +17,26 @@ export default defineSchema({
   orgs: defineTable({
     name: v.string(),
     slug: v.string(),
+    // Public material, one per org, so it belongs here. The wrapped private
+    // half does not: see `revocationGrants`.
     revocationPublicKey: v.string(),
-    wrappedRevocationKey: v.string(),
   }).index("by_slug", ["slug"]),
+
+  // The revocation signing key, wrapped once per user who is allowed to sign.
+  // This used to be a single `orgs.wrappedRevocationKey`, which made the
+  // product's entire wedge depend on one person not leaving, not forgetting
+  // their password, and not being the one whose laptop was stolen. That last
+  // case is the scenario revocation exists for, which made it worse than an
+  // ordinary bus-factor problem.
+  //
+  // Unlike `pdkGrants` there is no `granteeType`: only a user can sign a
+  // revocation, so the grantee is typed as a user id rather than a string.
+  revocationGrants: defineTable({
+    orgId: v.id("orgs"),
+    granteeId: v.id("users"),
+    wrappedRevocationKey: v.string(),
+    nonce: v.string(),
+  }).index("by_org_grantee", ["orgId", "granteeId"]),
 
   orgMembers: defineTable({
     orgId: v.id("orgs"),

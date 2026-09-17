@@ -57,3 +57,28 @@ export async function insertOrgMember(
 ): Promise<Id<"orgMembers">> {
   return await ctx.db.insert("orgMembers", doc);
 }
+
+/**
+ * The grant a user unwraps with their MUK before signing a revocation notice.
+ * Returning null is the authorisation answer as well as the data answer: no
+ * grant means this user cannot sign for this org.
+ */
+export async function getRevocationGrant(
+  ctx: QueryCtx,
+  orgId: Id<"orgs">,
+  granteeId: Id<"users">,
+): Promise<Doc<"revocationGrants"> | null> {
+  return await ctx.db
+    .query("revocationGrants")
+    .withIndex("by_org_grantee", (q) =>
+      q.eq("orgId", orgId).eq("granteeId", granteeId),
+    )
+    .unique();
+}
+
+export async function insertRevocationGrant(
+  ctx: MutationCtx,
+  doc: WithoutSystemFields<Doc<"revocationGrants">>,
+): Promise<Id<"revocationGrants">> {
+  return await ctx.db.insert("revocationGrants", doc);
+}
