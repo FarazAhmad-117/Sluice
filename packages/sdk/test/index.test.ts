@@ -13,6 +13,7 @@ describe("the public surface", () => {
       "MAX_CLOCK_STEP_MS",
       "MAX_DRAIN_MS",
       "MIN_MAX_OFFLINE_DURATION_MS",
+      "NO_PERSISTED_FLOOR",
       "SluiceCore",
       "VERSION",
       "applyDecisions",
