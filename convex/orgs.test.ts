@@ -5,6 +5,8 @@ import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { normaliseEmail } from "./lib/email";
 import { insertUser } from "./repo/users";
+import { insertSession } from "./repo/sessions";
+import { SESSION_LIFETIME_MS, hashSessionToken } from "./lib/session";
 import { getOrgMember, getRevocationGrant } from "./repo/orgs";
 import { listAuditEventsByActor } from "./repo/audit";
 import * as orgsModule from "./orgs";
@@ -14,14 +16,29 @@ export const modules = import.meta.glob("./**/*.ts");
 type Harness = ReturnType<typeof convexTest>;
 
 /**
- * Seeded through the repo layer rather than through `signup`, because these
- * tests are about the hierarchy and a pepper is not their business. The
- * enumeration test in `repo/repo.test.ts` scans this file too, so seeding
- * straight through the database handle on the context is unavailable on
- * purpose, and the phrase for doing so cannot even be written here.
+ * A seeded person, and the only way this suite can act as one.
+ *
+ * `userId` is here for the assertions that read rows back, never for a call:
+ * no handler takes a user id any more. Acting is `sessionToken` and nothing
+ * else.
  */
-async function seedUser(t: Harness, email: string): Promise<Id<"users">> {
-  return await t.run(async (ctx) =>
+export type Actor = { userId: Id<"users">; sessionToken: string };
+
+/**
+ * Seeded through the repo layer rather than through `signup` and `login`,
+ * because these tests are about the hierarchy and a pepper is not their
+ * business. The enumeration test in `repo/repo.test.ts` scans this file too,
+ * so seeding straight through the database handle on the context is
+ * unavailable on purpose, and the phrase for doing so cannot even be written
+ * here.
+ *
+ * The token is derived from the email so a failure names a readable value, and
+ * it is hashed by the same function the server uses, so the fixture cannot
+ * drift from the implementation without this suite going red.
+ */
+export async function seedUser(t: Harness, email: string): Promise<Actor> {
+  const sessionToken = `session-for-${email}`;
+  const userId = await t.run(async (ctx) =>
     insertUser(ctx, {
       email: normaliseEmail(email),
       authVerifierHash: "hash",
@@ -31,15 +48,24 @@ async function seedUser(t: Harness, email: string): Promise<Id<"users">> {
       wrappedSigningKey: "wrapped-signing-key-blob",
     }),
   );
+  await t.run(async (ctx) =>
+    insertSession(ctx, {
+      userId,
+      tokenHash: hashSessionToken(sessionToken),
+      createdAt: Date.now(),
+      expiresAt: Date.now() + SESSION_LIFETIME_MS,
+    }),
+  );
+  return { userId, sessionToken };
 }
 
 const REVOCATION_PUBLIC_KEY = "ab".repeat(32);
 // 12 bytes in lowercase hex, which is what `toHex(seal().nonce)` produces.
 const NONCE = "0f1e2d3c4b5a69788796a5b4";
 
-function orgArgs(callerId: Id<"users">, overrides: Record<string, unknown> = {}) {
+function orgArgs(actor: Actor, overrides: Record<string, unknown> = {}) {
   return {
-    callerId,
+    sessionToken: actor.sessionToken,
     name: "Acme Rockets",
     slug: "acme-rockets",
     revocationPublicKey: REVOCATION_PUBLIC_KEY,
@@ -56,6 +82,14 @@ function orgArgs(callerId: Id<"users">, overrides: Record<string, unknown> = {})
  * of another tenant's row one guess at a time.
  */
 const NOT_PERMITTED = "Not found, or you do not have access to it.";
+
+/**
+ * The other refusal, for a caller who is nobody rather than a caller who is
+ * somebody without access. Kept as a literal here rather than imported, so
+ * that changing the constant in `lib/authz.ts` has to be a deliberate edit to
+ * the tests as well.
+ */
+const NOT_AUTHENTICATED = "Your session is not valid. Sign in again.";
 
 /**
  * A well formed id for the same table that no row has. Derived from a real one
@@ -93,7 +127,7 @@ describe("orgs authorisation", () => {
     const orgId = await t.mutation(api.orgs.createOrg, orgArgs(owner));
 
     await expect(
-      t.query(api.orgs.getOrg, { callerId: outsider, orgId }),
+      t.query(api.orgs.getOrg, { sessionToken: outsider.sessionToken, orgId }),
     ).rejects.toThrow(NOT_PERMITTED);
   });
 
@@ -104,37 +138,75 @@ describe("orgs authorisation", () => {
     const orgId = await t.mutation(api.orgs.createOrg, orgArgs(owner));
 
     await expect(
-      t.query(api.orgs.getMyRevocationGrant, { callerId: outsider, orgId }),
+      t.query(api.orgs.getMyRevocationGrant, { sessionToken: outsider.sessionToken, orgId }),
     ).rejects.toThrow(NOT_PERMITTED);
   });
 
-  it("refuses createOrg to a caller id that is well formed but not a user", async () => {
+  /**
+   * THIS TEST CHANGED MEANING, AND THE OLD MEANING IS GONE ON PURPOSE.
+   *
+   * It used to read "refuses createOrg to a caller id that is well formed but
+   * not a user", and it passed a forged `callerId` built with `absentIdLike`.
+   * That test cannot be written any more, because `createOrg` no longer has a
+   * caller id to forge: identity comes from the session row. It is not being
+   * quietly dropped, it is being replaced by the question that now matters,
+   * which is whether an unrecognised CREDENTIAL is refused. The refusal is
+   * `NOT_AUTHENTICATED` rather than `NOT_PERMITTED`, because the caller is not
+   * anybody at all rather than somebody without access.
+   *
+   * `session.test.ts` covers the other three ways a credential can fail, and
+   * `unauthenticated.test.ts` covers every function rather than just this one.
+   */
+  it("refuses createOrg to a token that was never issued", async () => {
     const t = convexTest(schema, modules);
     const real = await seedUser(t, "real@example.test");
 
     await expect(
       t.mutation(
         api.orgs.createOrg,
-        orgArgs(absentIdLike(real), { slug: "other" }),
+        orgArgs(
+          { userId: real.userId, sessionToken: "ff".repeat(32) },
+          { slug: "other" },
+        ),
       ),
-    ).rejects.toThrow(NOT_PERMITTED);
+    ).rejects.toThrow(NOT_AUTHENTICATED);
   });
 
-  // Convex ids carry their table, and `v.id("users")` checks it. That is worth
-  // a test rather than an assumption: it means an id crafted from another
-  // table cannot even reach a handler, so the handlers below are defending
-  // against a wrong-row-same-table attack and nothing weirder.
+  /**
+   * Convex ids carry their table and `v.id(...)` checks it, so an id crafted
+   * from another table cannot reach a handler at all. The property is
+   * unchanged; only the argument it can be demonstrated on has moved, because
+   * there is no longer a `v.id("users")` anywhere in the public surface. It is
+   * shown here on `getOrg`, which means the handlers below are defending
+   * against a wrong-row-same-table attack and nothing weirder.
+   */
   it("refuses an id belonging to another table before the handler runs", async () => {
+    const t = convexTest(schema, modules);
+    const real = await seedUser(t, "real@example.test");
+
+    await expect(
+      t.query(api.orgs.getOrg, {
+        sessionToken: real.sessionToken,
+        orgId: real.userId as unknown as Id<"orgs">,
+      }),
+    ).rejects.toThrow('Expected ID for table "orgs"');
+  });
+
+  /**
+   * The id that no row has, kept because it is the only way to prove the
+   * handler refuses rather than the validator. `absentIdLike` exists for it.
+   */
+  it("refuses an org id that is well formed but has no row", async () => {
     const t = convexTest(schema, modules);
     const real = await seedUser(t, "real@example.test");
     const orgId = await t.mutation(api.orgs.createOrg, orgArgs(real));
 
     await expect(
-      t.mutation(
-        api.orgs.createOrg,
-        orgArgs(orgId as unknown as Id<"users">, { slug: "other" }),
-      ),
-    ).rejects.toThrow('Expected ID for table "users"');
+      t.query(api.orgs.getOrg, {
+        sessionToken: real.sessionToken,
+        orgId: absentIdLike(orgId),
+      }),
+    ).rejects.toThrow(NOT_PERMITTED);
   });
 
   it("tells a member of one org nothing about another org", async () => {
@@ -145,7 +217,7 @@ describe("orgs authorisation", () => {
     const orgB = await t.mutation(api.orgs.createOrg, orgArgs(b, { slug: "org-b" }));
 
     const refused = await failure(
-      t.query(api.orgs.getOrg, { callerId: a, orgId: orgB }),
+      t.query(api.orgs.getOrg, { sessionToken: a.sessionToken, orgId: orgB }),
     );
     expect((refused as { data?: unknown }).data).toBe(NOT_PERMITTED);
   });
@@ -157,7 +229,7 @@ describe("orgs authorisation", () => {
     await t.mutation(api.orgs.createOrg, orgArgs(a, { slug: "org-a" }));
     await t.mutation(api.orgs.createOrg, orgArgs(b, { slug: "org-b" }));
 
-    const mine = await t.query(api.orgs.listMyOrgs, { callerId: a });
+    const mine = await t.query(api.orgs.listMyOrgs, { sessionToken: a.sessionToken });
     expect(mine.map((o) => o.slug)).toEqual(["org-a"]);
   });
 });
@@ -173,14 +245,14 @@ describe("createOrg", () => {
 
     const orgId = await t.mutation(api.orgs.createOrg, orgArgs(owner));
 
-    const member = await t.run(async (ctx) => getOrgMember(ctx, orgId, owner));
+    const member = await t.run(async (ctx) => getOrgMember(ctx, orgId, owner.userId));
     expect(member?.role).toBe("owner");
 
     // The whole wedge. An org with no grant is an org nobody can ever sign a
     // revocation notice for, and nothing later in the product would notice
     // until the moment it mattered most.
     const grant = await t.run(async (ctx) =>
-      getRevocationGrant(ctx, orgId, owner),
+      getRevocationGrant(ctx, orgId, owner.userId),
     );
     expect(grant?.wrappedRevocationKey).toBe("wrapped-revocation-key-blob");
     expect(grant?.nonce).toBe(NONCE);
@@ -203,7 +275,7 @@ describe("createOrg", () => {
       ),
     ).rejects.toThrow();
 
-    expect(await t.query(api.orgs.listMyOrgs, { callerId: owner })).toEqual([]);
+    expect(await t.query(api.orgs.listMyOrgs, { sessionToken: owner.sessionToken })).toEqual([]);
   });
 
   it("rejects a duplicate slug", async () => {
@@ -305,7 +377,7 @@ describe("createOrg", () => {
     const name = "a".repeat(100);
 
     const orgId = await t.mutation(api.orgs.createOrg, orgArgs(owner, { name }));
-    const org = await t.query(api.orgs.getOrg, { callerId: owner, orgId });
+    const org = await t.query(api.orgs.getOrg, { sessionToken: owner.sessionToken, orgId });
     expect(org.name).toBe(name);
   });
 });
@@ -320,7 +392,7 @@ describe("getOrg", () => {
     const owner = await seedUser(t, "owner@example.test");
     const orgId = await t.mutation(api.orgs.createOrg, orgArgs(owner));
 
-    const org = await t.query(api.orgs.getOrg, { callerId: owner, orgId });
+    const org = await t.query(api.orgs.getOrg, { sessionToken: owner.sessionToken, orgId });
 
     expect(org).toEqual({
       orgId,
@@ -339,7 +411,7 @@ describe("getMyRevocationGrant", () => {
     const orgId = await t.mutation(api.orgs.createOrg, orgArgs(owner));
 
     const grant = await t.query(api.orgs.getMyRevocationGrant, {
-      callerId: owner,
+      sessionToken: owner.sessionToken,
       orgId,
     });
 
@@ -388,14 +460,14 @@ describe("the audit log", () => {
     const orgId = await t.mutation(api.orgs.createOrg, orgArgs(owner));
 
     const events = await t.run(async (ctx) =>
-      listAuditEventsByActor(ctx, owner, 10),
+      listAuditEventsByActor(ctx, owner.userId, 10),
     );
 
     expect(events).toHaveLength(1);
     const event = events[0];
     expect(event?.orgId).toBe(orgId);
     expect(event?.actorType).toBe("user");
-    expect(event?.actorId).toBe(owner);
+    expect(event?.actorId).toBe(owner.userId);
     expect(event?.action).toBe("org.create");
     expect(event?.targetId).toBe(orgId);
     expect(event?.metadata).toBeUndefined();

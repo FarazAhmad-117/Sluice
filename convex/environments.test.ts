@@ -5,6 +5,8 @@ import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { normaliseEmail } from "./lib/email";
 import { insertUser } from "./repo/users";
+import { insertSession } from "./repo/sessions";
+import { SESSION_LIFETIME_MS, hashSessionToken } from "./lib/session";
 import { listAuditEventsByActor } from "./repo/audit";
 import * as environmentsModule from "./environments";
 
@@ -12,8 +14,22 @@ export const modules = import.meta.glob("./**/*.ts");
 
 type Harness = ReturnType<typeof convexTest>;
 
-async function seedUser(t: Harness, email: string): Promise<Id<"users">> {
-  return await t.run(async (ctx) =>
+/**
+ * A seeded person. `userId` is for reading rows back in assertions and is
+ * never passed to a handler: no handler takes a user id any more. Acting is
+ * `sessionToken` and nothing else.
+ */
+type Actor = { userId: Id<"users">; sessionToken: string };
+
+/**
+ * Seeded through the repo layer, including the session, because the scan in
+ * `repo/repo.test.ts` reads test files too. The token is hashed by the same
+ * function the server uses, so this fixture cannot drift from the
+ * implementation without the suite going red.
+ */
+async function seedUser(t: Harness, email: string): Promise<Actor> {
+  const sessionToken = `session-for-${email}`;
+  const userId = await t.run(async (ctx) =>
     insertUser(ctx, {
       email: normaliseEmail(email),
       authVerifierHash: "hash",
@@ -23,15 +39,24 @@ async function seedUser(t: Harness, email: string): Promise<Id<"users">> {
       wrappedSigningKey: "wrapped-signing-key-blob",
     }),
   );
+  await t.run(async (ctx) =>
+    insertSession(ctx, {
+      userId,
+      tokenHash: hashSessionToken(sessionToken),
+      createdAt: Date.now(),
+      expiresAt: Date.now() + SESSION_LIFETIME_MS,
+    }),
+  );
+  return { userId, sessionToken };
 }
 
 async function seedOrg(
   t: Harness,
-  callerId: Id<"users">,
+  actor: Actor,
   slug: string,
 ): Promise<Id<"orgs">> {
   return await t.mutation(api.orgs.createOrg, {
-    callerId,
+    sessionToken: actor.sessionToken,
     name: "Acme Rockets",
     slug,
     revocationPublicKey: "ab".repeat(32),
@@ -49,19 +74,19 @@ async function twoTenants(t: Harness) {
   const orgA = await seedOrg(t, alice, "org-a");
   const orgB = await seedOrg(t, mallory, "org-b");
   const projectA = await t.mutation(api.projects.createProject, {
-    callerId: alice,
+    sessionToken: alice.sessionToken,
     orgId: orgA,
     name: "API",
     slug: "api",
   });
   const projectB = await t.mutation(api.projects.createProject, {
-    callerId: mallory,
+    sessionToken: mallory.sessionToken,
     orgId: orgB,
     name: "API",
     slug: "api",
   });
   const environmentB = await t.mutation(api.environments.createEnvironment, {
-    callerId: mallory,
+    sessionToken: mallory.sessionToken,
     projectId: projectB,
     name: "production",
   });
@@ -82,7 +107,7 @@ describe("environments authorisation", () => {
 
     await expect(
       t.mutation(api.environments.createEnvironment, {
-        callerId: alice,
+        sessionToken: alice.sessionToken,
         projectId: projectB,
         name: "staging",
       }),
@@ -95,7 +120,7 @@ describe("environments authorisation", () => {
 
     await expect(
       t.query(api.environments.listEnvironments, {
-        callerId: alice,
+        sessionToken: alice.sessionToken,
         projectId: projectB,
       }),
     ).rejects.toThrow(NOT_PERMITTED);
@@ -107,7 +132,7 @@ describe("environments authorisation", () => {
 
     await expect(
       t.query(api.environments.getEnvironment, {
-        callerId: alice,
+        sessionToken: alice.sessionToken,
         environmentId: environmentB,
       }),
     ).rejects.toThrow(NOT_PERMITTED);
@@ -119,14 +144,14 @@ describe("environments authorisation", () => {
 
     await expect(
       t.mutation(api.environments.createEnvironment, {
-        callerId: alice,
+        sessionToken: alice.sessionToken,
         projectId: projectB,
         name: "staging",
       }),
     ).rejects.toThrow(NOT_PERMITTED);
 
     const theirs = await t.query(api.environments.listEnvironments, {
-      callerId: mallory,
+      sessionToken: mallory.sessionToken,
       projectId: projectB,
     });
     expect(theirs.map((e) => e.name)).toEqual(["production"]);
@@ -144,12 +169,12 @@ describe("createEnvironment", () => {
 
     const environmentId = await t.mutation(
       api.environments.createEnvironment,
-      { callerId: alice, projectId: projectA, name: "production" },
+      { sessionToken: alice.sessionToken, projectId: projectA, name: "production" },
     );
 
     expect(
       await t.query(api.environments.getEnvironment, {
-        callerId: alice,
+        sessionToken: alice.sessionToken,
         environmentId,
       }),
     ).toEqual({
@@ -177,9 +202,9 @@ describe("createEnvironment", () => {
     ) as { value: Record<string, unknown> };
 
     expect(Object.keys(args.value).sort()).toEqual([
-      "callerId",
       "name",
       "projectId",
+      "sessionToken",
     ]);
   });
 
@@ -187,7 +212,7 @@ describe("createEnvironment", () => {
     const t = convexTest(schema, modules);
     const { alice, projectA } = await twoTenants(t);
     const args = {
-      callerId: alice,
+      sessionToken: alice.sessionToken,
       projectId: projectA,
       name: "production",
     };
@@ -203,13 +228,13 @@ describe("createEnvironment", () => {
     const { alice, projectA, mallory, projectB } = await twoTenants(t);
 
     await t.mutation(api.environments.createEnvironment, {
-      callerId: alice,
+      sessionToken: alice.sessionToken,
       projectId: projectA,
       name: "production",
     });
 
     const theirs = await t.query(api.environments.listEnvironments, {
-      callerId: mallory,
+      sessionToken: mallory.sessionToken,
       projectId: projectB,
     });
     expect(theirs.map((e) => e.name)).toEqual(["production"]);
@@ -236,7 +261,7 @@ describe("createEnvironment", () => {
     ]) {
       await expect(
         t.mutation(api.environments.createEnvironment, {
-          callerId: alice,
+          sessionToken: alice.sessionToken,
           projectId: projectA,
           name,
         }),
@@ -255,14 +280,14 @@ describe("listEnvironments", () => {
     const { alice, projectA } = await twoTenants(t);
     for (const name of ["production", "staging"]) {
       await t.mutation(api.environments.createEnvironment, {
-        callerId: alice,
+        sessionToken: alice.sessionToken,
         projectId: projectA,
         name,
       });
     }
 
     const list = await t.query(api.environments.listEnvironments, {
-      callerId: alice,
+      sessionToken: alice.sessionToken,
       projectId: projectA,
     });
     expect(list.map((e) => e.name).sort()).toEqual(["production", "staging"]);
@@ -286,17 +311,17 @@ describe("the audit log", () => {
 
     const environmentId = await t.mutation(
       api.environments.createEnvironment,
-      { callerId: alice, projectId: projectA, name: "production" },
+      { sessionToken: alice.sessionToken, projectId: projectA, name: "production" },
     );
 
     const events = await t.run(async (ctx) =>
-      listAuditEventsByActor(ctx, alice, 10),
+      listAuditEventsByActor(ctx, alice.userId, 10),
     );
     const created = events.find((e) => e.action === "environment.create");
 
     expect(created?.orgId).toBe(orgA);
     expect(created?.actorType).toBe("user");
-    expect(created?.actorId).toBe(alice);
+    expect(created?.actorId).toBe(alice.userId);
     expect(created?.targetId).toBe(environmentId);
     expect(created?.metadata).toBeUndefined();
     expect(JSON.stringify(events)).not.toContain("example.test");

@@ -5,7 +5,7 @@ import type { Doc } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { recordUserEvent } from "./lib/audit";
 import {
-  callerArg,
+  sessionArg,
   NOT_PERMITTED,
   requireEnvironment,
   requireSecret,
@@ -221,7 +221,7 @@ function view(secret: Doc<"secrets">) {
 
 export const createSecret = mutation({
   args: {
-    ...callerArg,
+    ...sessionArg,
     // The only place an environment id is ever accepted. After this, a row's
     // environment is read from the row and never from a caller.
     environmentId: v.id("environments"),
@@ -238,7 +238,7 @@ export const createSecret = mutation({
   handler: async (ctx, args) => {
     const { org, environment, user } = await requireEnvironment(
       ctx,
-      args.callerId,
+      args.sessionToken,
       args.environmentId,
     );
     assertSealed(args);
@@ -274,7 +274,7 @@ export const createSecret = mutation({
  */
 export const updateSecret = mutation({
   args: {
-    ...callerArg,
+    ...sessionArg,
     secretId: v.id("secrets"),
     nameCiphertext: v.string(),
     nameNonce: v.string(),
@@ -289,7 +289,7 @@ export const updateSecret = mutation({
   handler: async (ctx, args) => {
     const { org, environment, secret, user } = await requireSecret(
       ctx,
-      args.callerId,
+      args.sessionToken,
       args.secretId,
     );
     const { versions, current } = await lineageOf(ctx, secret);
@@ -345,12 +345,12 @@ export const updateSecret = mutation({
  * not a flag flip, and the honest way to bring one back today is to create it.
  */
 export const deleteSecret = mutation({
-  args: { ...callerArg, secretId: v.id("secrets") },
+  args: { ...sessionArg, secretId: v.id("secrets") },
   returns: v.null(),
   handler: async (ctx, args) => {
     const { org, secret, user } = await requireSecret(
       ctx,
-      args.callerId,
+      args.sessionToken,
       args.secretId,
     );
     const { current } = await lineageOf(ctx, secret);
@@ -372,10 +372,10 @@ export const deleteSecret = mutation({
 });
 
 export const getSecret = query({
-  args: { ...callerArg, secretId: v.id("secrets") },
+  args: { ...sessionArg, secretId: v.id("secrets") },
   returns: v.object(secretShape),
   handler: async (ctx, args) => {
-    const { secret } = await requireSecret(ctx, args.callerId, args.secretId);
+    const { secret } = await requireSecret(ctx, args.sessionToken, args.secretId);
     // A superseded version is readable. A version of a DELETED lineage is not,
     // whichever version was asked for.
     const { current } = await lineageOf(ctx, secret);
@@ -391,12 +391,12 @@ export const getSecret = query({
  * the bundle fetch.
  */
 export const listSecrets = query({
-  args: { ...callerArg, environmentId: v.id("environments") },
+  args: { ...sessionArg, environmentId: v.id("environments") },
   returns: v.array(v.object(secretShape)),
   handler: async (ctx, args) => {
     const { environment } = await requireEnvironment(
       ctx,
-      args.callerId,
+      args.sessionToken,
       args.environmentId,
     );
     const secrets = await listCurrentSecretsByEnvironment(ctx, environment._id);
@@ -410,10 +410,10 @@ export const listSecrets = query({
  * a caller is allowed to name: see the note above `LINEAGE_ID_BYTES`.
  */
 export const listSecretVersions = query({
-  args: { ...callerArg, secretId: v.id("secrets") },
+  args: { ...sessionArg, secretId: v.id("secrets") },
   returns: v.array(v.object(secretShape)),
   handler: async (ctx, args) => {
-    const { secret } = await requireSecret(ctx, args.callerId, args.secretId);
+    const { secret } = await requireSecret(ctx, args.sessionToken, args.secretId);
     const { versions, current } = await lineageOf(ctx, secret);
     if (current.deletedAt !== undefined) refuse();
     return versions.map(view);

@@ -9,6 +9,12 @@ import {
   hashAuthVerifier,
   verifierHashEquals,
 } from "./lib/verifier";
+import {
+  SESSION_LIFETIME_MS,
+  hashSessionToken,
+  issueSessionToken,
+} from "./lib/session";
+import { deleteSession, getSessionByTokenHash, insertSession } from "./repo/sessions";
 import { getUserByEmail, insertUser } from "./repo/users";
 
 /**
@@ -96,6 +102,12 @@ export const login = mutation({
     authVerifier: v.string(),
   },
   returns: v.object({
+    // The bearer credential for every later call. This is the ONLY place it is
+    // ever returned, and the only place it exists in plaintext on this server:
+    // the row stores its hash. It must not be logged, must not be put in a
+    // URL, and must not be written to `auditLog`.
+    sessionToken: v.string(),
+    sessionExpiresAt: v.number(),
     userId: v.id("users"),
     publicKey: v.string(),
     verifyKey: v.string(),
@@ -103,10 +115,10 @@ export const login = mutation({
     wrappedSigningKey: v.string(),
     recoveryBlob: v.optional(v.string()),
   }),
-  // A mutation rather than a query even though it writes nothing yet. Convex
-  // caches query results by argument, and an authentication attempt is not a
-  // cacheable read. Rate limiting and an audit row both belong here and both
-  // need a transaction.
+  // A mutation, not a query. Convex caches query results by argument, and an
+  // authentication attempt is not a cacheable read. It now also writes the
+  // session row, so it needs a transaction anyway. Rate limiting and an audit
+  // row still belong here and still need one.
   handler: async (ctx, args) => {
     // Misconfiguration is checked first and is the one failure login does NOT
     // hide behind the generic message. A deployment with no pepper would
@@ -144,9 +156,26 @@ export const login = mutation({
       throw new ConvexError(AUTH_FAILED);
     }
 
+    // THE SESSION IS CREATED HERE, AFTER THE COMPARISON AND NOWHERE ELSE.
+    //
+    // Every throw above happens before this line, so a failed login leaves no
+    // row behind: there is no path that authenticates partially. This is also
+    // the reason `login` was already a mutation rather than a query, so
+    // nothing about the transaction story changes by writing here.
+    const sessionToken = issueSessionToken();
+    const sessionExpiresAt = Date.now() + SESSION_LIFETIME_MS;
+    await insertSession(ctx, {
+      userId: user._id,
+      tokenHash: hashSessionToken(sessionToken),
+      createdAt: Date.now(),
+      expiresAt: sessionExpiresAt,
+    });
+
     // Only wrapped material and public keys. The server cannot open any of it,
     // and the stored hash never leaves this function.
     return {
+      sessionToken,
+      sessionExpiresAt,
       userId: user._id,
       publicKey: user.publicKey,
       verifyKey: user.verifyKey,
@@ -156,5 +185,42 @@ export const login = mutation({
         ? {}
         : { recoveryBlob: user.recoveryBlob }),
     };
+  },
+});
+
+/**
+ * End one session, now.
+ *
+ * The row is DELETED rather than flagged, which is what makes "now" true. A
+ * `revoked` boolean would leave a credential in the table that every future
+ * reader has to remember to check, and would keep the table growing with
+ * entries that are only conditionally dead. Deleting also drops the row that
+ * `requireSession` read, so every Convex query subscription that resolved this
+ * session is invalidated and re-runs, and the ones that re-run refuse.
+ *
+ * It never throws and never reports whether the token was real. Answering
+ * would turn sign out into an oracle for whether a guessed token is live, at
+ * an endpoint that deliberately demands no proof of anything, and it would
+ * turn a double click on the sign out button into an error the user has to
+ * read. Logging out a session you do not hold is not an attack: you needed the
+ * token, and holding it you would use it rather than end it.
+ *
+ * This takes only the token. There is no `userId` argument and there must
+ * never be one, because a handler that accepts an id here accepts an id for
+ * somebody else's session.
+ */
+export const logout = mutation({
+  args: { sessionToken: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    // Hashed, not decoded, so a malformed token takes the same path as an
+    // unknown one. The token itself is never written anywhere and never
+    // appears in the return value.
+    const session = await getSessionByTokenHash(
+      ctx,
+      hashSessionToken(args.sessionToken),
+    );
+    if (session !== null) await deleteSession(ctx, session._id);
+    return null;
   },
 });

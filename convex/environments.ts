@@ -3,7 +3,7 @@ import { mutation, query } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { recordUserEvent } from "./lib/audit";
 import {
-  callerArg,
+  sessionArg,
   requireEnvironment,
   requireProject,
 } from "./lib/authz";
@@ -42,7 +42,7 @@ const INITIAL_EPOCH = 0;
 
 export const createEnvironment = mutation({
   args: {
-    ...callerArg,
+    ...sessionArg,
     projectId: v.id("projects"),
     name: v.string(),
   },
@@ -53,7 +53,7 @@ export const createEnvironment = mutation({
     // another tenancy, because every secret hangs off an environment id.
     const { org, project, user } = await requireProject(
       ctx,
-      args.callerId,
+      args.sessionToken,
       args.projectId,
     );
 
@@ -84,7 +84,7 @@ export const createEnvironment = mutation({
 });
 
 export const getEnvironment = query({
-  args: { ...callerArg, environmentId: v.id("environments") },
+  args: { ...sessionArg, environmentId: v.id("environments") },
   returns: v.object({
     environmentId: v.id("environments"),
     projectId: v.id("projects"),
@@ -95,7 +95,7 @@ export const getEnvironment = query({
   handler: async (ctx, args) => {
     const { environment } = await requireEnvironment(
       ctx,
-      args.callerId,
+      args.sessionToken,
       args.environmentId,
     );
     return {
@@ -109,7 +109,7 @@ export const getEnvironment = query({
 });
 
 export const listEnvironments = query({
-  args: { ...callerArg, projectId: v.id("projects") },
+  args: { ...sessionArg, projectId: v.id("projects") },
   returns: v.array(
     v.object({
       environmentId: v.id("environments"),
@@ -122,7 +122,7 @@ export const listEnvironments = query({
   handler: async (ctx, args) => {
     const { project } = await requireProject(
       ctx,
-      args.callerId,
+      args.sessionToken,
       args.projectId,
     );
     const environments = await listEnvironmentsByProject(ctx, project._id);

@@ -243,7 +243,14 @@ describe("login", () => {
       authVerifier: VERIFIER_A,
     });
 
+    // Still an exact key set rather than a subset match: the point of this
+    // assertion is that login returns these fields AND NO OTHERS, so a leak
+    // added later shows up here. The two session fields are matched by type
+    // because the token is random by construction; `session.test.ts` pins what
+    // they have to be.
     expect(result).toEqual({
+      sessionToken: expect.stringMatching(/^[0-9a-f]{64}$/),
+      sessionExpiresAt: expect.any(Number),
       userId,
       publicKey: PUBLIC_KEY,
       verifyKey: VERIFY_KEY,

@@ -5,6 +5,8 @@ import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { normaliseEmail } from "./lib/email";
 import { insertUser } from "./repo/users";
+import { insertSession } from "./repo/sessions";
+import { SESSION_LIFETIME_MS, hashSessionToken } from "./lib/session";
 import { listAuditEventsByActor } from "./repo/audit";
 import * as projectsModule from "./projects";
 
@@ -12,8 +14,22 @@ export const modules = import.meta.glob("./**/*.ts");
 
 type Harness = ReturnType<typeof convexTest>;
 
-async function seedUser(t: Harness, email: string): Promise<Id<"users">> {
-  return await t.run(async (ctx) =>
+/**
+ * A seeded person. `userId` is for reading rows back in assertions and is
+ * never passed to a handler: no handler takes a user id any more. Acting is
+ * `sessionToken` and nothing else.
+ */
+type Actor = { userId: Id<"users">; sessionToken: string };
+
+/**
+ * Seeded through the repo layer, including the session, because the scan in
+ * `repo/repo.test.ts` reads test files too. The token is hashed by the same
+ * function the server uses, so this fixture cannot drift from the
+ * implementation without the suite going red.
+ */
+async function seedUser(t: Harness, email: string): Promise<Actor> {
+  const sessionToken = `session-for-${email}`;
+  const userId = await t.run(async (ctx) =>
     insertUser(ctx, {
       email: normaliseEmail(email),
       authVerifierHash: "hash",
@@ -23,15 +39,24 @@ async function seedUser(t: Harness, email: string): Promise<Id<"users">> {
       wrappedSigningKey: "wrapped-signing-key-blob",
     }),
   );
+  await t.run(async (ctx) =>
+    insertSession(ctx, {
+      userId,
+      tokenHash: hashSessionToken(sessionToken),
+      createdAt: Date.now(),
+      expiresAt: Date.now() + SESSION_LIFETIME_MS,
+    }),
+  );
+  return { userId, sessionToken };
 }
 
 async function seedOrg(
   t: Harness,
-  callerId: Id<"users">,
+  actor: Actor,
   slug: string,
 ): Promise<Id<"orgs">> {
   return await t.mutation(api.orgs.createOrg, {
-    callerId,
+    sessionToken: actor.sessionToken,
     name: "Acme Rockets",
     slug,
     revocationPublicKey: "ab".repeat(32),
@@ -52,7 +77,7 @@ async function twoOrgs(t: Harness) {
   const orgA = await seedOrg(t, alice, "org-a");
   const orgB = await seedOrg(t, mallory, "org-b");
   const projectB = await t.mutation(api.projects.createProject, {
-    callerId: mallory,
+    sessionToken: mallory.sessionToken,
     orgId: orgB,
     name: "Secret Weapon",
     slug: "secret-weapon",
@@ -71,7 +96,7 @@ describe("projects authorisation", () => {
 
     await expect(
       t.mutation(api.projects.createProject, {
-        callerId: alice,
+        sessionToken: alice.sessionToken,
         orgId: orgB,
         name: "Trojan",
         slug: "trojan",
@@ -84,7 +109,7 @@ describe("projects authorisation", () => {
     const { alice, orgB } = await twoOrgs(t);
 
     await expect(
-      t.query(api.projects.listProjects, { callerId: alice, orgId: orgB }),
+      t.query(api.projects.listProjects, { sessionToken: alice.sessionToken, orgId: orgB }),
     ).rejects.toThrow(NOT_PERMITTED);
   });
 
@@ -97,7 +122,7 @@ describe("projects authorisation", () => {
 
     await expect(
       t.query(api.projects.getProject, {
-        callerId: alice,
+        sessionToken: alice.sessionToken,
         projectId: projectB,
       }),
     ).rejects.toThrow(NOT_PERMITTED);
@@ -108,7 +133,7 @@ describe("projects authorisation", () => {
     const { alice, orgA } = await twoOrgs(t);
 
     const mine = await t.query(api.projects.listProjects, {
-      callerId: alice,
+      sessionToken: alice.sessionToken,
       orgId: orgA,
     });
     expect(mine).toEqual([]);
@@ -126,14 +151,14 @@ describe("createProject", () => {
     const orgId = await seedOrg(t, owner, "acme");
 
     const projectId = await t.mutation(api.projects.createProject, {
-      callerId: owner,
+      sessionToken: owner.sessionToken,
       orgId,
       name: "Payments API",
       slug: "payments-api",
     });
 
     expect(
-      await t.query(api.projects.getProject, { callerId: owner, projectId }),
+      await t.query(api.projects.getProject, { sessionToken: owner.sessionToken, projectId }),
     ).toEqual({
       projectId,
       orgId,
@@ -147,7 +172,7 @@ describe("createProject", () => {
     const owner = await seedUser(t, "owner@example.test");
     const orgId = await seedOrg(t, owner, "acme");
     const args = {
-      callerId: owner,
+      sessionToken: owner.sessionToken,
       orgId,
       name: "Payments API",
       slug: "payments-api",
@@ -170,13 +195,13 @@ describe("createProject", () => {
     const orgB = await seedOrg(t, bob, "org-b");
 
     await t.mutation(api.projects.createProject, {
-      callerId: alice,
+      sessionToken: alice.sessionToken,
       orgId: orgA,
       name: "API",
       slug: "api",
     });
     const inB = await t.mutation(api.projects.createProject, {
-      callerId: bob,
+      sessionToken: bob.sessionToken,
       orgId: orgB,
       name: "API",
       slug: "api",
@@ -184,7 +209,7 @@ describe("createProject", () => {
 
     expect(inB).toBeTruthy();
     const listA = await t.query(api.projects.listProjects, {
-      callerId: alice,
+      sessionToken: alice.sessionToken,
       orgId: orgA,
     });
     expect(listA).toHaveLength(1);
@@ -198,7 +223,7 @@ describe("createProject", () => {
     for (const slug of ["Payments", "payments api", "-api", "api-", "", "a".repeat(49)]) {
       await expect(
         t.mutation(api.projects.createProject, {
-          callerId: owner,
+          sessionToken: owner.sessionToken,
           orgId,
           name: "Payments API",
           slug,
@@ -215,7 +240,7 @@ describe("createProject", () => {
     for (const name of ["", "  ", "a".repeat(101)]) {
       await expect(
         t.mutation(api.projects.createProject, {
-          callerId: owner,
+          sessionToken: owner.sessionToken,
           orgId,
           name,
           slug: "payments-api",
@@ -234,24 +259,24 @@ describe("listProjects", () => {
     const t = convexTest(schema, modules);
     const { alice, mallory, orgA, orgB } = await twoOrgs(t);
     await t.mutation(api.projects.createProject, {
-      callerId: alice,
+      sessionToken: alice.sessionToken,
       orgId: orgA,
       name: "One",
       slug: "one",
     });
     await t.mutation(api.projects.createProject, {
-      callerId: alice,
+      sessionToken: alice.sessionToken,
       orgId: orgA,
       name: "Two",
       slug: "two",
     });
 
     const listA = await t.query(api.projects.listProjects, {
-      callerId: alice,
+      sessionToken: alice.sessionToken,
       orgId: orgA,
     });
     const listB = await t.query(api.projects.listProjects, {
-      callerId: mallory,
+      sessionToken: mallory.sessionToken,
       orgId: orgB,
     });
 
@@ -276,20 +301,20 @@ describe("the audit log", () => {
     const owner = await seedUser(t, "owner@example.test");
     const orgId = await seedOrg(t, owner, "acme");
     const projectId = await t.mutation(api.projects.createProject, {
-      callerId: owner,
+      sessionToken: owner.sessionToken,
       orgId,
       name: "Payments API",
       slug: "payments-api",
     });
 
     const events = await t.run(async (ctx) =>
-      listAuditEventsByActor(ctx, owner, 10),
+      listAuditEventsByActor(ctx, owner.userId, 10),
     );
     const created = events.find((e) => e.action === "project.create");
 
     expect(created?.orgId).toBe(orgId);
     expect(created?.actorType).toBe("user");
-    expect(created?.actorId).toBe(owner);
+    expect(created?.actorId).toBe(owner.userId);
     expect(created?.targetId).toBe(projectId);
     expect(created?.metadata).toBeUndefined();
     // The project slug and name are the operator's own words, but they are

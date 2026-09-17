@@ -3,9 +3,9 @@ import { mutation, query } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { recordUserEvent } from "./lib/audit";
 import {
-  callerArg,
+  sessionArg,
   requireOrg,
-  resolveCaller,
+  requireSession,
   NOT_PERMITTED,
 } from "./lib/authz";
 import { assertHexBytes } from "./lib/hex";
@@ -34,7 +34,7 @@ const NONCE_BYTES = 12;
 
 export const createOrg = mutation({
   args: {
-    ...callerArg,
+    ...sessionArg,
     name: v.string(),
     slug: v.string(),
     // The public half of the org revocation keypair. Public material, one per
@@ -47,7 +47,7 @@ export const createOrg = mutation({
   },
   returns: v.id("orgs"),
   handler: async (ctx, args): Promise<Id<"orgs">> => {
-    const user = await resolveCaller(ctx, args.callerId);
+    const user = await requireSession(ctx, args.sessionToken);
 
     const name = assertDisplayName("name", args.name);
     const slug = assertSlug("slug", args.slug);
@@ -115,7 +115,7 @@ export const createOrg = mutation({
 });
 
 export const getOrg = query({
-  args: { ...callerArg, orgId: v.id("orgs") },
+  args: { ...sessionArg, orgId: v.id("orgs") },
   returns: v.object({
     orgId: v.id("orgs"),
     name: v.string(),
@@ -124,7 +124,7 @@ export const getOrg = query({
     role: v.union(v.literal("owner"), v.literal("admin"), v.literal("member")),
   }),
   handler: async (ctx, args) => {
-    const { org, member } = await requireOrg(ctx, args.callerId, args.orgId);
+    const { org, member } = await requireOrg(ctx, args.sessionToken, args.orgId);
     // No wrapped key material. `revocationPublicKey` is public by design and
     // the wrapped private half is reachable only through the grant below, and
     // only by its own grantee.
@@ -139,7 +139,7 @@ export const getOrg = query({
 });
 
 export const listMyOrgs = query({
-  args: { ...callerArg },
+  args: { ...sessionArg },
   returns: v.array(
     v.object({
       orgId: v.id("orgs"),
@@ -154,7 +154,7 @@ export const listMyOrgs = query({
     }),
   ),
   handler: async (ctx, args) => {
-    const user = await resolveCaller(ctx, args.callerId);
+    const user = await requireSession(ctx, args.sessionToken);
     // Driven from `orgMembers` by user, never from a scan of `orgs` filtered
     // afterwards. The listing can only ever contain orgs this user is in
     // because membership is what it iterates.
@@ -189,14 +189,14 @@ export const listMyOrgs = query({
  * to them but is exactly the kind of read that looks harmless in review.
  */
 export const getMyRevocationGrant = query({
-  args: { ...callerArg, orgId: v.id("orgs") },
+  args: { ...sessionArg, orgId: v.id("orgs") },
   returns: v.object({
     wrappedRevocationKey: v.string(),
     nonce: v.string(),
     revocationPublicKey: v.string(),
   }),
   handler: async (ctx, args) => {
-    const { org, user } = await requireOrg(ctx, args.callerId, args.orgId);
+    const { org, user } = await requireOrg(ctx, args.sessionToken, args.orgId);
     const grant = await getRevocationGrant(ctx, org._id, user._id);
     // A member without a grant is a member who cannot sign, which is a real
     // state once grants are issued to some members and not others. It answers

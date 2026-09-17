@@ -5,6 +5,8 @@ import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { normaliseEmail } from "./lib/email";
 import { insertUser } from "./repo/users";
+import { insertSession } from "./repo/sessions";
+import { SESSION_LIFETIME_MS, hashSessionToken } from "./lib/session";
 import {
   getSecret as getSecretRow,
   insertSecret as insertSecretRow,
@@ -16,8 +18,22 @@ export const modules = import.meta.glob("./**/*.ts");
 
 type Harness = ReturnType<typeof convexTest>;
 
-async function seedUser(t: Harness, email: string): Promise<Id<"users">> {
-  return await t.run(async (ctx) =>
+/**
+ * A seeded person. `userId` is for reading rows back in assertions and is
+ * never passed to a handler: no handler takes a user id any more. Acting is
+ * `sessionToken` and nothing else.
+ */
+type Actor = { userId: Id<"users">; sessionToken: string };
+
+/**
+ * Seeded through the repo layer, including the session, because the scan in
+ * `repo/repo.test.ts` reads test files too. The token is hashed by the same
+ * function the server uses, so this fixture cannot drift from the
+ * implementation without the suite going red.
+ */
+async function seedUser(t: Harness, email: string): Promise<Actor> {
+  const sessionToken = `session-for-${email}`;
+  const userId = await t.run(async (ctx) =>
     insertUser(ctx, {
       email: normaliseEmail(email),
       authVerifierHash: "hash",
@@ -27,6 +43,15 @@ async function seedUser(t: Harness, email: string): Promise<Id<"users">> {
       wrappedSigningKey: "wrapped-signing-key-blob",
     }),
   );
+  await t.run(async (ctx) =>
+    insertSession(ctx, {
+      userId,
+      tokenHash: hashSessionToken(sessionToken),
+      createdAt: Date.now(),
+      expiresAt: Date.now() + SESSION_LIFETIME_MS,
+    }),
+  );
+  return { userId, sessionToken };
 }
 
 /**
@@ -38,9 +63,9 @@ async function world(t: Harness) {
   const alice = await seedUser(t, "alice@example.test");
   const mallory = await seedUser(t, "mallory@example.test");
 
-  async function tenant(callerId: Id<"users">, slug: string) {
+  async function tenant(actor: Actor, slug: string) {
     const orgId = await t.mutation(api.orgs.createOrg, {
-      callerId,
+      sessionToken: actor.sessionToken,
       name: "Acme Rockets",
       slug,
       revocationPublicKey: "ab".repeat(32),
@@ -48,18 +73,18 @@ async function world(t: Harness) {
       revocationKeyNonce: "0f1e2d3c4b5a69788796a5b4",
     });
     const projectId = await t.mutation(api.projects.createProject, {
-      callerId,
+      sessionToken: actor.sessionToken,
       orgId,
       name: "API",
       slug: "api",
     });
     const production = await t.mutation(api.environments.createEnvironment, {
-      callerId,
+      sessionToken: actor.sessionToken,
       projectId,
       name: "production",
     });
     const staging = await t.mutation(api.environments.createEnvironment, {
-      callerId,
+      sessionToken: actor.sessionToken,
       projectId,
       name: "staging",
     });
@@ -84,12 +109,12 @@ const NAME_NONCE = "000102030405060708090a0b";
 const VALUE_NONCE = "0b0a090807060504030201ff";
 
 function secretArgs(
-  callerId: Id<"users">,
+  actor: Actor,
   environmentId: Id<"environments">,
   overrides: Record<string, unknown> = {},
 ) {
   return {
-    callerId,
+    sessionToken: actor.sessionToken,
     environmentId,
     nameCiphertext: NAME_CIPHERTEXT,
     nameNonce: NAME_NONCE,
@@ -145,19 +170,19 @@ describe("secrets authorisation", () => {
     const attempts: Array<Promise<unknown>> = [
       t.mutation(api.secrets.createSecret, secretArgs(alice, b.production)),
       t.query(api.secrets.listSecrets, {
-        callerId: alice,
+        sessionToken: alice.sessionToken,
         environmentId: b.production,
       }),
       t.query(api.secrets.getSecret, {
-        callerId: alice,
+        sessionToken: alice.sessionToken,
         secretId: theirs.secretId,
       }),
       t.query(api.secrets.listSecretVersions, {
-        callerId: alice,
+        sessionToken: alice.sessionToken,
         secretId: theirs.secretId,
       }),
       t.mutation(api.secrets.updateSecret, {
-        callerId: alice,
+        sessionToken: alice.sessionToken,
         secretId: theirs.secretId,
         nameCiphertext: NAME_CIPHERTEXT,
         nameNonce: "ffffffffffffffffffffffff",
@@ -165,7 +190,7 @@ describe("secrets authorisation", () => {
         valueNonce: "eeeeeeeeeeeeeeeeeeeeeeee",
       }),
       t.mutation(api.secrets.deleteSecret, {
-        callerId: alice,
+        sessionToken: alice.sessionToken,
         secretId: theirs.secretId,
       }),
     ];
@@ -185,13 +210,13 @@ describe("secrets authorisation", () => {
 
     await expect(
       t.mutation(api.secrets.deleteSecret, {
-        callerId: alice,
+        sessionToken: alice.sessionToken,
         secretId: theirs.secretId,
       }),
     ).rejects.toThrow(NOT_PERMITTED);
 
     const still = await t.query(api.secrets.listSecrets, {
-      callerId: mallory,
+      sessionToken: mallory.sessionToken,
       environmentId: b.production,
     });
     expect(still).toHaveLength(1);
@@ -208,7 +233,7 @@ describe("secrets authorisation", () => {
     await t.mutation(api.secrets.createSecret, secretArgs(alice, a.production));
 
     const staging = await t.query(api.secrets.listSecrets, {
-      callerId: alice,
+      sessionToken: alice.sessionToken,
       environmentId: a.staging,
     });
     expect(staging).toEqual([]);
@@ -240,7 +265,9 @@ describe("the ciphertext-only surface", () => {
    */
   it("accepts and returns no field that could be a plaintext name or value", () => {
     const ALLOWED = new Set([
-      "callerId",
+      // The credential, which is an argument because a Convex call carries no
+      // headers. It is not plaintext of anything and it is never returned.
+      "sessionToken",
       "environmentId",
       "secretId",
       "lineageId",
@@ -270,7 +297,7 @@ describe("the ciphertext-only surface", () => {
     // named here, because those are the two shapes that have to keep working.
     expect(validatorFields("createSecret")).toEqual(
       expect.arrayContaining([
-        "callerId",
+        "sessionToken",
         "environmentId",
         "nameCiphertext",
         "valueNonce",
@@ -306,7 +333,7 @@ describe("the ciphertext-only surface", () => {
       secretArgs(alice, a.production),
     );
     const read = await t.query(api.secrets.getSecret, {
-      callerId: alice,
+      sessionToken: alice.sessionToken,
       secretId,
     });
 
@@ -328,7 +355,7 @@ describe("the ciphertext-only surface", () => {
     const t = convexTest(schema, modules);
     const { alice, a } = await world(t);
     const environment = await t.query(api.environments.getEnvironment, {
-      callerId: alice,
+      sessionToken: alice.sessionToken,
       environmentId: a.production,
     });
 
@@ -345,7 +372,7 @@ describe("the ciphertext-only surface", () => {
       secretArgs(alice, a.production),
     );
     const read = await t.query(api.secrets.getSecret, {
-      callerId: alice,
+      sessionToken: alice.sessionToken,
       secretId,
     });
     expect(read.pdkVersion).toBe(environment.pdkVersion);
@@ -412,7 +439,7 @@ describe("the ciphertext-only surface", () => {
 
     await expect(
       t.mutation(api.secrets.updateSecret, {
-        callerId: alice,
+        sessionToken: alice.sessionToken,
         secretId,
         nameCiphertext: "cc".repeat(24),
         nameNonce: NAME_NONCE,
@@ -495,7 +522,7 @@ describe("versioning", () => {
 
     for (const secretId of [original.secretId, impostor]) {
       await expect(
-        t.query(api.secrets.getSecret, { callerId: alice, secretId }),
+        t.query(api.secrets.getSecret, { sessionToken: alice.sessionToken, secretId }),
       ).rejects.toThrow("This secret's version history is inconsistent.");
     }
   });
@@ -530,7 +557,7 @@ describe("versioning", () => {
 
     await expect(
       t.query(api.secrets.listSecretVersions, {
-        callerId: alice,
+        sessionToken: alice.sessionToken,
         secretId: original.secretId,
       }),
     ).rejects.toThrow("This secret's version history is inconsistent.");
@@ -545,7 +572,7 @@ describe("versioning", () => {
     );
 
     const second = await t.mutation(api.secrets.updateSecret, {
-      callerId: alice,
+      sessionToken: alice.sessionToken,
       secretId: first.secretId,
       nameCiphertext: "cc".repeat(24),
       nameNonce: "111111111111111111111111",
@@ -557,7 +584,7 @@ describe("versioning", () => {
     expect(second.secretId).not.toBe(first.secretId);
 
     const old = await t.query(api.secrets.getSecret, {
-      callerId: alice,
+      sessionToken: alice.sessionToken,
       secretId: first.secretId,
     });
     expect(old.version).toBe(1);
@@ -565,7 +592,7 @@ describe("versioning", () => {
     expect(old.supersededAt).toBeTypeOf("number");
 
     const current = await t.query(api.secrets.listSecrets, {
-      callerId: alice,
+      sessionToken: alice.sessionToken,
       environmentId: a.production,
     });
     expect(current).toHaveLength(1);
@@ -573,7 +600,7 @@ describe("versioning", () => {
     expect(current[0]?.version).toBe(2);
 
     const history = await t.query(api.secrets.listSecretVersions, {
-      callerId: alice,
+      sessionToken: alice.sessionToken,
       secretId: first.secretId,
     });
     expect(history.map((h) => h.version)).toEqual([1, 2]);
@@ -587,7 +614,7 @@ describe("versioning", () => {
       secretArgs(alice, a.production),
     );
     await t.mutation(api.secrets.updateSecret, {
-      callerId: alice,
+      sessionToken: alice.sessionToken,
       secretId: first.secretId,
       nameCiphertext: "cc".repeat(24),
       nameNonce: "111111111111111111111111",
@@ -597,7 +624,7 @@ describe("versioning", () => {
 
     await expect(
       t.mutation(api.secrets.updateSecret, {
-        callerId: alice,
+        sessionToken: alice.sessionToken,
         secretId: first.secretId,
         nameCiphertext: "ee".repeat(24),
         nameNonce: "333333333333333333333333",
@@ -621,14 +648,14 @@ describe("deleteSecret", () => {
       secretArgs(alice, a.production),
     );
 
-    await t.mutation(api.secrets.deleteSecret, { callerId: alice, secretId });
+    await t.mutation(api.secrets.deleteSecret, { sessionToken: alice.sessionToken, secretId });
 
     const row = await t.run(async (ctx) => getSecretRow(ctx, secretId));
     expect(row?.deletedAt).toBeTypeOf("number");
 
     expect(
       await t.query(api.secrets.listSecrets, {
-        callerId: alice,
+        sessionToken: alice.sessionToken,
         environmentId: a.production,
       }),
     ).toEqual([]);
@@ -647,7 +674,7 @@ describe("deleteSecret", () => {
       secretArgs(alice, a.production),
     );
     const second = await t.mutation(api.secrets.updateSecret, {
-      callerId: alice,
+      sessionToken: alice.sessionToken,
       secretId: first.secretId,
       nameCiphertext: "cc".repeat(24),
       nameNonce: "111111111111111111111111",
@@ -656,16 +683,16 @@ describe("deleteSecret", () => {
     });
 
     await t.mutation(api.secrets.deleteSecret, {
-      callerId: alice,
+      sessionToken: alice.sessionToken,
       secretId: second.secretId,
     });
 
     for (const secretId of [first.secretId, second.secretId]) {
       await expect(
-        t.query(api.secrets.getSecret, { callerId: alice, secretId }),
+        t.query(api.secrets.getSecret, { sessionToken: alice.sessionToken, secretId }),
       ).rejects.toThrow(NOT_PERMITTED);
       await expect(
-        t.query(api.secrets.listSecretVersions, { callerId: alice, secretId }),
+        t.query(api.secrets.listSecretVersions, { sessionToken: alice.sessionToken, secretId }),
       ).rejects.toThrow(NOT_PERMITTED);
     }
   });
@@ -677,14 +704,14 @@ describe("deleteSecret", () => {
       api.secrets.createSecret,
       secretArgs(alice, a.production),
     );
-    await t.mutation(api.secrets.deleteSecret, { callerId: alice, secretId });
+    await t.mutation(api.secrets.deleteSecret, { sessionToken: alice.sessionToken, secretId });
 
     await expect(
-      t.mutation(api.secrets.deleteSecret, { callerId: alice, secretId }),
+      t.mutation(api.secrets.deleteSecret, { sessionToken: alice.sessionToken, secretId }),
     ).rejects.toThrow(NOT_PERMITTED);
     await expect(
       t.mutation(api.secrets.updateSecret, {
-        callerId: alice,
+        sessionToken: alice.sessionToken,
         secretId,
         nameCiphertext: "cc".repeat(24),
         nameNonce: "111111111111111111111111",
@@ -701,7 +728,7 @@ describe("deleteSecret", () => {
       api.secrets.createSecret,
       secretArgs(alice, a.production),
     );
-    await t.mutation(api.secrets.deleteSecret, { callerId: alice, secretId });
+    await t.mutation(api.secrets.deleteSecret, { sessionToken: alice.sessionToken, secretId });
 
     const fresh = await t.mutation(
       api.secrets.createSecret,
@@ -712,7 +739,7 @@ describe("deleteSecret", () => {
     );
 
     const list = await t.query(api.secrets.listSecrets, {
-      callerId: alice,
+      sessionToken: alice.sessionToken,
       environmentId: a.production,
     });
     expect(list.map((s) => s.secretId)).toEqual([fresh.secretId]);
@@ -744,10 +771,10 @@ describe("the audit log", () => {
       api.secrets.createSecret,
       secretArgs(alice, a.production),
     );
-    await t.mutation(api.secrets.deleteSecret, { callerId: alice, secretId });
+    await t.mutation(api.secrets.deleteSecret, { sessionToken: alice.sessionToken, secretId });
 
     const events = await t.run(async (ctx) =>
-      listAuditEventsByActor(ctx, alice, 20),
+      listAuditEventsByActor(ctx, alice.userId, 20),
     );
     const actions = events.map((e) => e.action);
     expect(actions).toContain("secret.create");
@@ -756,7 +783,7 @@ describe("the audit log", () => {
     const created = events.find((e) => e.action === "secret.create");
     expect(created?.orgId).toBe(a.orgId);
     expect(created?.actorType).toBe("user");
-    expect(created?.actorId).toBe(alice);
+    expect(created?.actorId).toBe(alice.userId);
     expect(created?.targetId).toBe(secretId);
     expect(created?.metadata).toBeUndefined();
 

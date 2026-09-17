@@ -14,6 +14,36 @@ export default defineSchema({
     recoveryBlob: v.optional(v.string()),
   }).index("by_email", ["email"]),
 
+  // A dashboard session. This table IS the trust boundary: every query and
+  // every mutation in the product resolves its caller by finding a row here,
+  // and nothing anywhere resolves a caller from an argument the client chose.
+  //
+  // Only the hash of the token is stored, for the same reason `serviceTokens`
+  // stores `tokenIdHash`. A dump of this table is a list of digests, and a
+  // digest cannot be presented as a credential.
+  //
+  // There is deliberately no `revoked` flag. Logging out DELETES the row, so
+  // there is no state in which a session exists and is not usable, and no
+  // second place a reader has to remember to check. It also makes logout
+  // invalidate every subscribed Convex query that read the row, which a flag
+  // would do too, but a flag would additionally leave a growing table of
+  // credentials that are only conditionally dead.
+  sessions: defineTable({
+    userId: v.id("users"),
+    tokenHash: v.string(),
+    createdAt: v.number(),
+    // Absolute, set at login and never moved. See `lib/session.ts`.
+    expiresAt: v.number(),
+  })
+    .index("by_token_hash", ["tokenHash"])
+    // "End every session for this user" during an incident, and the cascade
+    // when an account is removed.
+    .index("by_user", ["userId"])
+    // The prune cron. Without it this table grows by one row per login for
+    // ever, which is the same unbounded growth `handshakeNonces` already
+    // records as a bug.
+    .index("by_expiry", ["expiresAt"]),
+
   orgs: defineTable({
     name: v.string(),
     slug: v.string(),

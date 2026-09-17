@@ -2,7 +2,7 @@ import { ConvexError, v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { recordUserEvent } from "./lib/audit";
-import { callerArg, requireOrg, requireProject } from "./lib/authz";
+import { sessionArg, requireOrg, requireProject } from "./lib/authz";
 import { assertDisplayName, assertSlug } from "./lib/naming";
 import {
   getProjectBySlug,
@@ -24,7 +24,7 @@ const DUPLICATE_SLUG =
 
 export const createProject = mutation({
   args: {
-    ...callerArg,
+    ...sessionArg,
     orgId: v.id("orgs"),
     name: v.string(),
     slug: v.string(),
@@ -33,7 +33,7 @@ export const createProject = mutation({
   handler: async (ctx, args): Promise<Id<"projects">> => {
     // Membership first, before any validation that could distinguish one org
     // from another by which error it returns.
-    const { org, user } = await requireOrg(ctx, args.callerId, args.orgId);
+    const { org, user } = await requireOrg(ctx, args.sessionToken, args.orgId);
 
     const name = assertDisplayName("name", args.name);
     const slug = assertSlug("slug", args.slug);
@@ -60,7 +60,7 @@ export const createProject = mutation({
 });
 
 export const getProject = query({
-  args: { ...callerArg, projectId: v.id("projects") },
+  args: { ...sessionArg, projectId: v.id("projects") },
   returns: v.object({
     projectId: v.id("projects"),
     orgId: v.id("orgs"),
@@ -70,7 +70,7 @@ export const getProject = query({
   handler: async (ctx, args) => {
     const { project } = await requireProject(
       ctx,
-      args.callerId,
+      args.sessionToken,
       args.projectId,
     );
     return {
@@ -83,7 +83,7 @@ export const getProject = query({
 });
 
 export const listProjects = query({
-  args: { ...callerArg, orgId: v.id("orgs") },
+  args: { ...sessionArg, orgId: v.id("orgs") },
   returns: v.array(
     v.object({
       projectId: v.id("projects"),
@@ -93,7 +93,7 @@ export const listProjects = query({
     }),
   ),
   handler: async (ctx, args) => {
-    const { org } = await requireOrg(ctx, args.callerId, args.orgId);
+    const { org } = await requireOrg(ctx, args.sessionToken, args.orgId);
     const projects = await listProjectsByOrg(ctx, org._id);
     return projects.map((project) => ({
       projectId: project._id,

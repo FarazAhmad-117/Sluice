@@ -9,6 +9,7 @@
  */
 
 import type * as auth from "../auth.js";
+import type * as crons from "../crons.js";
 import type * as environments from "../environments.js";
 import type * as lib_aad from "../lib/aad.js";
 import type * as lib_audit from "../lib/audit.js";
@@ -16,6 +17,7 @@ import type * as lib_authz from "../lib/authz.js";
 import type * as lib_email from "../lib/email.js";
 import type * as lib_hex from "../lib/hex.js";
 import type * as lib_naming from "../lib/naming.js";
+import type * as lib_session from "../lib/session.js";
 import type * as lib_verifier from "../lib/verifier.js";
 import type * as orgs from "../orgs.js";
 import type * as projects from "../projects.js";
@@ -24,9 +26,11 @@ import type * as repo_environments from "../repo/environments.js";
 import type * as repo_orgs from "../repo/orgs.js";
 import type * as repo_projects from "../repo/projects.js";
 import type * as repo_secrets from "../repo/secrets.js";
+import type * as repo_sessions from "../repo/sessions.js";
 import type * as repo_tokens from "../repo/tokens.js";
 import type * as repo_users from "../repo/users.js";
 import type * as secrets from "../secrets.js";
+import type * as sessions from "../sessions.js";
 
 import type {
   ApiFromModules,
@@ -36,6 +40,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   auth: typeof auth;
+  crons: typeof crons;
   environments: typeof environments;
   "lib/aad": typeof lib_aad;
   "lib/audit": typeof lib_audit;
@@ -43,6 +48,7 @@ declare const fullApi: ApiFromModules<{
   "lib/email": typeof lib_email;
   "lib/hex": typeof lib_hex;
   "lib/naming": typeof lib_naming;
+  "lib/session": typeof lib_session;
   "lib/verifier": typeof lib_verifier;
   orgs: typeof orgs;
   projects: typeof projects;
@@ -51,9 +57,11 @@ declare const fullApi: ApiFromModules<{
   "repo/orgs": typeof repo_orgs;
   "repo/projects": typeof repo_projects;
   "repo/secrets": typeof repo_secrets;
+  "repo/sessions": typeof repo_sessions;
   "repo/tokens": typeof repo_tokens;
   "repo/users": typeof repo_users;
   secrets: typeof secrets;
+  sessions: typeof sessions;
 }>;
 
 /**
