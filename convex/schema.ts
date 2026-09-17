@@ -50,14 +50,22 @@ export default defineSchema({
     orgId: v.id("orgs"),
     name: v.string(),
     slug: v.string(),
-  }).index("by_org", ["orgId"]),
+  })
+    // Prefix-queried by orgId alone for the listing, so there is no separate
+    // by_org. The second field makes the duplicate-slug check in Task 8 a real
+    // lookup; with only by_org it was a scan a contributor could quietly skip.
+    .index("by_org_slug", ["orgId", "slug"]),
 
   environments: defineTable({
     projectId: v.id("projects"),
     name: v.string(),
     pdkVersion: v.number(),
     epoch: v.number(),
-  }).index("by_project", ["projectId"]),
+  })
+    // Prefix-queried by projectId alone for the listing. The second field is
+    // how the SDK addresses a config, org/project/environment by name, and is
+    // also the uniqueness check when an environment is created.
+    .index("by_project_name", ["projectId", "name"]),
 
   pdkGrants: defineTable({
     environmentId: v.id("environments"),
@@ -173,5 +181,9 @@ export default defineSchema({
     ip: v.optional(v.string()),
     ts: v.number(),
     metadata: v.optional(v.string()),
-  }).index("by_org_ts", ["orgId", "ts"]),
+  })
+    .index("by_org_ts", ["orgId", "ts"])
+    // "Everything this actor did, in order" is the first query anyone runs
+    // during an incident, and by_org_ts cannot answer it.
+    .index("by_actor_ts", ["actorId", "ts"]),
 });

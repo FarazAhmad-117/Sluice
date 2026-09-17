@@ -15,8 +15,23 @@ export async function listProjectsByOrg(
 ): Promise<Doc<"projects">[]> {
   return await ctx.db
     .query("projects")
-    .withIndex("by_org", (q) => q.eq("orgId", orgId))
+    .withIndex("by_org_slug", (q) => q.eq("orgId", orgId))
     .collect();
+}
+
+/**
+ * Slugs are unique within an org, not globally. This is the check that makes
+ * that true, so a create path that skips it is a bug.
+ */
+export async function getProjectBySlug(
+  ctx: QueryCtx,
+  orgId: Id<"orgs">,
+  slug: string,
+): Promise<Doc<"projects"> | null> {
+  return await ctx.db
+    .query("projects")
+    .withIndex("by_org_slug", (q) => q.eq("orgId", orgId).eq("slug", slug))
+    .unique();
 }
 
 export async function insertProject(

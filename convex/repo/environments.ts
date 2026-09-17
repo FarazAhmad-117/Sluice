@@ -15,8 +15,25 @@ export async function listEnvironmentsByProject(
 ): Promise<Doc<"environments">[]> {
   return await ctx.db
     .query("environments")
-    .withIndex("by_project", (q) => q.eq("projectId", projectId))
+    .withIndex("by_project_name", (q) => q.eq("projectId", projectId))
     .collect();
+}
+
+/**
+ * How the SDK addresses a config: org, project, environment by name. Also the
+ * uniqueness check when an environment is created.
+ */
+export async function getEnvironmentByName(
+  ctx: QueryCtx,
+  projectId: Id<"projects">,
+  name: string,
+): Promise<Doc<"environments"> | null> {
+  return await ctx.db
+    .query("environments")
+    .withIndex("by_project_name", (q) =>
+      q.eq("projectId", projectId).eq("name", name),
+    )
+    .unique();
 }
 
 export async function insertEnvironment(

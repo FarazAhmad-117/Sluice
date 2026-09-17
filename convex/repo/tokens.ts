@@ -108,3 +108,28 @@ export async function insertHandshakeNonce(
 ): Promise<Id<"handshakeNonces">> {
   return await ctx.db.insert("handshakeNonces", doc);
 }
+
+/**
+ * This table gains a row per successful handshake and nothing ever removed
+ * them, so it grew without bound. The cron that calls this is a separate task.
+ *
+ * `limit` is not optional and the count is returned, because a cleanup that
+ * tries to delete everything expired in one transaction will eventually exceed
+ * Convex's per-transaction limits and then never succeed again. The caller
+ * pages, and uses the returned count to decide whether to run again.
+ */
+export async function deleteExpiredHandshakeNonces(
+  ctx: MutationCtx,
+  now: number,
+  limit: number,
+): Promise<number> {
+  const expired = await ctx.db
+    .query("handshakeNonces")
+    .withIndex("by_expiry", (q) => q.lt("expiresAt", now))
+    .take(limit);
+
+  for (const row of expired) {
+    await ctx.db.delete(row._id);
+  }
+  return expired.length;
+}
