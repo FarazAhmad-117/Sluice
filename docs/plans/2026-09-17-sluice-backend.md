@@ -429,6 +429,29 @@ The schema as originally written in this plan had four defects, all found by rev
 
 Write a Convex cron that calls it and pages using the returned count. **Do not call it with an unbounded limit.** A reaper that tries to delete every expired row in one transaction will eventually exceed Convex's per-transaction limits, and from that point it never succeeds again: the table grows forever while the cleanup appears to run.
 
+## CRITICAL: an expired bundle token makes a workload un-revokable
+
+Found while building the bundle subscription, and it is the most severe open issue in the product.
+
+A live subscription whose five-minute JWT has expired still re-runs when a `revocations` row lands. `verifyBundleToken` returns null and the query **throws**. The SDK sees a transport error, and by design a transport error never means revocation, so it carries on from its cache indefinitely.
+
+**A workload that stops re-handshaking is therefore effectively un-revokable**, which is the exact failure the kill switch exists to prevent, arriving through the credential layer rather than the crypto.
+
+Two ways out, and it is a decision rather than a default:
+
+1. **The transport shell re-handshakes well before expiry and owns that timer independently of the subscription.** This is the requirement as it stands, and it joins the existing shell obligations below. It is the shell's fourth way to break the kill switch by omission.
+2. **Serve the revocation notice on an expired token.** Arguable: the notice is signed by a customer-held key and verified by the SDK, so delivering it to a stale credential leaks nothing and fails safe. It weakens the token's meaning, which is why it must be decided rather than assumed.
+
+Whoever writes the transport must ship a test proving a revocation still reaches a process whose bundle token has expired.
+
+## Two homes for a wrapped project data key
+
+The bundle reads `serviceTokens.wrappedPDK`. `pdkGrants` exists, has repo helpers, and nothing calls them. The dashboard agent found the same gap from the other side: no function reads or writes `pdkGrants`, so no project data key reaches a browser.
+
+This is the same defect class as the duplicate AAD definition: two places holding the same thing, both looking authoritative, and nothing that fails when they disagree. **Decide which one owns a token's grant before either has rows.**
+
+Related, and unenforced: nothing keeps `serviceTokens.epoch` equal to `environments.epoch`, and there is no re-key mutation. If a re-key ever bumps one without the other, the token receives a wrapped key for a PDK the ciphertext is no longer under, and it fails as an opaque AEAD rejection. Whoever writes re-key must patch the environment and every token in one transaction, the way `createOrg` writes its revocation grant.
+
 ## Decided 2026-09-18: an account salt, and two-phase login
 
 The dashboard derived the master unlock key using the **email address** as the Argon2 salt, and had no alternative: `deriveMUK` wants an identifier, `login` takes an email and *returns* the user id, and `signup` returns the user id but needs the verifier and the wrapped blobs as arguments. There is no ordering in which a client knows its user id before it needs the key. The only identifier the browser holds at both moments is the address the person typed.
