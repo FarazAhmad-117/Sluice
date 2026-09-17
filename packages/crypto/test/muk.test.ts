@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { toHex } from "../src/bytes.js";
-import { ARGON2_PARAMS, deriveMUK, MasterUnlockKey } from "../src/muk.js";
+import { toHex } from "../src/bytes";
+import { ARGON2_PARAMS, deriveMUK, MasterUnlockKey } from "../src/muk";
 
 /**
  * Node's formatter (and therefore `console.log`) looks up exactly this symbol

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { concat, constantTimeEqual, fromHex, toHex, randomBytes, utf8 } from "../src/bytes.js";
+import { concat, constantTimeEqual, fromHex, toHex, randomBytes, utf8 } from "../src/bytes";
 
 describe("hex", () => {
   it("round-trips a known vector", () => {

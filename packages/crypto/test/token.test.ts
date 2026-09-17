@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { hkdf } from "@noble/hashes/hkdf";
 import { sha256 } from "@noble/hashes/sha256";
-import { randomBytes, toHex, utf8 } from "../src/bytes.js";
+import { randomBytes, toHex, utf8 } from "../src/bytes";
 import {
   mintToken,
   parseToken,
   deriveTokenKeys,
   signHandshake,
   verifyHandshake,
-} from "../src/token.js";
+} from "../src/token";
 
 /**
  * Node's formatter (and therefore `console.log`) looks up exactly this symbol

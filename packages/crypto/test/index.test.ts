@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import * as api from "../src/index.js";
+import * as api from "../src/index";
 
 /**
  * THE PUBLIC SURFACE OF THE PACKAGE, PINNED EXACTLY.
@@ -54,6 +54,7 @@ const PUBLIC_SURFACE = [
   "MasterUnlockKey",
   "MintedToken",
   "VERSION",
+  "assertConformantArgon2",
   "constantTimeEqual",
   "deriveMUK",
   "deriveTokenKeys",
@@ -80,6 +81,20 @@ describe("public API surface", () => {
     // Named explicitly rather than left implicit in the list above, because
     // this one is a judgement that a future reader will want to re-litigate.
     expect(Object.keys(api)).not.toContain("concat");
+  });
+
+  /**
+   * The default Argon2 backend stays private, and this is the assertion that
+   * keeps it that way.
+   *
+   * `nobleArgon2` is the SLOW pure-JS implementation. If it were exported,
+   * `deriveMUK(pw, id, { argon2: nobleArgon2 })` would read like a
+   * clarification and behave like a performance regression -- eleven seconds
+   * on a phone, a frozen tab -- and no reviewer would flag it, because it names
+   * the default. The default must be reached by omitting the option.
+   */
+  it("does not export the default Argon2 backend", () => {
+    expect(Object.keys(api)).not.toContain("nobleArgon2");
   });
 
   it("binds every exported name to something defined", () => {

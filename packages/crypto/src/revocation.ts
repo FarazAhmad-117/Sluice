@@ -1,6 +1,6 @@
 import { ed25519 } from "@noble/curves/ed25519";
-import { fromHex, utf8 } from "./bytes.js";
-import { PUBLIC_KEY_HEX_PATTERN } from "./internal.js";
+import { fromHex, utf8 } from "./bytes";
+import { PUBLIC_KEY_HEX_PATTERN } from "./internal";
 
 /**
  * A signed instruction to stop using a service token.
