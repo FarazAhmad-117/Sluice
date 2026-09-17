@@ -429,6 +429,21 @@ The schema as originally written in this plan had four defects, all found by rev
 
 Write a Convex cron that calls it and pages using the returned count. **Do not call it with an unbounded limit.** A reaper that tries to delete every expired row in one transaction will eventually exceed Convex's per-transaction limits, and from that point it never succeeds again: the table grows forever while the cleanup appears to run.
 
+## Requirements on the SDK transport task, from building the decision core
+
+`packages/sdk` now holds a pure decision core: events in, decisions out, no network, no clock of its own. 93 tests, and the property that matters is enumerated rather than sampled. 599,184 benign sequences across 4,108,704 events produce no shutdown, and 1,110 hostile sequences with real Ed25519 verification produce no shutdown and never move the epoch floor.
+
+The transport is a thin shell around it, and the shell is where the kill switch can still be broken. These are required, not advisory.
+
+- **The core cannot enforce its own deadline.** It is event-driven, so a shell that stops sending ticks leaves a revoked process alive forever. The shell owns an independent timer and must tick at least every `MAX_CLOCK_STEP_MS`.
+- **The shell must not wait for `onRevoke` before ticking.** A shell that does hands a customer handler the power to cancel a revocation by hanging, which is the drain bound defeated by a `finally` block that never returns.
+- **The shell must not give customer code anything that can cancel its own timer.** Passing the handler an `AbortController` or a cancellation token feels like good hygiene and quietly hands back exactly the power the drain bound exists to take away. This is the one a shell author is most likely to get wrong, because it looks like a courtesy.
+- **The shell persists and restores the epoch floor.** `initialEpochFloor` is a required option with an explicit `NO_PERSISTED_FLOOR` sentinel, so a shell that answers the sentinel on every start has chosen to reopen a replay window at every restart rather than stumbled into one.
+
+**The required test for this task: exit happens with a hanging `onRevoke`, zero socket traffic, and no shell-created timer reachable by customer code.** All three, in one test. The hang and the silence are the obvious halves; the third is the one that ships broken.
+
+**On writing that task's tests:** pick the hostile alphabet before writing the shell, not after. The decision core's own enumeration was complete over the space it was given and blind to the threat, because the alphabet encoded an assumption about the attack rather than testing it. A 1,110-sequence enumeration missed an off-by-one that re-admitted a replay of the most recent genuine notice, which is the one an attacker is likeliest to hold. The safeguard was never the sequence count; it was choosing the right symbol.
+
 ## BLOCKING GAP: there is no session layer
 
 Found while building Tasks 8 and 9, and it is a defect in this plan rather than in that work.
