@@ -9,8 +9,16 @@
  */
 
 import type * as auth from "../auth.js";
+import type * as environments from "../environments.js";
+import type * as lib_aad from "../lib/aad.js";
+import type * as lib_audit from "../lib/audit.js";
+import type * as lib_authz from "../lib/authz.js";
 import type * as lib_email from "../lib/email.js";
+import type * as lib_hex from "../lib/hex.js";
+import type * as lib_naming from "../lib/naming.js";
 import type * as lib_verifier from "../lib/verifier.js";
+import type * as orgs from "../orgs.js";
+import type * as projects from "../projects.js";
 import type * as repo_audit from "../repo/audit.js";
 import type * as repo_environments from "../repo/environments.js";
 import type * as repo_orgs from "../repo/orgs.js";
@@ -18,6 +26,7 @@ import type * as repo_projects from "../repo/projects.js";
 import type * as repo_secrets from "../repo/secrets.js";
 import type * as repo_tokens from "../repo/tokens.js";
 import type * as repo_users from "../repo/users.js";
+import type * as secrets from "../secrets.js";
 
 import type {
   ApiFromModules,
@@ -27,8 +36,16 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   auth: typeof auth;
+  environments: typeof environments;
+  "lib/aad": typeof lib_aad;
+  "lib/audit": typeof lib_audit;
+  "lib/authz": typeof lib_authz;
   "lib/email": typeof lib_email;
+  "lib/hex": typeof lib_hex;
+  "lib/naming": typeof lib_naming;
   "lib/verifier": typeof lib_verifier;
+  orgs: typeof orgs;
+  projects: typeof projects;
   "repo/audit": typeof repo_audit;
   "repo/environments": typeof repo_environments;
   "repo/orgs": typeof repo_orgs;
@@ -36,6 +53,7 @@ declare const fullApi: ApiFromModules<{
   "repo/secrets": typeof repo_secrets;
   "repo/tokens": typeof repo_tokens;
   "repo/users": typeof repo_users;
+  secrets: typeof secrets;
 }>;
 
 /**
