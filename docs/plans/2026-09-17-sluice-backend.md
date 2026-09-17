@@ -429,6 +429,58 @@ The schema as originally written in this plan had four defects, all found by rev
 
 Write a Convex cron that calls it and pages using the returned count. **Do not call it with an unbounded limit.** A reaper that tries to delete every expired row in one transaction will eventually exceed Convex's per-transaction limits, and from that point it never succeeds again: the table grows forever while the cleanup appears to run.
 
+## Decided 2026-09-18: an account salt, and two-phase login
+
+The dashboard derived the master unlock key using the **email address** as the Argon2 salt, and had no alternative: `deriveMUK` wants an identifier, `login` takes an email and *returns* the user id, and `signup` returns the user id but needs the verifier and the wrapped blobs as arguments. There is no ordering in which a client knows its user id before it needs the key. The only identifier the browser holds at both moments is the address the person typed.
+
+Two consequences, both real. The salt is fully public, and **changing an account's email changes its master unlock key and orphans every wrapped blob**. There is no email-change endpoint today, so nothing is broken yet, and a future contributor adding one without knowing this would destroy accounts silently.
+
+**Decision: signup mints a random account salt client-side and uploads it. Login fetches the salt by email before deriving.**
+
+```
+SIGNUP   accountSalt = randomBytes(16)
+         MUK = Argon2id(password, accountSalt)
+         upload accountSalt, which is public and not a secret
+
+LOGIN    1. send email        -> accountSalt
+         2. MUK = Argon2id(password, accountSalt)
+         3. send authVerifier -> wrapped blobs
+```
+
+Costs one round trip before the derivation, which is already 1.6 seconds, so it is not the bottleneck. Gains a changeable email and a salt that is not derived from a public address. This is the shape 1Password and Bitwarden use, for the same reason.
+
+**Note the enumeration consequence:** step 1 answers "does this account exist" to an unauthenticated caller. Account existence is already public, because signup rejects duplicates with a message that says so, and that is published in `SECURITY.md` as a stated limit. Return a deterministic decoy salt for an unknown email anyway, so the endpoint does not make the existing leak easier to automate.
+
+## Three invented constants that must be ratified and moved
+
+The dashboard had to invent these because nothing specified them, and said so rather than letting them pass as though they were designed. **All three are load bearing the moment a real account exists, and none can be changed afterwards without a migration.**
+
+- **The auth verifier:** `HMAC-SHA256(key = MUK, message = "sluice/auth-verifier/v1")`, hex. The design documents said only "a separate derivation from the same expensive work". HMAC gives the required property, that the server authenticates without being able to reach the MUK, and reuses the single Argon2 pass.
+- **The wrapped blob format:** `sluice.k1.<nonce>.<ciphertext>`.
+- **The user key AAD:** `sluice/user-key/v1|x25519` and `sluice/user-key/v1|ed25519`.
+
+All three belong in `packages/crypto/src/protocol.ts` alongside `secretAssociatedData` and `tokenIdHash`, pinned by known-answer vectors, for exactly the reason that module exists. Leaving them in `apps/web` means the SDK and any future client re-derive them by hand.
+
+**`normaliseEmail` is currently duplicated** between `convex/lib/email.ts` and `apps/web/src/lib/auth/email.ts` and the two must never drift: if the server's rule changes by one character, existing users derive a different salt, a different MUK, and cannot open their own keys. It belongs in the crypto package too. Note that the account salt decision above reduces but does not remove this, since the email is still the lookup key.
+
+## Backend gap: nothing reads or writes pdkGrants
+
+`pdkGrants` is in the schema, the repo helpers exist in `repo/environments.ts`, and **no Convex function calls them**. `createEnvironment` takes a project and a name only, so **no grant is ever created**, and there is no route from a logged-in browser to a project data key.
+
+The dashboard's secrets list therefore shows real rows with real metadata and renders every name and value as a mask, which is the honest outcome. Its `openSecret` is written and unit tested against a round trip, including refusing a row replayed into another environment, but has never run against a real row and cannot until a grant query exists.
+
+**This is what stands between the dashboard and a working product.** `createEnvironment` must mint a project data key client-side and upload it wrapped to the creator, in the same mutation, for the same reason `createOrg` creates its revocation grant in one transaction.
+
+## The session token is readable by any script on the origin
+
+It lives in `sessionStorage` in plaintext, alongside the user id, the email, both public keys and both wrapped blobs. One XSS anywhere in the dashboard or in any dependency it loads takes a live 12 hour credential.
+
+**This is architectural, not unfinished work.** Convex functions are called from the browser and carry no headers, so the token travels as a function argument the server verifies against stored state, and an argument must be readable by the code that builds the call. A cookie the JavaScript cannot read is a cookie the JavaScript cannot use. The only fix is proxying every Convex call through a Next route handler, which also discards the reactive subscriptions the product uses as its own demo.
+
+Never stored: the master unlock key, the unwrapped private keys, the password, any decrypted secret. A refresh leaves the user signed in and locked, with a password-only unlock.
+
+This needs a decision before launch and belongs in `SECURITY.md` either way.
+
 ## Immediate follow-ups after the session work lands
 
 Ordered by how fast they get more expensive.

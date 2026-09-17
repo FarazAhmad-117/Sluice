@@ -12,6 +12,24 @@ export async function getServiceToken(
 }
 
 /**
+ * Turns a string into a `serviceTokens` id, or `null` if it is not one.
+ *
+ * The bundle subscription reads its subject out of a JWT this deployment
+ * signed, so the value is not attacker chosen. It is normalised anyway, because
+ * `ctx.db.get` THROWS on a string that is not a well-formed id rather than
+ * returning null, and a throw there would turn one refusal path into two
+ * observably different ones: a clean "refused" for a well-formed id that names
+ * no row, and a server error for a malformed one. Two shapes of failure is an
+ * oracle, and it would also be a crash on a path that should simply say no.
+ */
+export function normaliseServiceTokenId(
+  ctx: QueryCtx,
+  id: string,
+): Id<"serviceTokens"> | null {
+  return ctx.db.normalizeId("serviceTokens", id);
+}
+
+/**
  * The handshake lookup. The caller hashes the incoming plaintext token id and
  * passes the hash, because the plaintext id is never stored.
  */

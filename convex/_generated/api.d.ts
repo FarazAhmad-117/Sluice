@@ -9,6 +9,7 @@
  */
 
 import type * as auth from "../auth.js";
+import type * as bundle from "../bundle.js";
 import type * as crons from "../crons.js";
 import type * as environments from "../environments.js";
 import type * as handshake from "../handshake.js";
@@ -44,6 +45,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   auth: typeof auth;
+  bundle: typeof bundle;
   crons: typeof crons;
   environments: typeof environments;
   handshake: typeof handshake;
