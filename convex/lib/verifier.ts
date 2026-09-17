@@ -1,7 +1,7 @@
 import { ConvexError } from "convex/values";
 import { hmac } from "@noble/hashes/hmac";
 import { sha256 } from "@noble/hashes/sha256";
-import { fromHex, toHex } from "@sluice/crypto";
+import { constantTimeEqual, fromHex, toHex, utf8 } from "@sluice/crypto";
 
 /**
  * The canonical-hex rule. Lowercase only, exactly 64 characters, no prefix and
@@ -76,6 +76,36 @@ function pepper(): Uint8Array {
   }
 
   return fromHex(value);
+}
+
+/**
+ * A value of exactly the shape of a stored hash, for the login path to compare
+ * against when no account matches.
+ *
+ * Without it, "no such account" skips the comparison entirely and the endpoint
+ * answers faster for an address nobody has registered, which is an enumeration
+ * oracle measured in microseconds rather than in error strings. It is derived
+ * under the pepper so it is unguessable, and its message is a UTF-8 domain
+ * string rather than 32 raw bytes, so no real verifier can ever hash to it.
+ */
+export function decoyVerifierHash(): string {
+  return toHex(
+    hmac(sha256, pepper(), utf8.encode("sluice/auth/decoy/v1")),
+  );
+}
+
+/**
+ * True when `candidate` and `stored` are the same digest, compared in time
+ * that does not depend on where they differ.
+ *
+ * A stored hash that is not canonical hex cannot be decoded, so it compares
+ * against the decoy instead and fails. The alternative is `fromHex` throwing a
+ * different error for a corrupted row, which would be one more way for the
+ * caller to tell two accounts apart.
+ */
+export function verifierHashEquals(candidate: string, stored: string): boolean {
+  const comparable = CANONICAL_HEX_32.test(stored) ? stored : decoyVerifierHash();
+  return constantTimeEqual(fromHex(candidate), fromHex(comparable));
 }
 
 /**

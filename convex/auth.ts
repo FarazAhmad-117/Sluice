@@ -2,7 +2,13 @@ import { ConvexError, v } from "convex/values";
 import { mutation } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { normaliseEmail } from "./lib/email";
-import { assertCanonicalHex32, hashAuthVerifier } from "./lib/verifier";
+import type { NormalisedEmail } from "./lib/email";
+import {
+  assertCanonicalHex32,
+  decoyVerifierHash,
+  hashAuthVerifier,
+  verifierHashEquals,
+} from "./lib/verifier";
 import { getUserByEmail, insertUser } from "./repo/users";
 
 /**
@@ -72,5 +78,79 @@ export const signup = mutation({
         ? {}
         : { recoveryBlob: args.recoveryBlob }),
     });
+  },
+});
+
+/**
+ * Every way login can fail says exactly this, and the tests assert the two
+ * failures are byte-identical rather than merely both failures. An error that
+ * distinguishes "no such account" from "wrong verifier" is an account
+ * enumeration oracle: anyone can ask this server whether an address has signed
+ * up, one request at a time, and get a reliable answer.
+ */
+const AUTH_FAILED = "Invalid email or verifier.";
+
+export const login = mutation({
+  args: {
+    email: v.string(),
+    authVerifier: v.string(),
+  },
+  returns: v.object({
+    userId: v.id("users"),
+    publicKey: v.string(),
+    verifyKey: v.string(),
+    wrappedPrivateKey: v.string(),
+    wrappedSigningKey: v.string(),
+    recoveryBlob: v.optional(v.string()),
+  }),
+  // A mutation rather than a query even though it writes nothing yet. Convex
+  // caches query results by argument, and an authentication attempt is not a
+  // cacheable read. Rate limiting and an audit row both belong here and both
+  // need a transaction.
+  handler: async (ctx, args) => {
+    // Misconfiguration is checked first and is the one failure login does NOT
+    // hide behind the generic message. A deployment with no pepper would
+    // otherwise be indistinguishable from every password on earth being wrong,
+    // and the person debugging it would look everywhere except the one place.
+    const decoy = decoyVerifierHash();
+
+    // A malformed address and a malformed verifier are the other two ways to
+    // probe the shape of this endpoint, so they answer the same way as a wrong
+    // one. Nothing legitimate sends either: the client derives the verifier
+    // itself and normalises the address before it gets here. The pepper error
+    // above is already past, so this cannot swallow it.
+    let email: NormalisedEmail;
+    let candidate: string;
+    try {
+      email = normaliseEmail(args.email);
+      candidate = hashAuthVerifier(args.authVerifier);
+    } catch {
+      throw new ConvexError(AUTH_FAILED);
+    }
+
+    const user = await getUserByEmail(ctx, email);
+
+    // The comparison runs whether or not an account exists. Returning early on
+    // a miss would make this endpoint answer measurably faster for an address
+    // nobody has registered, which is the same oracle as a distinct error
+    // message, only harder to notice.
+    const matches = verifierHashEquals(candidate, user?.authVerifierHash ?? decoy);
+
+    if (user === null || !matches) {
+      throw new ConvexError(AUTH_FAILED);
+    }
+
+    // Only wrapped material and public keys. The server cannot open any of it,
+    // and the stored hash never leaves this function.
+    return {
+      userId: user._id,
+      publicKey: user.publicKey,
+      verifyKey: user.verifyKey,
+      wrappedPrivateKey: user.wrappedPrivateKey,
+      wrappedSigningKey: user.wrappedSigningKey,
+      ...(user.recoveryBlob === undefined
+        ? {}
+        : { recoveryBlob: user.recoveryBlob }),
+    };
   },
 });

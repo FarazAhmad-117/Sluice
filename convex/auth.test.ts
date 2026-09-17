@@ -212,3 +212,146 @@ describe("email identity", () => {
     ).rejects.toThrow();
   });
 });
+
+/**
+ * The failure message is a single constant shared by every way login can go
+ * wrong, and these tests exist to keep it that way. An error that says "no
+ * such account" is an account enumeration oracle: anyone can ask this server
+ * whether an address has signed up, one request at a time.
+ */
+const AUTH_FAILED = "Invalid email or verifier.";
+
+async function captureFailure(promise: Promise<unknown>) {
+  try {
+    await promise;
+  } catch (error) {
+    return error;
+  }
+  throw new Error("expected the login to fail, and it did not");
+}
+
+describe("login", () => {
+  it("returns the wrapped blobs for a correct verifier", async () => {
+    const t = convexTest(schema, modules);
+    const userId = await t.mutation(
+      api.auth.signup,
+      signupArgs({ recoveryBlob: "recovery-blob" }),
+    );
+
+    const result = await t.mutation(api.auth.login, {
+      email: "ada@example.test",
+      authVerifier: VERIFIER_A,
+    });
+
+    expect(result).toEqual({
+      userId,
+      publicKey: PUBLIC_KEY,
+      verifyKey: VERIFY_KEY,
+      wrappedPrivateKey: "wrapped-private-key-blob",
+      wrappedSigningKey: "wrapped-signing-key-blob",
+      recoveryBlob: "recovery-blob",
+    });
+  });
+
+  it("returns nothing derived from the verifier", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(api.auth.signup, signupArgs());
+
+    const result = (await t.mutation(api.auth.login, {
+      email: "ada@example.test",
+      authVerifier: VERIFIER_A,
+    })) as Record<string, unknown>;
+
+    expect(Object.keys(result)).not.toContain("authVerifierHash");
+    expect(Object.values(result)).not.toContain(VERIFIER_A);
+  });
+
+  it("accepts a case variant of the email", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(api.auth.signup, signupArgs());
+
+    const result = await t.mutation(api.auth.login, {
+      email: "  ADA@Example.test ",
+      authVerifier: VERIFIER_A,
+    });
+
+    expect(result).toBeTruthy();
+  });
+
+  it("rejects a wrong verifier", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(api.auth.signup, signupArgs());
+
+    await expect(
+      t.mutation(api.auth.login, {
+        email: "ada@example.test",
+        authVerifier: VERIFIER_B,
+      }),
+    ).rejects.toThrow(AUTH_FAILED);
+  });
+
+  // The important one. Not "both fail" but "both fail with the same bytes".
+  it("fails identically for a wrong verifier and an unknown email", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(api.auth.signup, signupArgs());
+
+    const wrongVerifier = await captureFailure(
+      t.mutation(api.auth.login, {
+        email: "ada@example.test",
+        authVerifier: VERIFIER_B,
+      }),
+    );
+    const unknownEmail = await captureFailure(
+      t.mutation(api.auth.login, {
+        email: "nobody@example.test",
+        authVerifier: VERIFIER_A,
+      }),
+    );
+
+    const shape = (error: unknown) => ({
+      name: (error as Error).name,
+      message: (error as Error).message,
+      data: (error as { data?: unknown }).data,
+    });
+
+    expect(shape(wrongVerifier)).toEqual(shape(unknownEmail));
+    expect(shape(wrongVerifier).data).toBe(AUTH_FAILED);
+    expect(JSON.stringify(shape(wrongVerifier))).toBe(
+      JSON.stringify(shape(unknownEmail)),
+    );
+  });
+
+  // A malformed address and a malformed verifier are the other two ways a
+  // caller could probe the shape of this endpoint, so they answer the same
+  // way. Nothing legitimate sends either.
+  it("fails identically for a malformed email and a malformed verifier", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(api.auth.signup, signupArgs());
+
+    for (const args of [
+      { email: "not an address", authVerifier: VERIFIER_A },
+      { email: "ada@example.test", authVerifier: "nope" },
+      { email: "ada@example.test", authVerifier: VERIFIER_A.toUpperCase() },
+      { email: "", authVerifier: VERIFIER_A },
+    ]) {
+      const error = await captureFailure(t.mutation(api.auth.login, args));
+      expect((error as { data?: unknown }).data).toBe(AUTH_FAILED);
+    }
+  });
+
+  // Misconfiguration is the one thing login must NOT hide behind the generic
+  // failure, because a deployment with no pepper would otherwise look exactly
+  // like every password on earth being wrong.
+  it("fails loudly and distinguishably when AUTH_PEPPER is unset", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(api.auth.signup, signupArgs());
+    delete process.env.AUTH_PEPPER;
+
+    await expect(
+      t.mutation(api.auth.login, {
+        email: "ada@example.test",
+        authVerifier: VERIFIER_A,
+      }),
+    ).rejects.toThrow("AUTH_PEPPER is not set on this deployment.");
+  });
+});
