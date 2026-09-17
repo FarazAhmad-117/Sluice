@@ -25,7 +25,11 @@ import {
  * Nothing in this file decrypts, and nothing in this file can: the project
  * data key never reaches the server. The associated data rule that binds each
  * ciphertext to its environment and to the algorithm version is written out in
- * full in `lib/aad.ts`, which is the file a client author should read.
+ * full on `secretAssociatedData` in `@sluice/crypto`, which is the one
+ * definition of that rule and the file a client author should read. It is not
+ * restated here: this server publishes the rule to nobody and computes it
+ * nowhere, and a second copy that looked authoritative is exactly what was
+ * just deleted.
  *
  * The two server-side halves of that rule live here:
  *

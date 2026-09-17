@@ -11,7 +11,6 @@
 import type * as auth from "../auth.js";
 import type * as crons from "../crons.js";
 import type * as environments from "../environments.js";
-import type * as lib_aad from "../lib/aad.js";
 import type * as lib_audit from "../lib/audit.js";
 import type * as lib_authz from "../lib/authz.js";
 import type * as lib_email from "../lib/email.js";
@@ -42,7 +41,6 @@ declare const fullApi: ApiFromModules<{
   auth: typeof auth;
   crons: typeof crons;
   environments: typeof environments;
-  "lib/aad": typeof lib_aad;
   "lib/audit": typeof lib_audit;
   "lib/authz": typeof lib_authz;
   "lib/email": typeof lib_email;
