@@ -74,3 +74,22 @@ export type { TokenKeys } from "./token";
 
 export { signRevocation, verifyRevocation } from "./revocation";
 export type { RevocationNotice } from "./revocation";
+
+/**
+ * The two rules both ends of the wire must agree on, byte for byte.
+ *
+ * These are the only exports here that exist for a reason of LOCATION rather
+ * than of function. Neither is novel cryptography: one is a UTF-8 string, the
+ * other a domain-separated SHA-256. They are in this package because it is the
+ * one module `convex/` and `packages/sdk` both already depend on, and because
+ * each of them, computed differently on the two sides, fails without an error
+ * anybody can act on -- an opaque AEAD rejection at read time, or a revocation
+ * query that joins on nothing and returns an empty bundle.
+ *
+ * `SECRET_AAD_PREFIX` and `TOKEN_ID_HASH_LABEL` are deliberately NOT exported
+ * alongside them. A caller who can reach the prefix can join the string
+ * themselves, at their own call site, without the validation -- which is
+ * exactly the hand-copied literal this move exists to delete. The only way to
+ * obtain either value is to call the function that binds it.
+ */
+export { secretAssociatedData, tokenIdHash } from "./protocol";
