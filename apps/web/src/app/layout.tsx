@@ -11,9 +11,17 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
+    // The landing page is dark locked, so the server always emits `dark`. The
+    // DASHBOARD is dual theme: `lib/theme.tsx` ships a blocking inline script
+    // that rewrites this attribute from the viewer's system preference before
+    // the first paint, which is the only way to avoid a dark flash on a light
+    // machine. That mutation lands between the server render and hydration, so
+    // React logs a mismatch on every dashboard load without the suppression
+    // below. It covers this one element's attributes, not its subtree.
     <html
       lang="en"
       data-theme="dark"
+      suppressHydrationWarning
       className={`${GeistSans.variable} ${GeistMono.variable} antialiased`}
     >
       <body className="min-h-[100dvh] bg-surface-base text-text-primary">
