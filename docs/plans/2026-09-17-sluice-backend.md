@@ -405,6 +405,30 @@ A query returning `{ wrappedPDK, secrets[], epoch, revocationNotice? }` for the 
 
 ---
 
+## Amendments from the schema review, applied 2026-09-17
+
+The schema as originally written in this plan had four defects, all found by reviewing it against the tasks that would consume it. The shipped schema differs, and these constraints now bind the later tasks.
+
+- **`revocations` carries `tokenIdHash` as well as the plaintext `tokenId`.** Without it the bundle query in Task 11 had no way to find a notice, because `serviceTokens` stores only the hash. Do not "clean up" the duplication: the plaintext id is there because the notice is signed over it, the hash is there so the query never needs the plaintext.
+- **`secrets` carries `lineageId` and `supersededAt`.** Task 9 could otherwise have history or a usable listing, not both. **Task 9 must decide where lineage ids come from and assert their uniqueness**, because `lineageId` is a string and nothing stops two secrets sharing one, which would silently merge their histories. Minting from `randomBytes` is the obvious answer but it is a decision to write down.
+- **`revocationGrants` replaces `orgs.wrappedRevocationKey`.** A single wrap made the product's wedge depend on one person never leaving, never forgetting their password, and never being the one whose laptop was stolen, which is the exact scenario revocation exists for. **Task 8 must create the org and its first revocation grant in the same mutation**, or an org exists that nobody can ever revoke for.
+- **Narrow indexes were replaced by composite ones, not added alongside.** Each old index is a strict prefix of its replacement, so Convex answers the old query from the new index. Restoring a narrow index only adds write amplification.
+
+### Constraints the later tasks inherit
+
+- **Task 5 must normalise email before storage.** `by_email` is an exact-match index, so a case-insensitive account identity that is not normalised on write passes its test only by accident. Assert also that `getUserByEmail` throws on duplicates rather than silently picking one: that is the right failure mode for an auth table, but it should be a decision with a test, not an accident of `.unique()`.
+- **Task 10's replay check must be a single mutation.** Check-then-insert as two calls is a time-of-check-to-time-of-use race in which two concurrent replays of the identical signature both observe "absent" and both succeed, which is precisely the attack `handshakeNonces` exists to stop. Insert and fail on conflict.
+- **Tasks 10 and 11 must share one token-id hashing helper.** Two call sites computing the hash independently can diverge, and if they do, revocation silently stops reaching the bundle while every test that seeds one side by hand still passes. At least one test must revoke through the real path and read through the real bundle.
+- **`auditLog.metadata` gets a discriminated validator per action type**, not a free-form string. It is the most likely place a decrypted name or a request body lands by accident, and because nothing reads it, nobody would notice.
+- **`revocations.reason` must never carry secret-derived text.** It is signed and broadcast to every SDK instance, so an operator pasting incident context into it is a realistic path from incident to secret-in-every-customer-log. The foundation plan already requires the SDK to sanitise it for rendering; this is the separate rule that it must not contain sensitive text in the first place.
+- **Task 4 fixtures go through repo functions.** The enumeration test scans test files too, so the usual `t.run(async (ctx) => ctx.db.insert(...))` seeding idiom is unavailable. This is deliberate: fixtures exercising the real insert path is a feature, and the data surface stays genuinely complete. Do not add an exclusion.
+
+### New task: reap expired handshake nonces
+
+`handshakeNonces` gains a row per successful handshake and nothing deletes them. `deleteExpiredHandshakeNonces` exists in the repo layer and takes a mandatory `limit`, returning a count.
+
+Write a Convex cron that calls it and pages using the returned count. **Do not call it with an unbounded limit.** A reaper that tries to delete every expired row in one transaction will eventually exceed Convex's per-transaction limits, and from that point it never succeeds again: the table grows forever while the cleanup appears to run.
+
 ## Decisions carried into this plan, do not relitigate
 
 - **Convex-native.** The `repo/` layer is discipline, not portability. Do not turn it into an interface.

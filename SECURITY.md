@@ -150,8 +150,43 @@ what this policy exists for.
 
 For completeness, because it is the claim most worth attacking: the server
 stores public keys, wrapped key blobs it cannot open, and ciphertext. Sluice's
-own bootstrap secrets, such as a JWT signing key, live in deployment
-environment variables precisely because they are not secret-decrypting
-material. Nothing that could open customer data is stored server side. If you
-find a place where that is not true, that is a critical finding and this
-project wants to hear about it before anyone else does.
+own bootstrap secrets, such as a JWT signing key and the password pepper, live
+in deployment environment variables precisely because they are not
+secret-decrypting material. Nothing that could open customer data is stored
+server side. If you find a place where that is not true, that is a critical
+finding and this project wants to hear about it before anyone else does.
+
+### What the server can see, stated plainly
+
+The claim above is about secret names and secret values. It is not a claim
+that the operator can see nothing. The following are plaintext in the
+database, by design, because the server has to route, authorise and index on
+them:
+
+- Organisation names and slugs
+- Project names and slugs
+- Environment names, such as `production`
+- Email addresses
+- Which users belong to which organisation, and with what role
+- Audit metadata: who acted, when, from which address, and on what
+- The existence, count and modification times of secrets, though not their
+  names or values
+
+So an operator, or anyone who compels one, can see that your company has a
+project called `payments` with a `production` environment holding 34 secrets,
+that a particular engineer read from it at 02:14, and that one of those
+secrets changed an hour later. They cannot see what any of them are called or
+what any of them contain.
+
+That is a real metadata leak and it is not going away, because a server that
+cannot index on any of it cannot route a request. Said here rather than
+discovered later.
+
+### A property of the hosting platform you should know
+
+A Convex admin key grants complete control over a deployment, and it cannot be
+revoked once created. That is a property of the platform rather than of
+Sluice, and it constrains self-hosters as much as it constrains this project.
+It does not let anyone decrypt customer secrets, because the material needed
+to do that is never on the server. It does let the holder read everything in
+the previous section, and change what the deployment serves.
