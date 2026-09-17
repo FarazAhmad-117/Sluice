@@ -8,6 +8,9 @@
  * @module
  */
 
+import type * as auth from "../auth.js";
+import type * as lib_email from "../lib/email.js";
+import type * as lib_verifier from "../lib/verifier.js";
 import type * as repo_audit from "../repo/audit.js";
 import type * as repo_environments from "../repo/environments.js";
 import type * as repo_orgs from "../repo/orgs.js";
@@ -23,6 +26,9 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  auth: typeof auth;
+  "lib/email": typeof lib_email;
+  "lib/verifier": typeof lib_verifier;
   "repo/audit": typeof repo_audit;
   "repo/environments": typeof repo_environments;
   "repo/orgs": typeof repo_orgs;
