@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { convexTest } from "convex-test";
 import schema from "./schema";
 import { api } from "./_generated/api";
@@ -14,6 +14,20 @@ const VERIFIER_A =
   "3f2a91c0d4b7e65a18cc0fd3b2a94e7710f5c86d2b41a9e3c7d508f6b1a2c3d4";
 const VERIFIER_B =
   "aa11bb22cc33dd44ee55ff6600778899aabbccddeeff00112233445566778899";
+
+// A throwaway pepper for the suite. Set on `process.env` directly, because
+// that is what the deployment reads; a test that proved a mock worked would
+// prove nothing about the deployment.
+const TEST_PEPPER =
+  "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+beforeEach(() => {
+  process.env.AUTH_PEPPER = TEST_PEPPER;
+});
+
+afterEach(() => {
+  delete process.env.AUTH_PEPPER;
+});
 
 const PUBLIC_KEY =
   "1111111111111111111111111111111111111111111111111111111111111111";
@@ -142,6 +156,24 @@ describe("signup", () => {
     await expect(
       t.mutation(api.auth.signup, signupArgs({ email: "ada at example.test" })),
     ).rejects.toThrow("email must be a single address with no spaces.");
+  });
+
+  // A deployment without a pepper must refuse to create accounts rather than
+  // create ones whose stored hash is worth less than everybody believes.
+  it("refuses to run at all when AUTH_PEPPER is unset", async () => {
+    const t = convexTest(schema, modules);
+    delete process.env.AUTH_PEPPER;
+
+    await expect(t.mutation(api.auth.signup, signupArgs())).rejects.toThrow(
+      "AUTH_PEPPER is not set on this deployment.",
+    );
+
+    // And it wrote nothing on the way out.
+    process.env.AUTH_PEPPER = TEST_PEPPER;
+    const stored = await t.run(async (ctx) =>
+      getUserByEmail(ctx, normaliseEmail("ada@example.test")),
+    );
+    expect(stored).toBeNull();
   });
 
   it("rejects an email that is blank once trimmed", async () => {
