@@ -54,7 +54,9 @@ export async function patchServiceToken(
 
 /**
  * `tokenId` here is the plaintext id, not the hash. The SDK matches on it and
- * the signed notice covers it, so hashing it would break verification.
+ * the signed notice covers it, so hashing it would break verification. Use
+ * this when the caller already holds the plaintext id, which in practice means
+ * the revocation path itself.
  */
 export async function listRevocationsByTokenId(
   ctx: QueryCtx,
@@ -63,6 +65,21 @@ export async function listRevocationsByTokenId(
   return await ctx.db
     .query("revocations")
     .withIndex("by_token_id", (q) => q.eq("tokenId", tokenId))
+    .collect();
+}
+
+/**
+ * The join the bundle subscription needs. An authenticated token is known to
+ * the server only by its hash, so this is the only way to reach its notice
+ * without the plaintext id leaving the signed payload.
+ */
+export async function listRevocationsByTokenIdHash(
+  ctx: QueryCtx,
+  tokenIdHash: string,
+): Promise<Doc<"revocations">[]> {
+  return await ctx.db
+    .query("revocations")
+    .withIndex("by_token_id_hash", (q) => q.eq("tokenIdHash", tokenIdHash))
     .collect();
 }
 

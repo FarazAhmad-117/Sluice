@@ -84,13 +84,29 @@ export default defineSchema({
     .index("by_environment", ["environmentId"]),
 
   revocations: defineTable({
+    // Both forms of the identifier are stored on purpose. Do not "clean up"
+    // this duplication.
+    //
+    // `tokenId` is the plaintext id because the notice is signed over it and
+    // the SDK matches on it; hashing it would break verification.
+    //
+    // `tokenIdHash` exists because `serviceTokens` stores only the hash, so
+    // without this column there is no join from an authenticated token to its
+    // revocation and the bundle query in Task 11 cannot find the notice. The
+    // alternative was carrying the plaintext id in the handshake JWT, which
+    // would push the very identifier `tokenIdHash` exists to protect into a
+    // bearer token, into SDK memory, and into every log that prints a JWT.
+    // One denormalised column is far cheaper than that.
     tokenId: v.string(),
+    tokenIdHash: v.string(),
     epoch: v.number(),
     signature: v.string(),
     signedBy: v.id("users"),
     revokedAt: v.number(),
     reason: v.string(),
-  }).index("by_token_id", ["tokenId"]),
+  })
+    .index("by_token_id", ["tokenId"])
+    .index("by_token_id_hash", ["tokenIdHash"]),
 
   // Replay protection for the handshake. Ed25519 signatures are deterministic,
   // so the same token id and timestamp always produce the same signature.
