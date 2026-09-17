@@ -1,4 +1,4 @@
-import { randomBytes } from "./bytes.js";
+import { randomBytes } from "./bytes";
 
 /**
  * AES-256-GCM sealed data.

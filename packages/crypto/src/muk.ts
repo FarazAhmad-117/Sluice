@@ -1,7 +1,8 @@
-import { argon2id } from "@noble/hashes/argon2";
 import { sha256 } from "@noble/hashes/sha256";
-import { concat, utf8 } from "./bytes.js";
-import { INSPECT_CUSTOM } from "./internal.js";
+import type { Argon2Backend, Argon2Params } from "./argon2";
+import { assertArgon2Output, assertConformantArgon2, nobleArgon2 } from "./argon2";
+import { concat, utf8 } from "./bytes";
+import { INSPECT_CUSTOM } from "./internal";
 
 /**
  * Argon2id parameters, tuned per section 3.1 of Implementation_Plan.md.
@@ -22,8 +23,15 @@ import { INSPECT_CUSTOM } from "./internal.js";
  * and every existing wrapped private key becomes unopenable. A future change
  * must be a versioned second derivation with a migration, never an edit to
  * these numbers.
+ *
+ * FROZEN, not merely `as const`. `as const` is a compile-time assertion and
+ * erases to nothing; `ARGON2_PARAMS.m = 8` is a legal JavaScript statement that
+ * `tsc` never sees in a consumer written in JS, in a bundle, or behind an
+ * `as any`. Now that a caller can supply its own Argon2 backend, the parameters
+ * are handed across a boundary on every derivation, and a mutated shared object
+ * would weaken every later call in the process with no diff to review.
  */
-export const ARGON2_PARAMS = { m: 65536, t: 3, p: 4, dkLen: 32 } as const;
+export const ARGON2_PARAMS = Object.freeze({ m: 65536, t: 3, p: 4, dkLen: 32 } as const);
 
 /**
  * Domain separation label for the MUK salt, following the `sluice/...`
@@ -169,23 +177,45 @@ export class MasterUnlockKey {
  * runs entirely through the recovery kit, which is a separate high-entropy
  * secret handed to the user at signup, and never through here.
  *
- * ON `async`, STATED PLAINLY: this function is asynchronous in SIGNATURE ONLY.
- * `argon2id` is synchronous and holds the thread for the whole derivation, so
- * on a browser main thread this freezes the tab -- no paint, no input, no
- * progress bar -- for several seconds. `@noble/hashes` also ships
- * `argon2idAsync`, and it does NOT fix this: its yield point is `await
- * nextTick()` where `nextTick = async () => {}`, which drains as a MICROTASK.
- * Microtasks run before rendering and before input, so `argon2idAsync` blocks
- * exactly as hard (measured: zero `setInterval(20ms)` callbacks fired during a
- * 5.9-second run) while costing about 35% more wall time. The sync call is
- * therefore the honest choice.
+ * ON BLOCKING, STATED PLAINLY. The DEFAULT backend is `@noble/hashes`, which is
+ * synchronous and holds the thread for the whole derivation, so on a browser
+ * main thread it freezes the tab -- no paint, no input, no progress bar -- for
+ * several seconds (measured: 5460 ms on a warm desktop x64, four to ten times
+ * that on a mid-range phone). `@noble/hashes` also ships `argon2idAsync`, and
+ * it does NOT fix this: its yield point is `await nextTick()` where
+ * `nextTick = async () => {}`, which drains as a MICROTASK. Microtasks run
+ * before rendering and before input, so `argon2idAsync` blocks exactly as hard
+ * (measured: zero `setInterval(20ms)` callbacks fired during a 7.5-second run)
+ * while costing more wall time. THE ASYNC VARIANT IS NOT A FIX AND MUST NOT BE
+ * SUBSTITUTED HERE.
  *
- * The `async` signature is kept so the UI layer must already treat this as a
- * suspending call, and so this can move into a Web Worker -- the only real fix
- * -- without a breaking API change. Callers on a main thread MUST assume this
- * blocks, and should run it in a Worker.
+ * THE FIX IS `options.argon2` PLUS A WEB WORKER, and it takes both halves. A
+ * WASM backend on the main thread is ten times faster and still blocks; a
+ * Worker without a WASM backend still costs the user eleven seconds. The
+ * browser application supplies a WASM backend and runs this inside a Worker;
+ * see `apps/web/src/lib/crypto/`.
+ *
+ * THE BACKEND IS NOT A PARAMETER KNOB. It receives a frozen copy of
+ * {@link ARGON2_PARAMS} and is checked against cheap Argon2id conformance
+ * vectors before its output is ever accepted, so a backend that is the wrong
+ * algorithm, ignores the parameters it is given, or returns the wrong width
+ * fails rather than quietly deriving a different key. Read
+ * {@link Argon2Backend} for what that check does and does not cover.
  */
-export async function deriveMUK(password: string, userId: string): Promise<MasterUnlockKey> {
+export interface DeriveMUKOptions {
+  /**
+   * A faster Argon2id, at IDENTICAL parameters. Omit it and the audited pure-JS
+   * default is used. This is the only supported way to change how the MUK is
+   * computed, and it is per call: there is deliberately no global to set.
+   */
+  readonly argon2?: Argon2Backend;
+}
+
+export async function deriveMUK(
+  password: string,
+  userId: string,
+  options?: DeriveMUKOptions,
+): Promise<MasterUnlockKey> {
   // Both guards run before the derivation, not after. An empty password is
   // accepted by Argon2id without complaint, and validating afterwards would
   // make every rejected attempt cost a full multi-second grind on the user's
@@ -205,7 +235,24 @@ export async function deriveMUK(password: string, userId: string): Promise<Maste
   // The derivation is untouched by the wrapper: the same bytes as before, handed
   // to a constructor instead of to the caller. The known-answer vector in
   // `muk.test.ts` reads straight through `.bytes` and must never move.
-  return new MasterUnlockKey(
-    argon2id(utf8.encode(password.normalize("NFC")), mukSalt(userId), { ...ARGON2_PARAMS }),
-  );
+  const backend = options?.argon2 ?? nobleArgon2;
+
+  // Conformance FIRST, so an unusable backend costs two milliseconds and a
+  // clear error instead of eleven seconds and a wrong key. The default is
+  // checked too: exempting it would mean the one implementation everything else
+  // is measured against is the only one never measured.
+  await assertConformantArgon2(backend);
+
+  // A frozen copy, so the backend -- which may be a Worker shim, a third-party
+  // library, or a test double -- cannot mutate the module-level constant that
+  // every subsequent derivation in the process will read.
+  const params: Argon2Params = Object.freeze({ ...ARGON2_PARAMS });
+
+  const out = await backend(utf8.encode(password.normalize("NFC")), mukSalt(userId), params);
+
+  // Re-checked at the seam, not merely by the constructor. The constructor
+  // says "32 bytes"; this says which component broke, which is the difference
+  // between a five-minute fix and an afternoon.
+  assertArgon2Output(out, ARGON2_PARAMS.dkLen);
+  return new MasterUnlockKey(out);
 }

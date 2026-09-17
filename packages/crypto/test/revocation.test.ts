@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { ed25519 } from "@noble/curves/ed25519";
-import { randomBytes, toHex, utf8 } from "../src/bytes.js";
+import { randomBytes, toHex, utf8 } from "../src/bytes";
 import {
   signRevocation,
   verifyRevocation,
   type RevocationNotice,
-} from "../src/revocation.js";
+} from "../src/revocation";
 
 /** A fresh org signing key. Any 32 bytes is a valid Ed25519 seed. */
 function orgKeyPair(): { privateKey: Uint8Array; publicKeyHex: string } {

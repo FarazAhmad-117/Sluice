@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { randomBytes, utf8 } from "../src/bytes.js";
-import { seal, unseal } from "../src/aead.js";
+import { randomBytes, utf8 } from "../src/bytes";
+import { seal, unseal } from "../src/aead";
 
 /**
  * Every call in this file passes associated data, because `seal` and `unseal`

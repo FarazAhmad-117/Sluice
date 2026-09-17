@@ -1,8 +1,8 @@
 import { hkdf } from "@noble/hashes/hkdf";
 import { sha256 } from "@noble/hashes/sha256";
 import { ed25519 } from "@noble/curves/ed25519";
-import { concat, fromHex, randomBytes, toHex, utf8 } from "./bytes.js";
-import { INSPECT_CUSTOM, PUBLIC_KEY_HEX_PATTERN } from "./internal.js";
+import { concat, fromHex, randomBytes, toHex, utf8 } from "./bytes";
+import { INSPECT_CUSTOM, PUBLIC_KEY_HEX_PATTERN } from "./internal";
 
 const TOKEN_ID_BYTES = 16;
 const TOKEN_SECRET_BYTES = 32;
