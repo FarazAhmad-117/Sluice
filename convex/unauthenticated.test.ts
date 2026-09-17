@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { convexTest } from "convex-test";
+import { mintToken, signRevocation, toHex } from "@sluice/crypto";
 import schema from "./schema";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -12,6 +13,7 @@ import * as orgsModule from "./orgs";
 import * as projectsModule from "./projects";
 import * as environmentsModule from "./environments";
 import * as secretsModule from "./secrets";
+import * as tokensModule from "./tokens";
 
 export const modules = import.meta.glob("./**/*.ts");
 
@@ -39,11 +41,25 @@ type Harness = ReturnType<typeof convexTest>;
 
 const NOT_AUTHENTICATED = "Your session is not valid. Sign in again.";
 
+/**
+ * `bundle` is deliberately absent, and that absence is a decision rather than
+ * an oversight.
+ *
+ * Every module here authenticates a PERSON, through `sessionArg` and the
+ * `sessions` table. The bundle subscription authenticates a MACHINE, through
+ * the short-lived token the handshake issues, and it takes no session at all:
+ * a service token has no user and must never be given one. Listing it here
+ * would fail the structural assertion below for the right reason and then
+ * tempt somebody to fix it by giving the bundle a `sessionToken` argument,
+ * which would be exactly backwards. `bundle.test.ts` asks the equivalent
+ * question of the credential the bundle actually takes.
+ */
 const SURFACE = {
   orgs: orgsModule,
   projects: projectsModule,
   environments: environmentsModule,
   secrets: secretsModule,
+  tokens: tokensModule,
 } as const;
 
 type Registered = {
@@ -122,6 +138,16 @@ interface World {
   projectId: Id<"projects">;
   environmentId: Id<"environments">;
   secretId: Id<"secrets">;
+  /** A registered service token, and the signed notice that revokes it. */
+  revoke: {
+    tokenId: string;
+    epoch: number;
+    revokedAt: number;
+    reason: string;
+    signature: string;
+  };
+  /** A minted but unregistered token, so `createServiceToken` has one to take. */
+  spare: { tokenId: string; publicKey: string };
 }
 
 /**
@@ -133,11 +159,17 @@ interface World {
  */
 async function world(t: Harness): Promise<World> {
   const alice = await seedUser(t, "alice@example.test");
+  // A REAL organisation revocation keypair, built out of the crypto package's
+  // own public surface: `mintToken` hands back an Ed25519 seed and its public
+  // key, which is exactly the pair `signRevocation` wants. The placeholder
+  // that used to be here was fine while nothing verified it, and stopped being
+  // fine the moment `revokeServiceToken` started checking the signature.
+  const orgKeys = mintToken({ environment: "revocation" });
   const orgId = await t.mutation(api.orgs.createOrg, {
     sessionToken: alice.sessionToken,
     name: "Acme Rockets",
     slug: "acme-rockets",
-    revocationPublicKey: "ab".repeat(32),
+    revocationPublicKey: orgKeys.upload.publicKey,
     wrappedRevocationKey: "wrapped-revocation-key-blob",
     revocationKeyNonce: "0f1e2d3c4b5a69788796a5b4",
   });
@@ -160,7 +192,39 @@ async function world(t: Harness): Promise<World> {
     valueCiphertext: VALUE_CIPHERTEXT,
     valueNonce: VALUE_NONCE,
   });
-  return { alice, orgId, projectId, environmentId, secretId };
+  const victim = mintToken({ environment: "production" });
+  await t.mutation(api.tokens.createServiceToken, {
+    sessionToken: alice.sessionToken,
+    environmentId,
+    tokenId: victim.upload.tokenId,
+    publicKey: victim.upload.publicKey,
+    wrappedPDK: "cc".repeat(48),
+    pdkNonce: "0102030405060708090a0b0c",
+  });
+  const notice = {
+    tokenId: victim.upload.tokenId,
+    epoch: 1,
+    revokedAt: Date.now(),
+    reason: "Rotated on schedule.",
+  };
+
+  const spare = mintToken({ environment: "production" });
+
+  return {
+    alice,
+    orgId,
+    projectId,
+    environmentId,
+    secretId,
+    revoke: {
+      ...notice,
+      signature: toHex(signRevocation(orgKeys.authSeed, notice)),
+    },
+    spare: {
+      tokenId: spare.upload.tokenId,
+      publicKey: spare.upload.publicKey,
+    },
+  };
 }
 
 /**
@@ -254,6 +318,18 @@ const CALLS: Record<
     sessionToken,
     secretId: w.secretId,
   }),
+  "tokens.createServiceToken": (w, sessionToken) => ({
+    sessionToken,
+    environmentId: w.environmentId,
+    tokenId: w.spare.tokenId,
+    publicKey: w.spare.publicKey,
+    wrappedPDK: "dd".repeat(48),
+    pdkNonce: "1112131415161718191a1b1c",
+  }),
+  "tokens.revokeServiceToken": (w, sessionToken) => ({
+    sessionToken,
+    ...w.revoke,
+  }),
 };
 
 async function call(
@@ -279,10 +355,10 @@ const FUNCTIONS = exportedFunctions();
 
 describe("the enumeration this file is built on", () => {
   it("finds every public function in the hierarchy", () => {
-    // Sixteen, written as a number as well as a list, so that an enumeration
+    // Eighteen, written as a number as well as a list, so that an enumeration
     // which silently starts returning nothing cannot make every assertion
     // below pass vacuously.
-    expect(FUNCTIONS.length).toBe(16);
+    expect(FUNCTIONS.length).toBe(18);
     expect(FUNCTIONS).toEqual([
       "environments.createEnvironment",
       "environments.getEnvironment",
@@ -304,6 +380,8 @@ describe("the enumeration this file is built on", () => {
       "secrets.listSecretVersions",
       "secrets.listSecrets",
       "secrets.updateSecret",
+      "tokens.createServiceToken",
+      "tokens.revokeServiceToken",
     ]);
   });
 

@@ -11,10 +11,14 @@
 import type * as auth from "../auth.js";
 import type * as crons from "../crons.js";
 import type * as environments from "../environments.js";
+import type * as handshake from "../handshake.js";
+import type * as http from "../http.js";
 import type * as lib_audit from "../lib/audit.js";
 import type * as lib_authz from "../lib/authz.js";
 import type * as lib_email from "../lib/email.js";
+import type * as lib_handshake from "../lib/handshake.js";
 import type * as lib_hex from "../lib/hex.js";
+import type * as lib_jwt from "../lib/jwt.js";
 import type * as lib_naming from "../lib/naming.js";
 import type * as lib_session from "../lib/session.js";
 import type * as lib_verifier from "../lib/verifier.js";
@@ -30,6 +34,7 @@ import type * as repo_tokens from "../repo/tokens.js";
 import type * as repo_users from "../repo/users.js";
 import type * as secrets from "../secrets.js";
 import type * as sessions from "../sessions.js";
+import type * as tokens from "../tokens.js";
 
 import type {
   ApiFromModules,
@@ -41,10 +46,14 @@ declare const fullApi: ApiFromModules<{
   auth: typeof auth;
   crons: typeof crons;
   environments: typeof environments;
+  handshake: typeof handshake;
+  http: typeof http;
   "lib/audit": typeof lib_audit;
   "lib/authz": typeof lib_authz;
   "lib/email": typeof lib_email;
+  "lib/handshake": typeof lib_handshake;
   "lib/hex": typeof lib_hex;
+  "lib/jwt": typeof lib_jwt;
   "lib/naming": typeof lib_naming;
   "lib/session": typeof lib_session;
   "lib/verifier": typeof lib_verifier;
@@ -60,6 +69,7 @@ declare const fullApi: ApiFromModules<{
   "repo/users": typeof repo_users;
   secrets: typeof secrets;
   sessions: typeof sessions;
+  tokens: typeof tokens;
 }>;
 
 /**

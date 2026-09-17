@@ -28,6 +28,37 @@ import { insertAuditEvent } from "../repo/audit";
  * caller-supplied IP address in an audit record is worse than no IP address:
  * it looks like evidence and is not.
  */
+/**
+ * The actor is the token id HASH, never the plaintext token id.
+ *
+ * `auditLog` is append only and indexes `actorId`, so a plaintext id written
+ * here is a permanent, queryable copy of the exact identifier
+ * `serviceTokens.tokenIdHash` exists to keep out of readable storage. It would
+ * also be the one place in the product where reading the database hands you a
+ * usable token identifier, which is the property that column buys.
+ *
+ * The hash is stable across a token's whole life, so "everything this token
+ * did, in order" still answers through `by_actor_ts`.
+ */
+export async function recordTokenEvent(
+  ctx: MutationCtx,
+  event: {
+    orgId: Id<"orgs">;
+    tokenIdHash: string;
+    action: string;
+    targetId: string;
+  },
+): Promise<void> {
+  await insertAuditEvent(ctx, {
+    orgId: event.orgId,
+    actorType: "token",
+    actorId: event.tokenIdHash,
+    action: event.action,
+    targetId: event.targetId,
+    ts: Date.now(),
+  });
+}
+
 export async function recordUserEvent(
   ctx: MutationCtx,
   event: {
