@@ -106,7 +106,7 @@ export class DerivationUnavailableError extends Error {
  */
 const DERIVATION_TIMEOUT_MS = 120_000;
 
-/** Ids start at 1; `0` is the worker's unsolicited start-up memory report. */
+/** Ids start at 1, so `0` is never a legitimate reply and cannot match. */
 let nextRequestId = 1;
 
 /**
@@ -190,9 +190,12 @@ function runInWorker(request: WorkerRequestInit): Promise<WorkerResponse> {
     }, DERIVATION_TIMEOUT_MS);
 
     worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
-      // The worker reports memory unprompted at start-up with id 0. Anything
-      // that is not this request's answer is ignored rather than mistaken for
-      // it; without the id check a start-up probe would resolve a derivation.
+      // Anything that is not this request's answer is ignored rather than
+      // mistaken for it. The worker is single-use today, so nothing else should
+      // arrive -- but a reply correlated only by arrival order is how a future
+      // change that batches or reuses workers resolves a derivation with a
+      // memory probe, and that mistake would surface as a 32-byte "key" that
+      // is not one.
       const data = event.data;
       if (data.id !== id) return;
       if (data.kind === "failed") {

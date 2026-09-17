@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 
-import { ARGON2_PARAMS, deriveMUK } from "@sluice/crypto";
+import { deriveMUK } from "@sluice/crypto";
 import { probeArgon2Memory, wasmArgon2 } from "./argon2-wasm";
 import type { WorkerRequest, WorkerResponse } from "./worker-protocol";
 
@@ -11,12 +11,21 @@ import type { WorkerRequest, WorkerResponse } from "./worker-protocol";
  *
  * 1. Argon2id at the tuned parameters holds its thread for the entire
  *    derivation. On the main thread that is a frozen tab: no paint, no input,
- *    no progress bar, no cancel. Measured at 5460 ms with the pure-JS backend
- *    and 434 ms with this WASM one on a desktop x64, and a mid-range phone runs
- *    four to ten times slower than that. `argon2idAsync` does NOT help and must
- *    not be substituted: its yield point is an empty async function, so it
- *    drains as a microtask, and microtasks run BEFORE rendering and before
- *    input. Measured: zero 20 ms timer callbacks during 7.5 seconds of it.
+ *    no progress bar, no cancel. MEASURED IN CHROME 152 on a desktop x64, with
+ *    a 20 ms timer running throughout and the page visible:
+ *
+ *      noble on the main thread    8431 ms,  0 timer ticks of 421 expected
+ *      WASM on the main thread      680 ms,  0 timer ticks of  33 expected
+ *      WASM in THIS worker         1585 ms, 79 timer ticks of  79 expected
+ *
+ *    The worker row is the whole point: the tab answered on schedule for the
+ *    entire derivation. The two main-thread rows did not answer once.
+ *
+ *    A mid-range phone runs four to ten times slower again. `argon2idAsync`
+ *    does NOT help and must not be substituted: its yield point is an empty
+ *    async function, so it drains as a microtask, and microtasks run BEFORE
+ *    rendering and before input. Measured: 8506 ms and zero ticks, against
+ *    7685 ms and zero ticks for the plain synchronous call.
  *
  * 2. `m = 65536` asks for 64 MiB of contiguous memory. On iOS Safari a request
  *    like that can kill the TAB. Here it kills a worker, which arrives on the
@@ -89,16 +98,20 @@ self_.onmessage = async (event: MessageEvent<WorkerRequest>) => {
 };
 
 /**
- * Answers the memory question without being asked, as soon as the module runs.
+ * THERE IS DELIBERATELY NO UNSOLICITED START-UP PROBE HERE, and the reason is
+ * worth recording because the obvious design is actively harmful.
  *
- * The main thread wants to know whether 64 MiB is available BEFORE the user has
- * typed a password, and the cheapest moment to find out is while the worker is
- * warming up anyway. `id: 0` is reserved for this unsolicited report; every
- * request the main thread makes uses a positive id.
+ * An earlier version of this file ran `probeArgon2Memory(ARGON2_PARAMS.m)` at
+ * module scope and posted the answer with `id: 0`, on the theory that the
+ * cheapest moment to check is while the worker is warming up anyway. It was
+ * wrong twice over. The main thread only ever waits for the reply to its own
+ * request, so nothing read it -- and every worker the DERIVATION path spawns
+ * would have allocated a 65 MiB `WebAssembly.Memory` and then immediately
+ * allocated another 64 MiB for the real work. On a device near its limit, the
+ * check meant to protect the user would have been the thing that pushed them
+ * over it.
+ *
+ * The probe is now only ever run on request, by `probeDerivationCapability()`,
+ * on a worker that does nothing else and is terminated before any derivation
+ * starts.
  */
-const result = probeArgon2Memory(ARGON2_PARAMS.m);
-post(
-  result.ok
-    ? { kind: "probed", id: 0, ok: true }
-    : { kind: "probed", id: 0, ok: false, reason: result.reason },
-);
