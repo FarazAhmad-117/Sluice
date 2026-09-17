@@ -44,10 +44,20 @@ import * as api from "../src/index";
  * zero-knowledge property itself. Without this export the package can mint
  * tokens and never use one.
  *
+ * `secretAssociatedData` and `tokenIdHash` ARE here, and their constants are
+ * not. These two are the reason the package exists at all for the SDK: they are
+ * the constructions where the backend and the SDK computing different bytes
+ * fails silently -- an opaque AEAD rejection months later, or a revocation that
+ * never reaches the bundle -- so there must be exactly one implementation and
+ * both sides must reach it. `SECRET_AAD_PREFIX` and `TOKEN_ID_HASH_LABEL` stay
+ * private precisely so that reaching them means calling the function; an
+ * exported prefix is a hand-joined string waiting to happen, which is the
+ * failure the move was made to delete.
+ *
  * `mukSalt`, `handshakeMessage`, `encode`, `assertValidNotice`, `importKey` and
- * the `*_INFO` / `*_PATTERN` / `*_BYTES` constants stay private. They are
- * encoding and validation internals; anything that needs them is a function
- * that is itself exported.
+ * the `*_INFO` / `*_PATTERN` / `*_BYTES` / `*_LABEL` constants stay private.
+ * They are encoding and validation internals; anything that needs them is a
+ * function that is itself exported.
  */
 const PUBLIC_SURFACE = [
   "ARGON2_PARAMS",
@@ -63,9 +73,11 @@ const PUBLIC_SURFACE = [
   "parseToken",
   "randomBytes",
   "seal",
+  "secretAssociatedData",
   "signHandshake",
   "signRevocation",
   "toHex",
+  "tokenIdHash",
   "unseal",
   "utf8",
   "verifyHandshake",
@@ -95,6 +107,21 @@ describe("public API surface", () => {
    */
   it("does not export the default Argon2 backend", () => {
     expect(Object.keys(api)).not.toContain("nobleArgon2");
+  });
+
+  /**
+   * The two protocol labels stay private, and this says so out loud rather
+   * than leaving it implicit in the list above.
+   *
+   * An exported `SECRET_AAD_PREFIX` reads like documentation and behaves like
+   * an invitation: the next caller writes `utf8.encode(SECRET_AAD_PREFIX + id)`
+   * at their own call site, skips the validation, and the package is back to
+   * two implementations of one rule. The prefix is reachable only by calling
+   * the function that uses it.
+   */
+  it("does not export the protocol labels, only the functions that bind them", () => {
+    expect(Object.keys(api)).not.toContain("SECRET_AAD_PREFIX");
+    expect(Object.keys(api)).not.toContain("TOKEN_ID_HASH_LABEL");
   });
 
   it("binds every exported name to something defined", () => {
