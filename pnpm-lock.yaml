@@ -39,6 +39,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@noble/curves':
+        specifier: ^1.6.0
+        version: 1.9.7
       '@sluice/crypto':
         specifier: workspace:*
         version: link:../../packages/crypto

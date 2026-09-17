@@ -108,3 +108,37 @@ body {
   color: var(--text-primary);
   font-family: var(--font-sans);
 }
+
+/* ---------------------------------------------------------------------------
+   Dashboard motion. Dial 3: one indeterminate sweep, used by the key
+   derivation progress bar and by nothing else.
+
+   Argon2id exposes no progress, so a determinate bar would be an invented
+   number. This sweep says "working" and the elapsed time beside it says how
+   long, which is the only honest pair available.
+
+   Written as a named class rather than a Tailwind arbitrary animation utility
+   so that the reduced-motion override below can target it without escaping a
+   class name full of brackets and dots.
+   --------------------------------------------------------------------------- */
+@keyframes sluice-sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
+
+.sluice-sweep {
+  animation: sluice-sweep 1.4s ease-in-out infinite;
+}
+
+/* Replaced by a static full-width bar rather than removed, so the control
+   still reads as active for a viewer who has asked for less motion. */
+@media (prefers-reduced-motion: reduce) {
+  .sluice-sweep {
+    animation: none;
+    width: 100%;
+  }
+}
