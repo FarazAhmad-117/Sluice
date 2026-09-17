@@ -1,3 +1,9 @@
+// @vitest-environment node
+//
+// The suite default is the edge runtime, to match the runtime Convex actually
+// executes these files in. This one test reads the source tree from disk, so
+// it is the deliberate exception rather than a reason to move everything back
+// to Node.
 import { describe, expect, it } from "vitest";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
