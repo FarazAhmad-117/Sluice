@@ -54,6 +54,12 @@ export default defineSchema({
 
   secrets: defineTable({
     environmentId: v.id("environments"),
+    // Every version of one logical secret shares a `lineageId`. Without it
+    // versioning is unrepresentable: the name is ciphertext under a random
+    // nonce, so two versions of the same secret are not comparable byte for
+    // byte and nothing else links the rows. You could have history or a usable
+    // listing, not both.
+    lineageId: v.string(),
     // Both name and value are ciphertext. The name is encrypted because a
     // plaintext column full of STRIPE_LIVE_SECRET_KEY tells an attacker with
     // database access exactly which ciphertext to prioritise, and tells the
@@ -64,8 +70,27 @@ export default defineSchema({
     valueNonce: v.string(),
     pdkVersion: v.number(),
     version: v.number(),
+    // Set when a newer version of the same lineage replaces this row. Unset
+    // means current. There is deliberately no `isCurrent` boolean: it would
+    // restate what this field already says and the two could disagree.
+    supersededAt: v.optional(v.number()),
     deletedAt: v.optional(v.number()),
-  }).index("by_environment", ["environmentId"]),
+  })
+    // One index serves three queries by prefix, which is why there is no
+    // separate `by_environment`:
+    //   [environmentId]                                -> every row, all history
+    //   [environmentId, supersededAt=undefined]        -> current, including deleted
+    //   [environmentId, supersededAt, deletedAt]       -> current and live
+    // The last is the dashboard load and the bundle fetch, so it has to be a
+    // single indexed read rather than a scan and a filter. Convex indexes a
+    // missing field as `undefined`, so `eq(field, undefined)` is a real index
+    // lookup, not a predicate applied after the fact.
+    .index("by_environment_current", [
+      "environmentId",
+      "supersededAt",
+      "deletedAt",
+    ])
+    .index("by_lineage_version", ["lineageId", "version"]),
 
   serviceTokens: defineTable({
     environmentId: v.id("environments"),

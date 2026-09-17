@@ -10,9 +10,8 @@ export async function getSecret(
 }
 
 /**
- * Returns soft-deleted rows too. Excluding `deletedAt` is a product rule and
- * belongs in the query that serves a listing, not here, because the bundle and
- * the audit view need different answers about a deleted secret.
+ * Every row in the environment, every version, superseded and soft-deleted
+ * included. This is the history and audit view, not the listing.
  */
 export async function listSecretsByEnvironment(
   ctx: QueryCtx,
@@ -20,7 +19,43 @@ export async function listSecretsByEnvironment(
 ): Promise<Doc<"secrets">[]> {
   return await ctx.db
     .query("secrets")
-    .withIndex("by_environment", (q) => q.eq("environmentId", environmentId))
+    .withIndex("by_environment_current", (q) =>
+      q.eq("environmentId", environmentId),
+    )
+    .collect();
+}
+
+/**
+ * The dashboard listing and the bundle fetch. A single indexed read: current
+ * version, not soft-deleted. Both exclusions are index equalities rather than
+ * a filter, because this runs on every page load and every token sync.
+ */
+export async function listCurrentSecretsByEnvironment(
+  ctx: QueryCtx,
+  environmentId: Id<"environments">,
+): Promise<Doc<"secrets">[]> {
+  return await ctx.db
+    .query("secrets")
+    .withIndex("by_environment_current", (q) =>
+      q
+        .eq("environmentId", environmentId)
+        .eq("supersededAt", undefined)
+        .eq("deletedAt", undefined),
+    )
+    .collect();
+}
+
+/**
+ * Every version of one logical secret, oldest first. This is what makes
+ * "the previous version remains readable" answerable at all.
+ */
+export async function listSecretVersions(
+  ctx: QueryCtx,
+  lineageId: string,
+): Promise<Doc<"secrets">[]> {
+  return await ctx.db
+    .query("secrets")
+    .withIndex("by_lineage_version", (q) => q.eq("lineageId", lineageId))
     .collect();
 }
 
