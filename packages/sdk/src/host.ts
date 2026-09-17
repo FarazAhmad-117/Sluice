@@ -40,8 +40,10 @@ import type { SluiceDecision, SluiceHost } from "./types";
  *     every dashboard.
  *  3. Feed `tick` at least every `MAX_CLOCK_STEP_MS`.
  *  4. Persist `core.epochFloor` after every accepted revocation and pass it
- *     back as `initialEpochFloor` on the next start. Without that, every
- *     restart re-opens a replay window.
+ *     back as `initialEpochFloor` on the next start. It is a required option
+ *     with no default precisely so this cannot be forgotten quietly; a shell
+ *     that answers `NO_PERSISTED_FLOOR` on every start has chosen to re-open a
+ *     replay window at every restart.
  *  5. Do not call `SluiceCore.handle` synchronously from inside a host
  *     callback. The core is reentrant-safe in the sense that no invariant
  *     breaks, but a nested `applyDecisions` can reach `exit` while the outer

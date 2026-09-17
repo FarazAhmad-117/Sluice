@@ -5,6 +5,8 @@ import {
   MAX_CLOCK_STEP_MS,
   MAX_DRAIN_MS,
   MIN_MAX_OFFLINE_DURATION_MS,
+  NO_PERSISTED_FLOOR,
+  type EpochFloor,
   type LogLevel,
   type SecretBundle,
   type ShutdownCause,
@@ -76,6 +78,16 @@ type State = "booting" | "running" | "draining" | "dead";
  */
 const PUBLIC_KEY_HEX_PATTERN = /^[0-9a-f]{64}$/;
 const TOKEN_ID_PATTERN = /^[0-9a-f]{32}$/;
+
+/**
+ * The internal spelling of "no revocation has been acted on".
+ *
+ * Private, and never crosses the API boundary in either direction: callers pass
+ * {@link NO_PERSISTED_FLOOR} and `epochFloor` hands it back. Epoch 0 is a legal
+ * notice epoch, so the empty floor has to sit below it, and a raw `-1` on the
+ * public surface is precisely the accident this package now refuses.
+ */
+const NOTHING_SEEN = -1;
 
 const DEFAULT_DRAIN_MS = 5_000;
 const DEFAULT_BOOT_TIMEOUT_MS = 30_000;
@@ -180,8 +192,22 @@ export class SluiceCore {
       );
     }
 
-    this.#epochFloor = options.initialEpochFloor ?? -1;
-    assertIntInRange("initialEpochFloor", this.#epochFloor, -1, Number.MAX_SAFE_INTEGER);
+    // No `??` here, deliberately. A default would be a silent off switch: a
+    // host that forgot to persist the floor would be replayable on every
+    // restart and nothing anywhere would say so. The caller states which case
+    // they are in, and `-1` -- the old default, and the value a caller would
+    // reach for by habit -- is rejected along with every other negative.
+    if (options.initialEpochFloor === NO_PERSISTED_FLOOR) {
+      this.#epochFloor = NOTHING_SEEN;
+    } else {
+      assertIntInRange(
+        "initialEpochFloor",
+        options.initialEpochFloor as number,
+        0,
+        Number.MAX_SAFE_INTEGER,
+      );
+      this.#epochFloor = options.initialEpochFloor as number;
+    }
   }
 
   get state(): State {
@@ -193,14 +219,18 @@ export class SluiceCore {
   }
 
   /**
-   * The highest revocation epoch this core has acted on, or -1.
+   * The highest revocation epoch this core has acted on, or
+   * {@link NO_PERSISTED_FLOOR} if it has acted on none.
    *
-   * PERSIST THIS. Ed25519 signatures are deterministic, so a genuine notice is
-   * a freely copyable pair of bytes that verifies forever. The epoch counter is
-   * the only defence, and a process that restarts with floor -1 has seen
-   * nothing, so any captured genuine notice is above its floor and replaying it
-   * is a working denial of service. A host that does not persist this value and
-   * pass it back as `initialEpochFloor` is replayable across every restart.
+   * PERSIST THIS AFTER EVERY ACCEPTED NOTICE AND PASS IT BACK AS
+   * `initialEpochFloor`; a host that does not is replayable on every restart,
+   * because Ed25519 signatures are deterministic and a captured genuine notice
+   * verifies forever against a process that has seen nothing.
+   *
+   * The return type is the same union `initialEpochFloor` accepts, so a host
+   * can store this value verbatim and hand it straight back without ever
+   * translating a sentinel -- which is how the old `-1` would have leaked into
+   * configuration and reopened the replay window it was meant to close.
    *
    * Deduplicating by signature bytes is NOT a substitute and must not be added.
    * Ed25519 admits multiple valid encodings of a signature for one message and
@@ -208,8 +238,11 @@ export class SluiceCore {
    * anything can still produce different bytes that verify for the same notice.
    * The epoch is immune to that; a set of seen byte strings is not.
    */
-  get epochFloor(): number {
-    return this.#epochFloor;
+  get epochFloor(): EpochFloor {
+    // Returns the same union the constructor takes, so "persist this and pass
+    // it back" is always sound -- including on a process that has never seen a
+    // revocation, where a raw `-1` would be rejected on the way back in.
+    return this.#epochFloor === NOTHING_SEEN ? NO_PERSISTED_FLOOR : this.#epochFloor;
   }
 
   get drainMs(): number {

@@ -157,19 +157,46 @@ export interface SluiceCoreOptions {
   readonly bootTimeoutMs?: number;
 
   /**
-   * The highest revocation epoch this token has already acted on, restored
-   * from host storage. Default -1, meaning "nothing seen".
+   * The highest revocation epoch this token has already acted on, restored from
+   * host storage -- or {@link NO_PERSISTED_FLOOR} to say, explicitly, that
+   * there is nothing stored.
    *
-   * A HOST THAT DOES NOT PERSIST THIS IS REPLAYABLE. Ed25519 signatures are
-   * deterministic and a notice is a freely copyable pair of bytes, so anyone
-   * who ever observed a genuine revocation can resend it verbatim forever. A
-   * fresh process with floor -1 accepts it, because it has seen nothing and any
-   * genuine epoch is above -1. Persist {@link SluiceCore.epochFloor} after
-   * every accepted notice and pass it back here on restart, or accept that a
-   * restart re-opens a replay window that lasts until the next genuine notice.
+   * REQUIRED, WITH NO DEFAULT, BECAUSE A HOST THAT DOES NOT PERSIST THIS IS
+   * REPLAYABLE ON EVERY RESTART: anyone who ever observed a genuine revocation
+   * can resend those exact bytes forever, and a process that has seen nothing
+   * accepts them. Persist {@link SluiceCore.epochFloor} after every accepted
+   * notice and pass it straight back here.
+   *
+   * WHY A SENTINEL RATHER THAN A `-1` DEFAULT. Ed25519 signatures are
+   * deterministic, so a notice is a freely copyable pair of bytes that verifies
+   * for all time, and this floor is the ONLY thing between that and a working
+   * denial of service. A default turns forgetting into silence. Requiring the
+   * field makes a caller choose, and naming the choice `NO_PERSISTED_FLOOR`
+   * makes "I have no storage" impossible to confuse with "I restored a floor".
+   * A bare `-1` is now REJECTED: it is what the default used to be, and so it
+   * is exactly the value a caller would reach for out of habit.
+   *
+   * {@link SluiceCore.epochFloor} returns this same union, so whatever a host
+   * reads out is always valid to pass back in, including before any revocation
+   * has been seen.
    */
-  readonly initialEpochFloor?: number;
+  readonly initialEpochFloor: EpochFloor;
 }
+
+/**
+ * The explicit "I have nothing stored" answer for
+ * {@link SluiceCoreOptions.initialEpochFloor}.
+ *
+ * A process constructed with this accepts any genuine notice for its token,
+ * including one captured months ago and replayed now. That is unavoidable on a
+ * real first boot. It is also the state a host remains in permanently if it
+ * never persists {@link SluiceCore.epochFloor}, which is the whole reason the
+ * option cannot be omitted.
+ */
+export const NO_PERSISTED_FLOOR = "no-persisted-floor";
+
+/** A restored revocation epoch, or the explicit absence of one. */
+export type EpochFloor = number | typeof NO_PERSISTED_FLOOR;
 
 /**
  * The boundary this package refuses to cross.

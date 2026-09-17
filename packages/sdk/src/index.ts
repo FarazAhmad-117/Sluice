@@ -28,9 +28,16 @@ export const VERSION = "sluice-sdk/v1";
 export { SluiceCore } from "./core";
 export { applyDecisions } from "./host";
 export { sanitiseForLog } from "./sanitise";
-export { EXIT_CODE, MAX_CLOCK_STEP_MS, MAX_DRAIN_MS, MIN_MAX_OFFLINE_DURATION_MS } from "./types";
+export {
+  EXIT_CODE,
+  MAX_CLOCK_STEP_MS,
+  MAX_DRAIN_MS,
+  MIN_MAX_OFFLINE_DURATION_MS,
+  NO_PERSISTED_FLOOR,
+} from "./types";
 
 export type {
+  EpochFloor,
   LogLevel,
   SecretBundle,
   ShutdownCause,

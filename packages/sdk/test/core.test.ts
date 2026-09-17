@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { signRevocation } from "@sluice/crypto";
 import { SluiceCore } from "../src/core";
-import { MAX_DRAIN_MS, MIN_MAX_OFFLINE_DURATION_MS } from "../src/types";
+import { MAX_DRAIN_MS, MIN_MAX_OFFLINE_DURATION_MS, NO_PERSISTED_FLOOR } from "../src/types";
 import {
   bundle,
   makeCore,
@@ -30,11 +30,13 @@ function running(core: SluiceCore, at = 1000): SluiceCore {
 }
 
 describe("construction", () => {
+  const floor = { initialEpochFloor: NO_PERSISTED_FLOOR } as const;
+
   it("requires the org revocation public key and refuses a malformed one", () => {
-    expect(() => new SluiceCore({ orgRevocationPublicKey: "", tokenId })).toThrow(
+    expect(() => new SluiceCore({ orgRevocationPublicKey: "", tokenId, ...floor })).toThrow(
       /orgRevocationPublicKey/,
     );
-    expect(() => new SluiceCore({ orgRevocationPublicKey: "zz", tokenId })).toThrow(
+    expect(() => new SluiceCore({ orgRevocationPublicKey: "zz", tokenId, ...floor })).toThrow(
       /orgRevocationPublicKey/,
     );
     // Uppercase hex decodes to the same bytes but is a second spelling of one
@@ -45,13 +47,14 @@ describe("construction", () => {
         new SluiceCore({
           orgRevocationPublicKey: org.publicKeyHex.toUpperCase(),
           tokenId,
+          ...floor,
         }),
     ).toThrow(/orgRevocationPublicKey/);
   });
 
   it("refuses a malformed token id", () => {
     expect(
-      () => new SluiceCore({ orgRevocationPublicKey: org.publicKeyHex, tokenId: "nope" }),
+      () => new SluiceCore({ orgRevocationPublicKey: org.publicKeyHex, tokenId: "nope", ...floor }),
     ).toThrow(/tokenId/);
   });
 
@@ -80,11 +83,60 @@ describe("construction", () => {
     ).not.toThrow();
   });
 
-  it("starts with an epoch floor of -1 and accepts a restored one", () => {
-    expect(makeCore(org, tokenId).epochFloor).toBe(-1);
+  it("requires an epoch floor decision and will not invent one", () => {
+    // A default would be a silent off switch: a host that forgot to persist the
+    // floor would be replayable on every restart and nothing would say so.
+    expect(
+      () =>
+        new SluiceCore({
+          orgRevocationPublicKey: org.publicKeyHex,
+          tokenId,
+        } as unknown as ConstructorParameters<typeof SluiceCore>[0]),
+    ).toThrow(/initialEpochFloor/);
+  });
+
+  it("accepts a restored floor and the explicit first-boot sentinel", () => {
     expect(makeCore(org, tokenId, { initialEpochFloor: 12 }).epochFloor).toBe(12);
+    expect(makeCore(org, tokenId, { initialEpochFloor: 0 }).epochFloor).toBe(0);
+    expect(makeCore(org, tokenId, { initialEpochFloor: NO_PERSISTED_FLOOR }).epochFloor).toBe(
+      NO_PERSISTED_FLOOR,
+    );
+  });
+
+  it("refuses -1, which used to be the sentinel and is now a typo", () => {
+    // The old default. Accepting it would let a caller reach the off switch by
+    // habit, or by persisting a getter that once returned it.
+    expect(() => makeCore(org, tokenId, { initialEpochFloor: -1 })).toThrow(/initialEpochFloor/);
     expect(() => makeCore(org, tokenId, { initialEpochFloor: -2 })).toThrow(/initialEpochFloor/);
     expect(() => makeCore(org, tokenId, { initialEpochFloor: 1.5 })).toThrow(/initialEpochFloor/);
+    expect(() =>
+      makeCore(org, tokenId, { initialEpochFloor: "yes" as unknown as number }),
+    ).toThrow(/initialEpochFloor/);
+  });
+
+  it("round-trips: whatever epochFloor returns is a value the constructor accepts", () => {
+    // The host contract is "persist this, pass it back". That only works if the
+    // getter's output is always valid input, including before any revocation.
+    const fresh = makeCore(org, tokenId, { initialEpochFloor: NO_PERSISTED_FLOOR });
+    expect(() => makeCore(org, tokenId, { initialEpochFloor: fresh.epochFloor })).not.toThrow();
+    const revoked = running(makeCore(org, tokenId, { initialEpochFloor: NO_PERSISTED_FLOOR }));
+    revoked.handle(signedRevocation(org, notice({ tokenId, epoch: 0 }), 2000));
+    expect(revoked.epochFloor).toBe(0);
+    const restored = makeCore(org, tokenId, { initialEpochFloor: revoked.epochFloor });
+    // The restored core refuses the notice the first one already acted on.
+    expect(
+      pick(
+        running(restored, 3000).handle(signedRevocation(org, notice({ tokenId, epoch: 0 }), 4000)),
+        "shutdown",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("a fresh floor still accepts epoch 0, which is a legal notice epoch", () => {
+    const core = running(makeCore(org, tokenId, { initialEpochFloor: NO_PERSISTED_FLOOR }));
+    expect(
+      pick(core.handle(signedRevocation(org, notice({ tokenId, epoch: 0 }), 2000)), "shutdown"),
+    ).toHaveLength(1);
   });
 });
 
@@ -197,7 +249,7 @@ describe("value rotation and epoch bumps never crash", () => {
     const core = running(makeCore(org, tokenId));
     core.handle({ type: "bundle", now: 2000, bundle: bundle({ A: "1" }, 9_000) });
     core.handle({ type: "epoch-bump", now: 2001, epoch: 9_001 });
-    expect(core.epochFloor).toBe(-1);
+    expect(core.epochFloor).toBe(NO_PERSISTED_FLOOR);
     const out = core.handle({ ...signedRevocation(org, notice({ tokenId, epoch: 0 }), 2002) });
     expect(pick(out, "shutdown")).toHaveLength(1);
   });
@@ -312,7 +364,7 @@ describe("revocation, the only path to a shutdown on a running process", () => {
     expect(pick(out, "log").some((l) => l.level === "error")).toBe(true);
     expect(pick(out, "metric").length).toBeGreaterThan(0);
     expect(core.state).toBe("running");
-    expect(core.epochFloor).toBe(-1);
+    expect(core.epochFloor).toBe(NO_PERSISTED_FLOOR);
   });
 
   it("a signature from a DIFFERENT org key is ignored", () => {
@@ -334,7 +386,7 @@ describe("revocation, the only path to a shutdown on a running process", () => {
     const other = tokenIdHex();
     const out = core.handle(signedRevocation(org, notice({ tokenId: other, epoch: 900 }), 2000));
     expect(pick(out, "shutdown")).toHaveLength(0);
-    expect(core.epochFloor).toBe(-1);
+    expect(core.epochFloor).toBe(NO_PERSISTED_FLOOR);
     expect(core.state).toBe("running");
     // And our own kill switch still works afterwards.
     expect(
@@ -367,7 +419,7 @@ describe("revocation, the only path to a shutdown on a running process", () => {
       signature,
     });
     expect(pick(out, "shutdown")).toHaveLength(0);
-    expect(core.epochFloor).toBe(-1);
+    expect(core.epochFloor).toBe(NO_PERSISTED_FLOOR);
   });
 
   it("an unsigned notice cannot raise the epoch floor and disable the kill switch", () => {
@@ -380,7 +432,7 @@ describe("revocation, the only path to a shutdown on a running process", () => {
       notice: notice({ tokenId, epoch: Number.MAX_SAFE_INTEGER }),
       signature: new Uint8Array(64),
     });
-    expect(core.epochFloor).toBe(-1);
+    expect(core.epochFloor).toBe(NO_PERSISTED_FLOOR);
     expect(
       pick(core.handle(signedRevocation(org, notice({ tokenId, epoch: 1 }), 2001)), "shutdown"),
     ).toHaveLength(1);

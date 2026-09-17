@@ -1,7 +1,13 @@
 import { ed25519 } from "@noble/curves/ed25519";
 import { randomBytes, signRevocation, toHex, type RevocationNotice } from "@sluice/crypto";
 import { SluiceCore } from "../src/core";
-import type { SecretBundle, SluiceCoreOptions, SluiceDecision, SluiceEvent } from "../src/types";
+import { NO_PERSISTED_FLOOR } from "../src/types";
+import type {
+  SecretBundle,
+  SluiceCoreOptions,
+  SluiceDecision,
+  SluiceEvent,
+} from "../src/types";
 
 export interface Org {
   readonly privateKey: Uint8Array;
@@ -43,6 +49,9 @@ export function makeCore(
   return new SluiceCore({
     orgRevocationPublicKey: org.publicKeyHex,
     tokenId,
+    // Tests opt into the first-boot sentinel by default. Production callers
+    // cannot: `initialEpochFloor` is required precisely so the choice is made.
+    initialEpochFloor: NO_PERSISTED_FLOOR,
     ...overrides,
   });
 }
