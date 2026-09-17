@@ -120,6 +120,23 @@ means nothing without naming the adversary, so the short version is here too.
 These are real limits, stated plainly. They are not oversights and they are
 not going to be quietly fixed later.
 
+- **Account enumeration.** Signup rejects a duplicate email with a message
+  saying so, so anyone can test any address and learn whether it has an
+  account. Login deliberately returns an identical error for a wrong verifier
+  and an unknown address, but that hardening buys nothing while signup answers
+  the same question for free, and it would be dishonest to describe it as an
+  anti-enumeration defence. Treat account existence as public. Closing this
+  means signup succeeding unconditionally and sending the "you already have an
+  account" notice by email, which needs email delivery that does not exist
+  yet.
+- **A measured timing difference on login.** A login for a known address is
+  consistently 0.08 to 0.15 ms slower than one for an unknown address, about 5
+  to 8 percent, because the known path materialises a user document while the
+  unknown path resolves an empty index range. The error payload is byte
+  identical in both cases, and the constant-time comparison and decoy hash do
+  their jobs, but the document read is not something a mutation can hide. It
+  sits far below network jitter, so it is not extractable from a single sample,
+  and it is extractable with enough of them. Measured rather than assumed.
 - **A compromised client device.** If an admin's laptop is owned, their keys
   are owned. Sluice cannot tell the difference between the admin and malware
   running as the admin.
