@@ -173,6 +173,30 @@ secret-decrypting material. Nothing that could open customer data is stored
 server side. If you find a place where that is not true, that is a critical
 finding and this project wants to hear about it before anyone else does.
 
+### Where the dashboard session token lives
+
+In `sessionStorage`, in plaintext, alongside the user id, the normalised email,
+both public keys and both wrapped key blobs. **Any script running on the
+dashboard origin can read all of it.** One cross-site scripting flaw, in the
+dashboard or in any dependency it loads, takes a live session for its full
+lifetime.
+
+This is architectural rather than unfinished work. Convex functions are called
+from the browser and carry no headers, so the session token travels as a
+function argument the server verifies against stored state, and an argument
+has to be readable by the code that builds the call. A cookie the JavaScript
+cannot read is a cookie the JavaScript cannot use. The only fix is proxying
+every Convex call through a server route, which also discards the reactive
+subscriptions that make instant revocation work.
+
+What is never stored anywhere in the browser: the master unlock key, the
+unwrapped private keys, the password, or any decrypted secret. A page refresh
+leaves you signed in and locked, and unlocking needs the password again.
+
+No obfuscation has been applied to the stored token, deliberately. An encoding
+that only looks like protection changes what a reviewer believes without
+changing what an attacker gets.
+
 ### What the server can see, stated plainly
 
 The claim above is about secret names and secret values. It is not a claim
