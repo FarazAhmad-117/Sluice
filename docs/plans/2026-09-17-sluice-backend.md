@@ -429,6 +429,22 @@ The schema as originally written in this plan had four defects, all found by rev
 
 Write a Convex cron that calls it and pages using the returned count. **Do not call it with an unbounded limit.** A reaper that tries to delete every expired row in one transaction will eventually exceed Convex's per-transaction limits, and from that point it never succeeds again: the table grows forever while the cleanup appears to run.
 
+## Immediate follow-ups after the session work lands
+
+Ordered by how fast they get more expensive.
+
+1. **Delete or re-export `convex/lib/aad.ts`.** `@sluice/crypto` now owns the secret AAD rule, so there are currently **two** definitions of `"sluice/secret/v1|"` and both look authoritative. That is strictly worse than the single-sided definition it replaced. The crypto version also fixes two real holes the Convex one still has, verified rather than reasoned about:
+   - `TextEncoder` substitutes U+FFFD for unpaired surrogates instead of throwing, so the environment ids `"\uD800"`, `"\uDC00"` and `"�"` are three distinct index keys that encode to identical bytes. Each can open the others' ciphertext. That is exactly the cross-environment binding failure the AAD exists to prevent.
+   - A non-string id is not caught. A numeric `42` produces the well-formed AAD `"sluice/secret/v1|42"`, and `undefined` throws an unhelpful `TypeError` about reading a property rather than a useful error. An id off a database row or a URL segment is exactly where a number or a missing value comes from.
+
+   The signature changed to an object argument. There are **zero callers today**, so the migration is free now and will not be once the web client seals its first secret.
+
+2. **Ban the literal outside the crypto package.** Nothing mechanically stops the SDK or the dashboard from re-deriving the AAD by hand. A lint rule forbidding `sluice/secret/v1` anywhere except `packages/crypto` is the only enforcement available, and it belongs in the ESLint config.
+
+3. **Use `tokenIdHash` from `@sluice/crypto` at both write sites.** `serviceTokens` is written at token creation and `revocations` at revocation. Neither exists yet, so the construction is still free to choose. The moment the first row is written it is frozen, and a mismatch is unfixable without re-deriving from plaintext token ids the server does not have. **Required test: insert a service token and a revocation through the real code path and assert the join returns the notice.** Every fixture that seeds both hash values by hand passes regardless, which is the whole trap.
+
+4. **Decide how `handshakeNonces.signatureHash` is computed.** It is a column with an index and a repo function that takes it pre-computed, and **nothing anywhere produces it**. Identical shape to the token id hash. It is server-only so drift is less likely, but it is the replay cache for the handshake and "the server hashes it consistently" is currently an assumption with no code behind it.
+
 ## Requirements on the SDK transport task, from building the decision core
 
 `packages/sdk` now holds a pure decision core: events in, decisions out, no network, no clock of its own. 93 tests, and the property that matters is enumerated rather than sampled. 599,184 benign sequences across 4,108,704 events produce no shutdown, and 1,110 hostile sequences with real Ed25519 verification produce no shutdown and never move the epoch floor.
