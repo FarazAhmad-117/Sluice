@@ -540,6 +540,46 @@ describe("the clock is not trusted", () => {
     expect(pick(core.handle({ type: "tick", now: 11_000 }), "exit")).toHaveLength(1);
   });
 
+  it("a garbage clock reading on the revocation event itself still exits", () => {
+    // The drain deadline is `now + drainMs` taken from the revocation event. A
+    // host that read a far-future clock at exactly that moment would otherwise
+    // set a deadline real time never reaches, and the revoked process would run
+    // forever. The backwards-step rule catches it on the next real timestamp.
+    const core = running(makeCore(org, tokenId, { drainMs: 5000 }));
+    core.handle(signedRevocation(org, notice({ tokenId, epoch: 1 }), 1e15));
+    expect(core.state).toBe("draining");
+    expect(pick(core.handle({ type: "tick", now: 2100 }), "exit")).toHaveLength(1);
+  });
+
+  it("a far-past clock reading on the revocation event can only shorten the drain", () => {
+    // The deadline lands in the bogus frame, so once real timestamps resume the
+    // drain ends no later than it would have: 5000 absolute, against a
+    // revocation whose real time was 1001. Shorter is the safe direction.
+    const core = running(makeCore(org, tokenId, { drainMs: 5000 }));
+    core.handle(signedRevocation(org, notice({ tokenId, epoch: 1 }), 0));
+    expect(pick(core.handle({ type: "tick", now: 4_999 }), "exit")).toHaveLength(0);
+    expect(pick(core.handle({ type: "tick", now: 5_000 }), "exit")).toHaveLength(1);
+  });
+
+  it("an extreme far-past reading exits on the next real timestamp", () => {
+    const core = running(makeCore(org, tokenId, { drainMs: 5000 }));
+    core.handle(signedRevocation(org, notice({ tokenId, epoch: 1 }), -1e15));
+    expect(pick(core.handle({ type: "tick", now: 2100 }), "exit")).toHaveLength(1);
+  });
+
+  it("a frozen clock is the one case the core cannot resolve, and it does not pretend to", () => {
+    // Documented limit, asserted so it cannot change silently: with a clock
+    // that never advances, no time-based deadline can fire. The defence is a
+    // supervisor outside the process, not a crude event counter in here that
+    // would truncate every legitimate drain.
+    const core = running(makeCore(org, tokenId, { drainMs: 5000 }));
+    core.handle(signedRevocation(org, notice({ tokenId, epoch: 1 }), 2000));
+    for (let i = 0; i < 50; i++) {
+      expect(pick(core.handle({ type: "tick", now: 2000 }), "exit")).toHaveLength(0);
+    }
+    expect(core.state).toBe("draining");
+  });
+
   it("a forward clock jump cannot trigger an offline shutdown while connected", () => {
     const core = running(makeCore(org, tokenId, { maxOfflineDurationMs: 1_000 }));
     expect(pick(core.handle({ type: "tick", now: 1e15 }), "shutdown")).toHaveLength(0);
