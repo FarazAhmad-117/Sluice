@@ -429,6 +429,32 @@ The schema as originally written in this plan had four defects, all found by rev
 
 Write a Convex cron that calls it and pages using the returned count. **Do not call it with an unbounded limit.** A reaper that tries to delete every expired row in one transaction will eventually exceed Convex's per-transaction limits, and from that point it never succeeds again: the table grows forever while the cleanup appears to run.
 
+## BLOCKING GAP: there is no session layer
+
+Found while building Tasks 8 and 9, and it is a defect in this plan rather than in that work.
+
+`callerId` is a mutation argument. Any client that can reach the deployment can pass any user id and be treated as that user. Every authorisation test in `orgs.test.ts`, `projects.test.ts`, `environments.test.ts` and `secrets.test.ts` proves the authorisation *logic* is correct and proves nothing about the *boundary*: they show a non-member is refused, not that an attacker cannot simply claim to be a member.
+
+Task 7 returns wrapped key material and nothing a later request can present as proof of identity. Task 10 introduces bearer credentials for service tokens only, never for people. So no task in this plan creates a dashboard session, which means the hierarchy is currently unauthenticated in practice.
+
+**This must be built before the deployment is exposed to anything, and before any dashboard work starts.** A dashboard written against `callerId` as an argument would need every call site changed afterwards.
+
+The cost of the gap is contained deliberately: the identity is resolved in exactly one place, `callerArg` and `resolveCaller` in `convex/lib/authz.ts`. Moving to `ctx.auth` is one edit there rather than fifteen across the handlers.
+
+### The session task, to be written properly before execution
+
+- Decide the mechanism. Convex has first-class auth integration, and a custom session table is the alternative. Custom sessions mean owning rotation, expiry and revocation, which is real work on a security product.
+- Whatever it is, it must produce a server-verified identity reachable through `ctx.auth`, not a claim the client supplies.
+- `callerArg` is deleted in the same change, so the old path cannot survive anywhere.
+- The authorisation tests get a companion that asserts an unauthenticated call is refused, which is the test none of them can express today.
+
+## Also outstanding, found in the same review
+
+- **There is no mutation that adds a member to an org, so there is no way to issue a second revocation grant.** The schema moved to a grants table precisely so more than one person can sign a revocation notice. Structurally that is fixed; operationally the wedge is still bus-factor one until invitations ship. Whoever builds invitations must ship grant issuance in the same change, or the schema change bought nothing.
+- **Reads are not audited and on Convex they cannot be.** Queries cannot write, so `listSecrets` and `getSecret` leave no trace. An insider with a valid session can drain every ciphertext in an org and the audit log shows nothing. Fixing it means making the read path a mutation or an action, with a real caching cost. Decide it deliberately rather than discover it.
+- **`orgMembers.role` is stored and never enforced.** A `member` can currently create projects, create environments and delete secrets exactly like an owner. A field that implies a permission model which does not exist is worse than no field. The check belongs in `convex/lib/authz.ts`.
+- **The AAD rule belongs in `@sluice/crypto`, not in `convex/lib/aad.ts`.** The SDK cannot import from `convex/`, so it will hand-copy the literal `"sluice/secret/v1|"`, and one character of drift produces ciphertext nobody can read with no error until someone tries. This is the same failure class the token-id hashing amendment already calls out. Both sides already depend on the crypto package. Move it there.
+
 ## Decisions carried into this plan, do not relitigate
 
 - **Convex-native.** The `repo/` layer is discipline, not portability. Do not turn it into an interface.
