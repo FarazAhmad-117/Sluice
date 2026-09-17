@@ -39,8 +39,11 @@ jobs:
 
       # Recursive on purpose. The workspace gains packages as the project is
       # built, and a hardcoded package list would silently stop covering them.
+      # --include-workspace-root is load bearing: pnpm -r skips the root
+      # project, and the Convex backend and its tests live in convex/ at the
+      # root rather than in a package, so without this flag they never run.
       - name: Typecheck
-        run: pnpm -r typecheck
+        run: pnpm -r --include-workspace-root typecheck
 
       - name: Test
-        run: pnpm -r test
+        run: pnpm -r --include-workspace-root test

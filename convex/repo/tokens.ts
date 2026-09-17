@@ -1,0 +1,93 @@
+import type { WithoutSystemFields } from "convex/server";
+import type { Doc, Id } from "../_generated/dataModel";
+import type { MutationCtx, QueryCtx } from "../_generated/server";
+
+// serviceTokens
+
+export async function getServiceToken(
+  ctx: QueryCtx,
+  id: Id<"serviceTokens">,
+): Promise<Doc<"serviceTokens"> | null> {
+  return await ctx.db.get(id);
+}
+
+/**
+ * The handshake lookup. The caller hashes the incoming plaintext token id and
+ * passes the hash, because the plaintext id is never stored.
+ */
+export async function getServiceTokenByIdHash(
+  ctx: QueryCtx,
+  tokenIdHash: string,
+): Promise<Doc<"serviceTokens"> | null> {
+  return await ctx.db
+    .query("serviceTokens")
+    .withIndex("by_token_id_hash", (q) => q.eq("tokenIdHash", tokenIdHash))
+    .unique();
+}
+
+export async function listServiceTokensByEnvironment(
+  ctx: QueryCtx,
+  environmentId: Id<"environments">,
+): Promise<Doc<"serviceTokens">[]> {
+  return await ctx.db
+    .query("serviceTokens")
+    .withIndex("by_environment", (q) => q.eq("environmentId", environmentId))
+    .collect();
+}
+
+export async function insertServiceToken(
+  ctx: MutationCtx,
+  doc: WithoutSystemFields<Doc<"serviceTokens">>,
+): Promise<Id<"serviceTokens">> {
+  return await ctx.db.insert("serviceTokens", doc);
+}
+
+export async function patchServiceToken(
+  ctx: MutationCtx,
+  id: Id<"serviceTokens">,
+  patch: Partial<WithoutSystemFields<Doc<"serviceTokens">>>,
+): Promise<void> {
+  await ctx.db.patch(id, patch);
+}
+
+// revocations
+
+/**
+ * `tokenId` here is the plaintext id, not the hash. The SDK matches on it and
+ * the signed notice covers it, so hashing it would break verification.
+ */
+export async function listRevocationsByTokenId(
+  ctx: QueryCtx,
+  tokenId: string,
+): Promise<Doc<"revocations">[]> {
+  return await ctx.db
+    .query("revocations")
+    .withIndex("by_token_id", (q) => q.eq("tokenId", tokenId))
+    .collect();
+}
+
+export async function insertRevocation(
+  ctx: MutationCtx,
+  doc: WithoutSystemFields<Doc<"revocations">>,
+): Promise<Id<"revocations">> {
+  return await ctx.db.insert("revocations", doc);
+}
+
+// handshakeNonces
+
+export async function getHandshakeNonce(
+  ctx: QueryCtx,
+  signatureHash: string,
+): Promise<Doc<"handshakeNonces"> | null> {
+  return await ctx.db
+    .query("handshakeNonces")
+    .withIndex("by_signature_hash", (q) => q.eq("signatureHash", signatureHash))
+    .unique();
+}
+
+export async function insertHandshakeNonce(
+  ctx: MutationCtx,
+  doc: WithoutSystemFields<Doc<"handshakeNonces">>,
+): Promise<Id<"handshakeNonces">> {
+  return await ctx.db.insert("handshakeNonces", doc);
+}

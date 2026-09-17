@@ -1,0 +1,3 @@
+# repo
+
+This directory exists so that the data surface of Sluice can be enumerated by reading one directory: every read and every write to the database happens in a plain function here, and `repo.test.ts` fails the build if `ctx.db` appears anywhere else under `convex/`. The point is review and audit, not portability, so that a reviewer asking "what can touch the `secrets` table" gets a complete answer from `grep` rather than from trust. Nobody should turn this into an interface, a class, an adapter or a base repository; the moment it gains an abstraction it stops being a list of everything that can happen and becomes one more layer to read through.

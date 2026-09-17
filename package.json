@@ -3,11 +3,18 @@
   "private": true,
   "packageManager": "pnpm@10.30.3",
   "scripts": {
-    "test": "pnpm -r test",
-    "build": "pnpm -r build",
-    "typecheck": "pnpm -r typecheck"
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "test:all": "pnpm -r --include-workspace-root test",
+    "typecheck:all": "pnpm -r --include-workspace-root typecheck",
+    "build": "pnpm -r build"
   },
   "dependencies": {
     "convex": "^1.45.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.3",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.9"
   }
 }
