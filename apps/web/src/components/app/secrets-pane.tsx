@@ -1,9 +1,12 @@
 "use client";
 
 import { useState } from "react";
+import type { Id } from "@convex/_generated/dataModel";
 import { Eyebrow, StatusPill, focusRing, quietButton } from "@/components/app/controls";
-import { VALUE_MASK } from "@/lib/secrets/decrypt";
-import type { OpenedSecret, SealedSecretRow } from "@/lib/secrets/decrypt";
+import { NewSecretForm } from "@/components/app/create-forms";
+import { VALUE_MASK, openSecretValue } from "@/lib/secrets/decrypt";
+import type { SealedSecretRow } from "@/lib/secrets/decrypt";
+import type { ProjectDataKeyState } from "@/lib/secrets/use-project-data-key";
 
 /**
  * THE CENTRE PANE: the secrets of one environment.
@@ -12,20 +15,25 @@ import type { OpenedSecret, SealedSecretRow } from "@/lib/secrets/decrypt";
  * vertical rhythm and hairline dividers, NOT from small type: body text stays
  * at 16px, which is the accessibility floor this product holds to.
  *
- * WHAT THIS TABLE SHOWS AND WHAT IT CANNOT. It reads `secrets.listSecrets` for
- * real and renders one row per live secret with its real metadata. It does NOT
- * show names and values, because it cannot get them: every secret is sealed
- * under the project data key for its environment, the wrapped copies of that
- * key live in `pdkGrants`, and `convex/` exports NO FUNCTION THAT READS OR
- * WRITES THAT TABLE. The client therefore has no route to the key, and no
- * amount of work on this page changes that.
+ * WHAT THIS TABLE SHOWS. It reads `secrets.listSecrets` for real and, when this
+ * client holds the project data key for the environment, it shows every NAME in
+ * the clear and every VALUE masked. A previous revision of this comment said
+ * names and values could never be shown because no Convex function read
+ * `pdkGrants`; that was true then and is not now. `createEnvironment` mints the
+ * creator's grant in the same transaction, `getMyPdkGrant` returns it, and the
+ * shell opens it with the master unlock key.
  *
- * So the rows say "sealed" and show the lineage id, which is the one
- * non-secret identifier a row has. They do not show a spinner, because nothing
- * is loading. They do not show a placeholder name, because there is no honest
- * one to show. When a grant query lands, `openSecret` in `lib/secrets/decrypt.ts`
- * is what fills `opened` and every row here starts working with no change to
- * this file beyond deleting the banner.
+ * A NAME IS OPENED FOR EVERY ROW. A VALUE IS OPENED FOR NONE, until somebody
+ * presses Reveal on that row. The distinction is the whole reason `decrypt.ts`
+ * has `openSecretName` and `openSecretValue` beside `openSecret`: decrypting a
+ * value to render a list nobody asked to reveal would put every plaintext in
+ * the environment into memory for as long as the list was on screen. Here a
+ * revealed value lives in one map, keyed by row, and is DELETED the moment the
+ * row is hidden, the environment changes, or the key goes away.
+ *
+ * A row whose name did not open renders as sealed rather than as an error. That
+ * happens for real: a row written under an earlier project data key version
+ * does not open under the current one.
  *
  * MASKING. The mask is a FIXED WIDTH regardless of the value. One dot per
  * character would publish the length of every secret to anyone looking at a
@@ -33,38 +41,137 @@ import type { OpenedSecret, SealedSecretRow } from "@/lib/secrets/decrypt";
  */
 
 export interface SecretsPaneProps {
+  readonly environmentId: Id<"environments"> | null;
   readonly environmentName: string | null;
   readonly rows: readonly SealedSecretRow[] | undefined;
-  /** Opened name and value by `secretId`. Empty until a project data key exists. */
-  readonly opened: ReadonlyMap<string, OpenedSecret>;
+  /** Opened NAME by `secretId`. A row that did not open is absent. */
+  readonly names: ReadonlyMap<string, string>;
+  /** The project data key, when this client holds one for this environment. */
+  readonly pdk: Uint8Array | null;
+  readonly keyState: ProjectDataKeyState;
   readonly locked: boolean;
   readonly selectedSecretId: string | null;
   onSelect(secretId: string): void;
 }
+
+const EMPTY_VALUES: ReadonlyMap<string, string> = new Map();
 
 /** Enough of a lineage id to tell two rows apart, without the full 32. */
 function shortLineage(lineageId: string): string {
   return lineageId.slice(0, 12);
 }
 
+/**
+ * The sentence under the header when no value on this page can be opened.
+ *
+ * `null` when a key is in hand, so the banner disappears entirely rather than
+ * becoming a permanent strip of reassurance.
+ */
+function keyNotice(keyState: ProjectDataKeyState): string | null {
+  switch (keyState.status) {
+    case "ready":
+    case "idle":
+      return null;
+    case "loading":
+      return "Opening the key for this environment.";
+    case "locked":
+      return "Your vault is locked, so names and values stay sealed. Unlock it in the right hand panel.";
+    case "refused":
+      return `This account holds no key for this environment, so its names and values stay sealed. Only the person who created an environment is given its key today, because nothing wraps an existing key to a second member yet. The server said: ${keyState.message}`;
+    case "failed":
+      return keyState.message;
+  }
+}
+
 export function SecretsPane({
+  environmentId,
   environmentName,
   rows,
-  opened,
+  names,
+  pdk,
+  keyState,
   locked,
   selectedSecretId,
   onSelect,
 }: SecretsPaneProps) {
-  const [revealed, setRevealed] = useState<ReadonlySet<string>>(new Set());
+  /**
+   * REVEALED PLAINTEXT, AND THE ONLY PLACE ANY OF IT LIVES.
+   *
+   * One entry per row the user explicitly revealed. Hiding a row deletes its
+   * entry. Nothing here is written to storage, to a URL, to a query argument or
+   * to a log, and no value is ever lifted into a parent component.
+   *
+   * IT IS TAGGED WITH THE KEY AND THE ENVIRONMENT IT BELONGS TO, and the match
+   * is checked DURING RENDER rather than cleared by an effect. An effect would
+   * clear it one frame late, and that frame would paint one environment's
+   * plaintext against another environment's rows. Tagging makes the stale case
+   * unrenderable instead of merely brief: switch environment, or lock the
+   * vault, and the map is not returned at all.
+   */
+  const [held, setHeld] = useState<{
+    pdk: Uint8Array;
+    environmentId: Id<"environments">;
+    values: ReadonlyMap<string, string>;
+    error: string | null;
+  } | null>(null);
 
-  const toggleReveal = (secretId: string) => {
-    setRevealed((current) => {
-      const next = new Set(current);
-      if (next.has(secretId)) next.delete(secretId);
-      else next.add(secretId);
-      return next;
+  const current =
+    pdk !== null &&
+    environmentId !== null &&
+    held !== null &&
+    held.pdk === pdk &&
+    held.environmentId === environmentId
+      ? held
+      : null;
+  const revealed = current?.values ?? EMPTY_VALUES;
+  const revealError = current?.error ?? null;
+
+  const hide = (secretId: string) => {
+    setHeld((previous) => {
+      if (previous === null) return null;
+      const values = new Map(previous.values);
+      values.delete(secretId);
+      return { ...previous, values };
     });
   };
+
+  const reveal = (row: SealedSecretRow) => {
+    if (pdk === null || environmentId === null) return;
+    void openSecretValue(pdk, row)
+      .then((value) => {
+        setHeld((previous) => {
+          const base =
+            previous !== null &&
+            previous.pdk === pdk &&
+            previous.environmentId === environmentId
+              ? previous.values
+              : EMPTY_VALUES;
+          return {
+            pdk,
+            environmentId,
+            values: new Map(base).set(row.secretId, value),
+            error: null,
+          };
+        });
+      })
+      .catch(() => {
+        // `SecretOpenError` and nothing else reaches here, and it deliberately
+        // carries no detail. The value is not shown and nothing is logged.
+        setHeld((previous) => ({
+          pdk,
+          environmentId,
+          values:
+            previous !== null &&
+            previous.pdk === pdk &&
+            previous.environmentId === environmentId
+              ? previous.values
+              : EMPTY_VALUES,
+          error: "That value could not be opened with the key this client holds.",
+        }));
+      });
+  };
+
+  const notice = keyNotice(keyState);
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-surface-base">
@@ -77,8 +184,22 @@ export function SecretsPane({
             <span className="font-mono text-sm text-text-muted">{rows.length}</span>
           )}
         </div>
-        {locked ? <StatusPill tone="warning">vault locked</StatusPill> : null}
+        <div className="flex items-center gap-3">
+          {locked ? <StatusPill tone="warning">vault locked</StatusPill> : null}
+          {environmentId !== null && pdk !== null ? (
+            <NewSecretForm environmentId={environmentId} pdk={pdk} />
+          ) : null}
+        </div>
       </header>
+
+      {notice === null ? null : (
+        <p className="border-b border-hairline px-4 py-3 text-base text-text-muted">{notice}</p>
+      )}
+      {revealError === null ? null : (
+        <p role="alert" className="border-b border-hairline px-4 py-3 text-base text-text-primary">
+          {revealError}
+        </p>
+      )}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {environmentName === null ? (
@@ -91,16 +212,19 @@ export function SecretsPane({
           <div className="flex flex-col gap-2 px-4 py-6">
             <Eyebrow>Empty</Eyebrow>
             <p className="text-base text-text-muted">
-              This environment has no secrets. Creating one is not built yet: see the right hand
-              panel.
+              {pdk === null
+                ? "This environment has no secrets. Adding one needs the key for this environment."
+                : "This environment has no secrets. Add one with the control above."}
             </p>
           </div>
         ) : (
           <ul className="flex flex-col">
             {rows.map((row) => {
-              const open = opened.get(row.secretId);
-              const isRevealed = revealed.has(row.secretId);
+              const name = names.get(row.secretId);
+              const value = revealed.get(row.secretId);
+              const isRevealed = value !== undefined;
               const selected = row.secretId === selectedSecretId;
+              const openable = pdk !== null && name !== undefined;
 
               return (
                 <li key={row.secretId}>
@@ -120,17 +244,13 @@ export function SecretsPane({
                     >
                       <span
                         className={`w-full truncate font-mono text-base sm:w-2/5 ${
-                          open === undefined ? "text-text-muted italic" : "text-text-primary"
+                          name === undefined ? "text-text-muted italic" : "text-text-primary"
                         }`}
                       >
-                        {open?.name ?? `sealed:${shortLineage(row.lineageId)}`}
+                        {name ?? `sealed:${shortLineage(row.lineageId)}`}
                       </span>
                       <span className="w-full min-w-0 truncate font-mono text-base text-text-muted sm:flex-1">
-                        {open === undefined
-                          ? VALUE_MASK
-                          : isRevealed
-                            ? open.value
-                            : VALUE_MASK}
+                        {isRevealed ? value : VALUE_MASK}
                       </span>
                     </button>
 
@@ -139,14 +259,10 @@ export function SecretsPane({
                     <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
                       <button
                         type="button"
-                        disabled={open === undefined}
-                        onClick={() => toggleReveal(row.secretId)}
+                        disabled={!openable}
+                        onClick={() => (isRevealed ? hide(row.secretId) : reveal(row))}
                         className={quietButton}
-                        title={
-                          open === undefined
-                            ? "This client has no key for this environment"
-                            : undefined
-                        }
+                        title={openable ? undefined : "This client has no key for this row"}
                       >
                         {isRevealed ? "Hide" : "Reveal"}
                       </button>

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import type { Id } from "@convex/_generated/dataModel";
 import { Eyebrow, StatusPill, focusRing, quietButton, textLink } from "@/components/app/controls";
+import { NewEnvironmentForm, NewProjectForm } from "@/components/app/create-forms";
 import { ThemeToggle } from "@/components/app/theme-toggle";
 import { useAuth } from "@/lib/auth/auth-context";
 
@@ -126,8 +127,8 @@ export function LeftNav({
             <p className="px-2.5 text-base text-text-muted">Loading</p>
           ) : orgs.length === 0 ? (
             <p className="px-2.5 text-base text-text-muted">
-              No organisations yet. The dashboard cannot create one: see the note in the right hand
-              panel.
+              No organisations yet, and this dashboard cannot create one. The reason is in the
+              right hand panel.
             </p>
           ) : (
             <ul className="flex flex-col gap-0.5">
@@ -201,12 +202,28 @@ export function LeftNav({
                             </li>
                           ))
                         )}
+                        {/* Under the active project and nowhere else, because
+                            an environment belongs to one project and a control
+                            that floats above the tree has to ask which. */}
+                        <li className="pt-1">
+                          <NewEnvironmentForm
+                            projectId={project.projectId}
+                            onCreated={onSelectEnvironment}
+                          />
+                        </li>
                       </ul>
                     ) : null}
                   </li>
                 );
               })}
             </ul>
+          )}
+
+          {activeOrgId === null ? null : (
+            // Selecting the new project immediately is the point: creating
+            // something and then having to find it in a list is a form that is
+            // not finished.
+            <NewProjectForm orgId={activeOrgId} onCreated={onSelectProject} />
           )}
         </section>
       </div>

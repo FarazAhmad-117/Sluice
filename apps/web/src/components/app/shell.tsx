@@ -9,7 +9,8 @@ import { LeftNav } from "@/components/app/left-nav";
 import { RightPanel } from "@/components/app/right-panel";
 import { SecretsPane } from "@/components/app/secrets-pane";
 import { useAuth } from "@/lib/auth/auth-context";
-import type { OpenedSecret } from "@/lib/secrets/decrypt";
+import { useProjectDataKey } from "@/lib/secrets/use-project-data-key";
+import { useSecretNames } from "@/lib/secrets/use-secret-names";
 
 /**
  * THE THREE PANE SHELL.
@@ -29,6 +30,12 @@ import type { OpenedSecret } from "@/lib/secrets/decrypt";
  * the reason the token cannot live in an httpOnly cookie. `"skip"` is passed
  * whenever a prerequisite is missing, which is what keeps this from firing a
  * query with an undefined id during the first render after a refresh.
+ *
+ * THE ONE READ THAT IS NOT A `useQuery` IS THE KEY. `useProjectDataKey` fetches
+ * the caller's grant once per environment and opens it with the master unlock
+ * key, because `useQuery` re-throws a refusal during render and "this member
+ * holds no grant" is a normal state rather than a crash. Its own file has the
+ * full argument.
  */
 export function AppShell() {
   const { session, locked } = useAuth();
@@ -78,6 +85,19 @@ export function AppShell() {
     sessionToken === null || environmentId === null ? "skip" : { sessionToken, environmentId },
   );
 
+  /**
+   * THE PROJECT DATA KEY FOR THE SELECTED ENVIRONMENT.
+   *
+   * It is refetched and reopened whenever the selection changes, and it is
+   * dropped when the vault locks. Nothing persists it.
+   */
+  const keyState = useProjectDataKey(environmentId);
+  const pdk = keyState.status === "ready" ? keyState.pdk : null;
+
+  // Names only. A value is decrypted at the moment somebody reveals it and not
+  // before; see `secrets-pane.tsx`.
+  const names = useSecretNames(pdk, secrets);
+
   const environmentName = useMemo(() => {
     if (environments === undefined || environmentId === null) return null;
     return environments.find((row) => row.environmentId === environmentId)?.name ?? null;
@@ -87,16 +107,6 @@ export function AppShell() {
     if (secrets === undefined || secretId === null) return null;
     return secrets.find((row) => row.secretId === secretId) ?? null;
   }, [secrets, secretId]);
-
-  /**
-   * DELIBERATELY EMPTY, AND NOT A PLACEHOLDER FOR LATER.
-   *
-   * This is where opened names and values would go. Nothing can fill it: the
-   * project data key lives wrapped in `pdkGrants` and no Convex function reads
-   * that table. An empty map makes every row render as sealed, which is the
-   * truth. See `lib/secrets/decrypt.ts`.
-   */
-  const opened = useMemo<ReadonlyMap<string, OpenedSecret>>(() => new Map(), []);
 
   return (
     <div className="flex min-h-[100dvh] flex-col bg-surface-base text-text-primary lg:h-[100dvh] lg:overflow-hidden">
@@ -159,9 +169,12 @@ export function AppShell() {
 
         <div id="main-content" className="min-h-0">
           <SecretsPane
+            environmentId={environmentId}
             environmentName={environmentName}
             rows={secrets}
-            opened={opened}
+            names={names}
+            pdk={pdk}
+            keyState={keyState}
             locked={locked}
             selectedSecretId={secretId}
             onSelect={setSecretId}
@@ -169,7 +182,7 @@ export function AppShell() {
         </div>
 
         <div className="min-h-0">
-          <RightPanel secret={selectedSecret} keyAvailable={opened.size > 0} />
+          <RightPanel secret={selectedSecret} keyState={keyState} />
         </div>
       </div>
     </div>

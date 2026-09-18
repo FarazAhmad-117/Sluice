@@ -12,13 +12,14 @@ import {
 import { DerivationPathNotice, DerivationProgress } from "@/components/auth/derivation";
 import { useAuth } from "@/lib/auth/auth-context";
 import type { SealedSecretRow } from "@/lib/secrets/decrypt";
+import type { ProjectDataKeyState } from "@/lib/secrets/use-project-data-key";
 
 /**
  * THE RIGHT PANE.
  *
  * THE DESIGN DIRECTION ASKS FOR THE LIVE AUDIT STREAM HERE, and it is not
- * built, because there is nothing to build it from. `convex/` exports twenty
- * functions and not one of them reads `auditLog`: rows go in through
+ * built, because there is nothing to build it from. `convex/` exports nineteen
+ * public functions and not one of them reads `auditLog`: rows go in through
  * `lib/audit.ts` on every mutation and no query brings them back out. A stream
  * rendered from anything else would be invented data, which the copy rules
  * forbid outright.
@@ -89,11 +90,28 @@ function UnlockForm() {
 
 export interface RightPanelProps {
   readonly secret: SealedSecretRow | null;
-  /** True when a project data key for the selected environment is in hand. */
-  readonly keyAvailable: boolean;
+  /** Whether a project data key for the selected environment is in hand, and why not. */
+  readonly keyState: ProjectDataKeyState;
 }
 
-export function RightPanel({ secret, keyAvailable }: RightPanelProps) {
+/** A one-line, true statement of where the key for this environment stands. */
+function keyLabel(keyState: ProjectDataKeyState): { tone: "healthy" | "warning"; text: string } {
+  switch (keyState.status) {
+    case "ready":
+      return { tone: "healthy", text: "key held" };
+    case "loading":
+      return { tone: "warning", text: "opening" };
+    case "locked":
+      return { tone: "warning", text: "vault locked" };
+    case "idle":
+      return { tone: "warning", text: "no environment" };
+    case "refused":
+    case "failed":
+      return { tone: "warning", text: "no key" };
+  }
+}
+
+export function RightPanel({ secret, keyState }: RightPanelProps) {
   const { session, locked, derivation } = useAuth();
   const [now, setNow] = useState(() => Date.now());
 
@@ -151,6 +169,23 @@ export function RightPanel({ secret, keyAvailable }: RightPanelProps) {
         </p>
       </section>
 
+      {/* The state of the key for the environment on screen. It belongs here,
+          permanently, for the same reason the lock state does: a user who
+          cannot read a value needs to know which of the two reasons applies. */}
+      <section className="flex flex-col gap-2 border-t border-hairline pt-4">
+        <div className="flex items-center justify-between gap-2">
+          <Eyebrow>Environment key</Eyebrow>
+          <StatusPill tone={keyLabel(keyState).tone}>{keyLabel(keyState).text}</StatusPill>
+        </div>
+        <p className="text-base text-text-muted">
+          {keyState.status === "ready"
+            ? "Every secret in this environment is encrypted under one key. Your copy of it is wrapped to your account and was opened in this browser."
+            : keyState.status === "refused"
+              ? "Only the person who created an environment is given its key today. Nothing wraps an existing key to a second member yet, so a colleague can list these rows and open none of them."
+              : "Names and values stay sealed until this client holds the key for this environment."}
+        </p>
+      </section>
+
       <section className="flex flex-col gap-2 border-t border-hairline pt-4">
         <Eyebrow>Selected secret</Eyebrow>
         {secret === null ? (
@@ -174,25 +209,26 @@ export function RightPanel({ secret, keyAvailable }: RightPanelProps) {
       </section>
 
       {/* The honest account of what this surface cannot do, on screen rather
-          than only in a report. A user who cannot see a secret name deserves
-          the reason rather than a spinner. */}
+          than only in a report. A user who cannot do something deserves the
+          reason rather than a missing button. */}
       <section className="flex flex-col gap-2 border-t border-hairline pt-4">
         <Eyebrow>Not built yet</Eyebrow>
         <ul className="flex list-disc flex-col gap-2 pl-5 text-base text-text-muted">
-          {keyAvailable ? null : (
-            <li>
-              Secret names and values stay sealed. They are encrypted under the project data key
-              for their environment, and the backend exposes no function that reads or writes the
-              pdkGrants table, so this client has no way to obtain that key.
-            </li>
-          )}
           <li>
-            Creating an organisation, a project or an environment. The backend supports all three;
-            creating an org also has to wrap the org revocation signing key, and the format for
-            that wrap is not written down anywhere, so guessing it would silently break signed
-            revocation.
+            Creating an organisation. It is the one gap that leaves a new account with nowhere to
+            go, and it is deliberate. An org carries a revocation signing key that has to be
+            wrapped to its creator, and the associated data for that wrap is not defined anywhere
+            in this codebase. Choosing a value here would pin bytes the SDK and the backend would
+            later have to match by accident, and a mismatch means a revocation notice that cannot
+            be signed, found during the incident it exists for.
           </li>
-          <li>Creating, editing and revoking secrets.</li>
+          <li>
+            Sharing an environment key with a colleague. Only the person who created an
+            environment holds its key, so a second member of an org can list its secrets and open
+            none of them.
+          </li>
+          <li>Editing and deleting a secret. Both mutations exist; neither has a control here.</li>
+          <li>Issuing and revoking service tokens.</li>
           <li>
             The live audit stream this pane is meant to carry. Audit rows are written on every
             mutation and no query returns them.

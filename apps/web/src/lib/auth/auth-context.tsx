@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { ConvexError } from "convex/values";
+import type { MasterUnlockKey } from "@sluice/crypto";
 import { api } from "@convex/_generated/api";
 import { convexClient } from "@/lib/convex-provider";
 import {
@@ -32,6 +33,8 @@ import type { PersistedSession } from "./session-store";
  *             readable by injected script. See `session-store.ts`.
  *   VAULT     the master unlock key and the unwrapped private keys. In memory
  *             only, dies with the page, and is what actually opens anything.
+ *             Nothing writes it to `sessionStorage`, `localStorage`, IndexedDB,
+ *             a cookie or the network, here or anywhere else.
  *
  * A refresh therefore leaves the user SIGNED IN AND LOCKED: the shell, the
  * project tree and the secret listing all work, because those need only the
@@ -72,6 +75,31 @@ export type AuthPhase =
 export interface AuthState {
   readonly session: PersistedSession | null;
   readonly identity: PrivateIdentity | null;
+  /**
+   * The master unlock key, for as long as the vault is open.
+   *
+   * IT IS HERE BECAUSE A PROJECT DATA KEY GRANT IS WRAPPED UNDER IT. Reading
+   * any secret means fetching `environments.getMyPdkGrant` and unwrapping the
+   * blob it returns, and that unwrap needs this key. It is also what wraps a
+   * NEW environment's project data key at creation.
+   *
+   * An earlier revision dropped it after the identity unwrap and said a feature
+   * that needed it again must re-derive it from the password. That was the
+   * right call while nothing needed it; it is the wrong one now. Re-deriving
+   * costs 64 MiB and about 1.6 seconds, and it would have to happen on every
+   * environment the user clicks, which means a password prompt in the middle of
+   * browsing a list.
+   *
+   * WHAT HOLDING IT ADDS TO THE EXPOSURE, honestly. Not much, and that is the
+   * argument rather than a shrug: the unwrapped X25519 and Ed25519 private keys
+   * are ALREADY in this same state and already open everything the account can
+   * reach. The MUK additionally re-derives the auth verifier, so it is also a
+   * login credential. Both live in memory in this tab, for this tab, and die on
+   * refresh with everything else. `MasterUnlockKey` keeps the bytes in a
+   * `#private` field, so a spread or a `structuredClone` yields an EMPTY object
+   * and `JSON.stringify` and `console.log` are redacted on the prototype.
+   */
+  readonly muk: MasterUnlockKey | null;
   /** True when a session exists but the vault is empty. Refresh lands here. */
   readonly locked: boolean;
   /**
@@ -129,25 +157,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     session: PersistedSession | null;
     hydrated: boolean;
   }>({ session: null, hydrated: false });
-  const [identity, setIdentity] = useState<PrivateIdentity | null>(null);
+  /**
+   * ONE PIECE OF STATE FOR THE WHOLE VAULT, not two.
+   *
+   * The private identity and the master unlock key are set and cleared
+   * together, always. Two `useState` calls would make "unwrapped keys but no
+   * master key" and "master key but no keys" representable, and `locked` would
+   * then have to pick one of them to believe. It is closed here instead.
+   */
+  const [vault, setVault] = useState<{
+    identity: PrivateIdentity;
+    muk: MasterUnlockKey;
+  } | null>(null);
   const [phase, setPhase] = useState<AuthPhase>("idle");
   const [derivation, setDerivation] = useState<DerivationReport | null>(null);
   const [capability, setCapability] = useState<DeviceCapability | null>(null);
 
   /**
-   * THE MASTER UNLOCK KEY IS NOT KEPT AFTER THE UNWRAP, AND THAT IS DELIBERATE.
+   * THE PASSWORD IS STILL NEVER RETAINED, AND THAT HAS NOT CHANGED.
    *
-   * It exists inside `signup`, `login` and `unlock` for as long as it takes to
-   * derive the auth verifier and open the two wrapped blobs, and then the last
-   * reference to it goes out of scope. Nothing in this surface needs it
-   * afterwards: the X25519 private key is what will open a project data key
-   * once a grant query exists, and the Ed25519 key is what signs. Holding the
-   * ROOT of the key hierarchy in a long-lived provider for no current use would
-   * be one more place it can be read from, for nothing.
-   *
-   * A feature that genuinely needs it again -- wrapping a new organisation's
-   * revocation key, for instance -- must re-derive it from the password rather
-   * than stash it here.
+   * What changed is the master unlock key, which is now held for the life of
+   * the vault; the reasoning is on `AuthState.muk`. The password remains an
+   * argument to the three functions below, is never copied into state, into a
+   * ref, or into the persisted record, and `deriveMasterUnlockKey` clears its
+   * one reference in a `finally`.
    */
 
   // Rehydrate the persisted session on mount. This runs in an effect rather
@@ -183,10 +216,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, []);
-
-  const setVault = useCallback((priv: PrivateIdentity | null) => {
-    setIdentity(priv);
   }, []);
 
   /**
@@ -277,14 +306,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         };
         saveSession(persisted);
         setStored({ session: persisted, hydrated: true });
-        setVault(restored);
+        setVault({ identity: restored, muk });
       } catch (cause) {
         throw new AuthFlowError(cause);
       } finally {
         setPhase("idle");
       }
     },
-    [derive, requireClient, setVault],
+    [derive, requireClient],
   );
 
   const login = useCallback(
@@ -316,14 +345,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         };
         saveSession(persisted);
         setStored({ session: persisted, hydrated: true });
-        setVault(priv);
+        setVault({ identity: priv, muk });
       } catch (cause) {
         throw new AuthFlowError(cause);
       } finally {
         setPhase("idle");
       }
     },
-    [derive, requireClient, setVault],
+    [derive, requireClient],
   );
 
   /**
@@ -346,14 +375,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (!identityMatches(priv, current)) {
           throw new Error("The stored key material does not match this account.");
         }
-        setVault(priv);
+        setVault({ identity: priv, muk });
       } catch (cause) {
         throw new AuthFlowError(cause);
       } finally {
         setPhase("idle");
       }
     },
-    [derive, session, setVault],
+    [derive, session],
   );
 
   /**
@@ -379,13 +408,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // they can do, and the local credential is already gone.
       }
     }
-  }, [session, setVault]);
+  }, [session]);
 
   const value = useMemo<AuthState>(
     () => ({
       session,
-      identity,
-      locked: session !== null && identity === null,
+      identity: vault?.identity ?? null,
+      muk: vault?.muk ?? null,
+      // One source of truth. "Signed in but locked" is the normal state after
+      // every refresh: the session survived in `sessionStorage` and the vault,
+      // which is memory only, did not.
+      locked: session !== null && vault === null,
       hydrated,
       phase,
       derivation,
@@ -396,7 +429,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       unlock,
       logout,
     }),
-    [session, identity, hydrated, phase, derivation, capability, signup, login, unlock, logout],
+    [session, vault, hydrated, phase, derivation, capability, signup, login, unlock, logout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
