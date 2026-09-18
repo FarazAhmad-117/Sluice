@@ -8,6 +8,10 @@ import { insertUser } from "./repo/users";
 import { insertSession } from "./repo/sessions";
 import { SESSION_LIFETIME_MS, hashSessionToken } from "./lib/session";
 import { listAuditEventsByActor } from "./repo/audit";
+import {
+  getPDKGrant,
+  listPDKGrantsByEnvironment,
+} from "./repo/environments";
 import * as environmentsModule from "./environments";
 
 export const modules = import.meta.glob("./**/*.ts");
@@ -67,6 +71,17 @@ async function seedOrg(
 
 const NOT_PERMITTED = "Not found, or you do not have access to it.";
 
+/**
+ * A project data key wrapped to the creator, and the nonce it was sealed under.
+ * Opaque to the server by design: it is minted in the browser and this
+ * deployment has never held the plaintext.
+ */
+const WRAPPED_PDK = "dd".repeat(48);
+const PDK_NONCE = "0a1b2c3d4e5f60718293a4b5";
+
+/** The two arguments every `createEnvironment` call now carries. */
+const wrap = { wrappedPDK: WRAPPED_PDK, pdkNonce: PDK_NONCE };
+
 /** One tenant with a project, and a second tenant with a project of its own. */
 async function twoTenants(t: Harness) {
   const alice = await seedUser(t, "alice@example.test");
@@ -89,6 +104,7 @@ async function twoTenants(t: Harness) {
     sessionToken: mallory.sessionToken,
     projectId: projectB,
     name: "production",
+    ...wrap,
   });
   return { alice, mallory, orgA, orgB, projectA, projectB, environmentB };
 }
@@ -110,6 +126,7 @@ describe("environments authorisation", () => {
         sessionToken: alice.sessionToken,
         projectId: projectB,
         name: "staging",
+        ...wrap,
       }),
     ).rejects.toThrow(NOT_PERMITTED);
   });
@@ -147,6 +164,7 @@ describe("environments authorisation", () => {
         sessionToken: alice.sessionToken,
         projectId: projectB,
         name: "staging",
+        ...wrap,
       }),
     ).rejects.toThrow(NOT_PERMITTED);
 
@@ -169,7 +187,12 @@ describe("createEnvironment", () => {
 
     const environmentId = await t.mutation(
       api.environments.createEnvironment,
-      { sessionToken: alice.sessionToken, projectId: projectA, name: "production" },
+      {
+        sessionToken: alice.sessionToken,
+        projectId: projectA,
+        name: "production",
+        ...wrap,
+      },
     );
 
     expect(
@@ -203,8 +226,10 @@ describe("createEnvironment", () => {
 
     expect(Object.keys(args.value).sort()).toEqual([
       "name",
+      "pdkNonce",
       "projectId",
       "sessionToken",
+      "wrappedPDK",
     ]);
   });
 
@@ -215,6 +240,7 @@ describe("createEnvironment", () => {
       sessionToken: alice.sessionToken,
       projectId: projectA,
       name: "production",
+      ...wrap,
     };
     await t.mutation(api.environments.createEnvironment, args);
 
@@ -231,6 +257,7 @@ describe("createEnvironment", () => {
       sessionToken: alice.sessionToken,
       projectId: projectA,
       name: "production",
+      ...wrap,
     });
 
     const theirs = await t.query(api.environments.listEnvironments, {
@@ -264,9 +291,163 @@ describe("createEnvironment", () => {
           sessionToken: alice.sessionToken,
           projectId: projectA,
           name,
+          ...wrap,
         }),
       ).rejects.toThrow("name");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The grant, which is the whole reason an environment can be read at all.
+// ---------------------------------------------------------------------------
+
+describe("the creator's project data key grant", () => {
+  /**
+   * THE ASSERTION THIS FILE EXISTS FOR.
+   *
+   * `createEnvironment` used to take a project and a name, so no grant was ever
+   * written and the project data key could reach nobody. An environment with no
+   * grant is an environment whose secrets nobody can ever read, and nothing
+   * errors at any point until somebody tries.
+   */
+  it("is written by the same mutation that creates the environment", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, projectA } = await twoTenants(t);
+
+    const environmentId = await t.mutation(api.environments.createEnvironment, {
+      sessionToken: alice.sessionToken,
+      projectId: projectA,
+      name: "production",
+      ...wrap,
+    });
+
+    const grant = await t.run(async (ctx) =>
+      getPDKGrant(ctx, environmentId, "user", alice.userId),
+    );
+    expect(grant?.wrappedPDK).toBe(WRAPPED_PDK);
+    expect(grant?.nonce).toBe(PDK_NONCE);
+    expect(grant?.granteeType).toBe("user");
+    expect(grant?.granteeId).toBe(alice.userId);
+  });
+
+  /**
+   * Which key version the blob opens comes off the environment the mutation
+   * just wrote, not from the caller. The two cannot disagree because one is
+   * copied from the other inside one transaction.
+   */
+  it("records the environment's own pdkVersion", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, projectA } = await twoTenants(t);
+
+    const environmentId = await t.mutation(api.environments.createEnvironment, {
+      sessionToken: alice.sessionToken,
+      projectId: projectA,
+      name: "production",
+      ...wrap,
+    });
+
+    const environment = await t.query(api.environments.getEnvironment, {
+      sessionToken: alice.sessionToken,
+      environmentId,
+    });
+    const grant = await t.run(async (ctx) =>
+      getPDKGrant(ctx, environmentId, "user", alice.userId),
+    );
+    expect(grant?.pdkVersion).toBe(environment.pdkVersion);
+  });
+
+  /** Exactly one, to the creator. Nobody else is granted anything. */
+  it("is the only grant on a newly created environment", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, mallory, projectA } = await twoTenants(t);
+
+    const environmentId = await t.mutation(api.environments.createEnvironment, {
+      sessionToken: alice.sessionToken,
+      projectId: projectA,
+      name: "production",
+      ...wrap,
+    });
+
+    const grants = await t.run(async (ctx) =>
+      listPDKGrantsByEnvironment(ctx, environmentId),
+    );
+    expect(grants).toHaveLength(1);
+    expect(grants[0]?.granteeId).toBe(alice.userId);
+    expect(grants[0]?.granteeId).not.toBe(mallory.userId);
+  });
+
+  /**
+   * Atomicity, asserted rather than asserted about. The refusal happens before
+   * either row is written, so there is no environment and no grant, and in
+   * particular no environment that exists without one.
+   */
+  it("leaves neither row behind when the create is refused", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, mallory, projectB, environmentB } = await twoTenants(t);
+
+    await expect(
+      t.mutation(api.environments.createEnvironment, {
+        sessionToken: alice.sessionToken,
+        projectId: projectB,
+        name: "staging",
+        ...wrap,
+      }),
+    ).rejects.toThrow(NOT_PERMITTED);
+
+    const theirs = await t.query(api.environments.listEnvironments, {
+      sessionToken: mallory.sessionToken,
+      projectId: projectB,
+    });
+    expect(theirs.map((e) => e.name)).toEqual(["production"]);
+
+    const grants = await t.run(async (ctx) =>
+      listPDKGrantsByEnvironment(ctx, environmentB),
+    );
+    expect(grants.map((g) => g.granteeId)).toEqual([mallory.userId]);
+  });
+
+  /**
+   * The nonce is checked by shape and the wrapped key only for a floor, the
+   * same split `createOrg` makes and for the same reason: AES-GCM accepts any
+   * nonce length and derives its counter block through GHASH when the nonce is
+   * not 96 bits, so a wrong-width nonce decrypts happily and silently leaves
+   * the construction this package was reviewed under. The wrapped key is an
+   * opaque blob whose internals are the client's business, but nothing shorter
+   * than the 16 byte GCM tag can be output this product produced.
+   */
+  it("refuses key material that is not canonical", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, projectA } = await twoTenants(t);
+
+    const good = {
+      sessionToken: alice.sessionToken,
+      projectId: projectA,
+      name: "production",
+      ...wrap,
+    };
+
+    for (const bad of [
+      { pdkNonce: "" },
+      { pdkNonce: PDK_NONCE.toUpperCase() },
+      { pdkNonce: `${PDK_NONCE}00` },
+      { pdkNonce: PDK_NONCE.slice(0, -2) },
+      { wrappedPDK: "" },
+      { wrappedPDK: "ab" },
+      { wrappedPDK: WRAPPED_PDK.toUpperCase() },
+      { wrappedPDK: `${WRAPPED_PDK}a` },
+    ]) {
+      await expect(
+        t.mutation(api.environments.createEnvironment, { ...good, ...bad }),
+      ).rejects.toThrow();
+    }
+
+    // And nothing landed while all of that was refused.
+    const list = await t.query(api.environments.listEnvironments, {
+      sessionToken: alice.sessionToken,
+      projectId: projectA,
+    });
+    expect(list).toEqual([]);
   });
 });
 
@@ -283,6 +464,7 @@ describe("listEnvironments", () => {
         sessionToken: alice.sessionToken,
         projectId: projectA,
         name,
+        ...wrap,
       });
     }
 
@@ -311,7 +493,12 @@ describe("the audit log", () => {
 
     const environmentId = await t.mutation(
       api.environments.createEnvironment,
-      { sessionToken: alice.sessionToken, projectId: projectA, name: "production" },
+      {
+        sessionToken: alice.sessionToken,
+        projectId: projectA,
+        name: "production",
+        ...wrap,
+      },
     );
 
     const events = await t.run(async (ctx) =>

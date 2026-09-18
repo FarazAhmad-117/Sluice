@@ -23,6 +23,18 @@ import * as tokensModule from "./tokens";
 
 export const modules = import.meta.glob("./**/*.ts");
 
+/**
+ * A project data key wrapped to the creator. Opaque to the server by design:
+ * it is minted in the browser and this deployment has never held the plaintext.
+ * `createEnvironment` writes it into `pdkGrants` in the same transaction that
+ * creates the environment, because an environment without one is an environment
+ * whose secrets nobody can ever read.
+ */
+const WRAP = {
+  wrappedPDK: "dd".repeat(48),
+  pdkNonce: "0a1b2c3d4e5f60718293a4b5",
+} as const;
+
 type Harness = ReturnType<typeof convexTest>;
 type Actor = { userId: Id<"users">; sessionToken: string };
 
@@ -77,6 +89,7 @@ async function tenant(t: Harness, actor: Actor, slug: string) {
     sessionToken: actor.sessionToken,
     projectId,
     name: "production",
+    ...WRAP,
   });
   return { keys, orgId, projectId, environmentId };
 }

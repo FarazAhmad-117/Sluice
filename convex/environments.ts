@@ -7,10 +7,12 @@ import {
   requireEnvironment,
   requireProject,
 } from "./lib/authz";
+import { assertHexAtLeast, assertHexBytes } from "./lib/hex";
 import { assertSlug } from "./lib/naming";
 import {
   getEnvironmentByName,
   insertEnvironment,
+  insertPDKGrant,
   listEnvironmentsByProject,
 } from "./repo/environments";
 
@@ -40,11 +42,29 @@ const DUPLICATE_NAME =
 const INITIAL_PDK_VERSION = 1;
 const INITIAL_EPOCH = 0;
 
+// AES-GCM nonce, 96 bits, the only width `@sluice/crypto` produces.
+const NONCE_BYTES = 12;
+// AES-GCM appends a 16 byte tag, so nothing shorter can be output this product
+// produced. The same floor `tokens.ts` and `secrets.ts` apply.
+const MIN_CIPHERTEXT_BYTES = 16;
+
 export const createEnvironment = mutation({
   args: {
     ...sessionArg,
     projectId: v.id("projects"),
     name: v.string(),
+    // THE PROJECT DATA KEY, WRAPPED TO THE CREATOR. The key itself is minted in
+    // the browser and this server has never held it and must never be able to:
+    // that is the zero-knowledge property, and it is why these two arrive as
+    // arguments rather than being produced here, exactly as `createOrg` takes
+    // `wrappedRevocationKey`.
+    //
+    // The associated data the client wraps under is `pdkAssociatedData` from
+    // `@sluice/crypto`. Nothing on this server computes or checks it: the
+    // server cannot, and a server that could choose the associated data could
+    // hand a client the bytes of a different grant.
+    wrappedPDK: v.string(),
+    pdkNonce: v.string(),
   },
   returns: v.id("environments"),
   handler: async (ctx, args): Promise<Id<"environments">> => {
@@ -59,6 +79,16 @@ export const createEnvironment = mutation({
 
     const name = assertSlug("name", args.name);
 
+    // The nonce is checked by shape and the wrapped key is not, which looks
+    // inconsistent and is not. A nonce has exactly one correct width: AES-GCM
+    // accepts any length and derives its counter block through GHASH when the
+    // nonce is not 96 bits, so a wrong-width nonce decrypts happily and
+    // silently leaves the construction `@sluice/crypto` was reviewed under. The
+    // wrapped key is an opaque blob whose internal format is the client's
+    // business, and the server has no way to check it beyond a length floor.
+    assertHexBytes("pdkNonce", args.pdkNonce, NONCE_BYTES);
+    assertHexAtLeast("wrappedPDK", args.wrappedPDK, MIN_CIPHERTEXT_BYTES);
+
     // An indexed lookup on `by_project_name`, which is what that index's
     // second column is for.
     if ((await getEnvironmentByName(ctx, project._id, name)) !== null) {
@@ -70,6 +100,35 @@ export const createEnvironment = mutation({
       name,
       pdkVersion: INITIAL_PDK_VERSION,
       epoch: INITIAL_EPOCH,
+    });
+
+    // THE GRANT IS CREATED HERE, IN THIS MUTATION, AND THAT IS THE POINT OF
+    // THIS HANDLER TAKING KEY MATERIAL AT ALL.
+    //
+    // `createEnvironment` used to take a project and a name. No grant was ever
+    // written, no Convex function read or wrote `pdkGrants`, and the project
+    // data key could therefore reach nobody: every secret in the product was
+    // ciphertext under a key no client could obtain. Nothing errored. The
+    // secrets table listed real rows with real metadata and showed every value
+    // as sealed, for ever.
+    //
+    // The same argument `createOrg` makes for its revocation grant, and the
+    // same remedy. Convex mutations are atomic, so the environment and its
+    // first grant either both land or neither does. Never split this across two
+    // mutations, and never add a second way to insert into `environments`: the
+    // state between the two halves is an environment whose secrets nobody can
+    // ever read, discovered long after creation with no error at any point.
+    await insertPDKGrant(ctx, {
+      environmentId,
+      granteeType: "user",
+      // The caller, resolved from the session. There is no grantee argument, so
+      // an environment cannot be created with its only key wrapped to somebody
+      // else, and nobody can plant a grant for a person who never asked for it.
+      granteeId: user._id,
+      wrappedPDK: args.wrappedPDK,
+      nonce: args.pdkNonce,
+      // Off the row this mutation just wrote, so the two cannot disagree.
+      pdkVersion: INITIAL_PDK_VERSION,
     });
 
     await recordUserEvent(ctx, {
