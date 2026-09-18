@@ -8,7 +8,7 @@ import {
   requireSession,
   NOT_PERMITTED,
 } from "./lib/authz";
-import { assertHexBytes } from "./lib/hex";
+import { assertHexAtLeast, assertHexBytes } from "./lib/hex";
 import { assertDisplayName, assertSlug } from "./lib/naming";
 import {
   getOrg as getOrgRow,
@@ -31,6 +31,8 @@ const DUPLICATE_SLUG = "An organisation with that slug already exists.";
 const REVOCATION_PUBLIC_KEY_BYTES = 32;
 // AES-GCM nonce, 96 bits, which is the only width `@sluice/crypto` produces.
 const NONCE_BYTES = 12;
+/** An AES-GCM ciphertext carries a 16 byte tag, so no wrap is shorter. */
+const TAG_BYTES = 16;
 
 export const createOrg = mutation({
   args: {
@@ -62,11 +64,16 @@ export const createOrg = mutation({
     // nonce is not 96 bits, so a wrong-width nonce decrypts happily and
     // silently leaves the construction the package was reviewed under. The
     // wrapped key is an opaque blob whose internal format is the client's
-    // business, and the server has no way to check it beyond "not empty".
+    // business, but "opaque" is not "unconstrained": an AES-GCM output is hex
+    // and is never shorter than its 16 byte tag, so anything else is a client
+    // that has not produced a wrap at all. `createEnvironment` already holds
+    // `wrappedPDK` to that bar. This field accepted any non-empty string until
+    // 2026-09-18, which meant "x" was a legal wrap for an org's revocation
+    // signing key, and the value nobody can open is discovered during the
+    // incident revocation exists for. Every fixture in `convex/` passed an
+    // opaque placeholder here, which is exactly why nothing noticed.
     assertHexBytes("revocationKeyNonce", args.revocationKeyNonce, NONCE_BYTES);
-    if (args.wrappedRevocationKey.length === 0) {
-      throw new ConvexError("wrappedRevocationKey must not be empty.");
-    }
+    assertHexAtLeast("wrappedRevocationKey", args.wrappedRevocationKey, TAG_BYTES);
 
     // A real indexed lookup rather than a scan and a filter, which is why
     // `by_slug` exists. Convex mutations are serialisable transactions, so

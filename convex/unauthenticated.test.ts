@@ -182,7 +182,7 @@ async function world(t: Harness): Promise<World> {
     name: "Acme Rockets",
     slug: "acme-rockets",
     revocationPublicKey: orgKeys.upload.publicKey,
-    wrappedRevocationKey: "wrapped-revocation-key-blob",
+    wrappedRevocationKey: "7b3f1c9a5e8d2046b1f7c3a9e5d80264b7f1c3a9e5d80264",
     revocationKeyNonce: "0f1e2d3c4b5a69788796a5b4",
   });
   const projectId = await t.mutation(api.projects.createProject, {
@@ -256,7 +256,7 @@ const CALLS: Record<
     // refused for being a duplicate.
     slug: "second-org",
     revocationPublicKey: "cd".repeat(32),
-    wrappedRevocationKey: "wrapped-revocation-key-blob",
+    wrappedRevocationKey: "7b3f1c9a5e8d2046b1f7c3a9e5d80264b7f1c3a9e5d80264",
     revocationKeyNonce: "0f1e2d3c4b5a69788796a5b4",
   }),
   "orgs.getOrg": (w, sessionToken) => ({ sessionToken, orgId: w.orgId }),
@@ -541,7 +541,7 @@ describe("the session token does not leak", () => {
         name: "Bad Slug",
         slug: "Not A Slug",
         revocationPublicKey: "cd".repeat(32),
-        wrappedRevocationKey: "wrapped-revocation-key-blob",
+        wrappedRevocationKey: "7b3f1c9a5e8d2046b1f7c3a9e5d80264b7f1c3a9e5d80264",
         revocationKeyNonce: "0f1e2d3c4b5a69788796a5b4",
       });
     } catch (error) {

@@ -69,7 +69,7 @@ function orgArgs(actor: Actor, overrides: Record<string, unknown> = {}) {
     name: "Acme Rockets",
     slug: "acme-rockets",
     revocationPublicKey: REVOCATION_PUBLIC_KEY,
-    wrappedRevocationKey: "wrapped-revocation-key-blob",
+    wrappedRevocationKey: "7b3f1c9a5e8d2046b1f7c3a9e5d80264b7f1c3a9e5d80264",
     revocationKeyNonce: NONCE,
     ...overrides,
   };
@@ -254,7 +254,7 @@ describe("createOrg", () => {
     const grant = await t.run(async (ctx) =>
       getRevocationGrant(ctx, orgId, owner.userId),
     );
-    expect(grant?.wrappedRevocationKey).toBe("wrapped-revocation-key-blob");
+    expect(grant?.wrappedRevocationKey).toBe("7b3f1c9a5e8d2046b1f7c3a9e5d80264b7f1c3a9e5d80264");
     expect(grant?.nonce).toBe(NONCE);
   });
 
@@ -416,7 +416,7 @@ describe("getMyRevocationGrant", () => {
     });
 
     expect(grant).toEqual({
-      wrappedRevocationKey: "wrapped-revocation-key-blob",
+      wrappedRevocationKey: "7b3f1c9a5e8d2046b1f7c3a9e5d80264b7f1c3a9e5d80264",
       nonce: NONCE,
       revocationPublicKey: REVOCATION_PUBLIC_KEY,
     });
@@ -472,5 +472,49 @@ describe("the audit log", () => {
     expect(event?.targetId).toBe(orgId);
     expect(event?.metadata).toBeUndefined();
     expect(JSON.stringify(events)).not.toContain("example.test");
+  });
+});
+
+/**
+ * The bar the fixtures were hiding.
+ *
+ * Until 2026-09-18 this field accepted any non-empty string, so `"x"` was a
+ * legal wrap for an org's revocation signing key. Every fixture in `convex/`
+ * passed an opaque placeholder that was not hex, which is exactly why the
+ * missing check went unnoticed: the suite had normalised the malformed shape.
+ * These cases exist so a future relaxation fails here rather than in an
+ * incident.
+ */
+describe("the wrapped revocation key must look like a wrap", () => {
+  it("refuses a non-hex blob, which is what every fixture used to pass", async () => {
+    const t = convexTest(schema, modules);
+    const alice = await seedUser(t, "alice@example.test");
+    await expect(
+      t.mutation(api.orgs.createOrg, {
+        sessionToken: alice.sessionToken,
+        name: "Acme Rockets",
+        slug: "acme-rockets",
+        revocationPublicKey: "33".repeat(32),
+        wrappedRevocationKey: "wrapped-revocation-key-blob",
+        revocationKeyNonce: "0f1e2d3c4b5a69788796a5b4",
+      }),
+    ).rejects.toThrow(/wrappedRevocationKey/);
+  });
+
+  it("refuses a blob shorter than an AES-GCM tag", async () => {
+    const t = convexTest(schema, modules);
+    const alice = await seedUser(t, "alice@example.test");
+    await expect(
+      t.mutation(api.orgs.createOrg, {
+        sessionToken: alice.sessionToken,
+        name: "Acme Rockets",
+        slug: "acme-rockets",
+        // 15 bytes. A GCM ciphertext is never shorter than its 16 byte tag,
+        // so this cannot be output this product produced.
+        revocationPublicKey: "33".repeat(32),
+        wrappedRevocationKey: "ab".repeat(15),
+        revocationKeyNonce: "0f1e2d3c4b5a69788796a5b4",
+      }),
+    ).rejects.toThrow(/wrappedRevocationKey/);
   });
 });

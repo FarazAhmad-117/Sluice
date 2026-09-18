@@ -65,7 +65,7 @@ async function seedOrg(
     name: "Acme Rockets",
     slug,
     revocationPublicKey: "ab".repeat(32),
-    wrappedRevocationKey: "wrapped-revocation-key-blob",
+    wrappedRevocationKey: "7b3f1c9a5e8d2046b1f7c3a9e5d80264b7f1c3a9e5d80264",
     revocationKeyNonce: "0f1e2d3c4b5a69788796a5b4",
   });
 }
