@@ -30,7 +30,7 @@ import * as secretsModule from "./secrets";
  * the bottom of this file.
  *
  * They are reached by relative path rather than through a package, because
- * `apps/web` is an application and not one. The alternative to importing them
+ * `apps/admin` is an application and not one. The alternative to importing them
  * is re-implementing the client half here, which would prove that this file
  * agrees with itself and nothing about whether the browser agrees with the
  * server. That agreement is the only thing the last test exists to establish.
@@ -40,21 +40,21 @@ import {
   deriveAuthVerifier,
   identityMatches,
   unwrapIdentity,
-} from "../apps/web/src/lib/auth/identity";
-import { normaliseEmail as normaliseWebEmail } from "../apps/web/src/lib/auth/email";
+} from "../apps/admin/src/lib/auth/identity";
+import { normaliseEmail as normaliseWebEmail } from "../apps/admin/src/lib/auth/email";
 import {
   createRevocationKeypair,
   revocationKeyMatches,
   unwrapRevocationKey,
   wrapRevocationKey,
-} from "../apps/web/src/lib/orgs/revocation-key";
+} from "../apps/admin/src/lib/orgs/revocation-key";
 import {
   createProjectDataKey,
   unwrapProjectDataKey,
   wrapProjectDataKey,
-} from "../apps/web/src/lib/secrets/pdk";
-import { sealSecret } from "../apps/web/src/lib/secrets/seal";
-import { SecretOpenError, openSecret } from "../apps/web/src/lib/secrets/decrypt";
+} from "../apps/admin/src/lib/secrets/pdk";
+import { sealSecret } from "../apps/admin/src/lib/secrets/seal";
+import { SecretOpenError, openSecret } from "../apps/admin/src/lib/secrets/decrypt";
 
 export const modules = import.meta.glob("./**/*.ts");
 
@@ -1127,7 +1127,7 @@ describe("the audit log", () => {
  *
  * Every other test in this file drives the server with fixture strings. This
  * one drives it with the DASHBOARD'S OWN CODE: the modules under
- * `apps/web/src/lib` that the browser runs, imported here unchanged. Nothing
+ * `apps/admin/src/lib` that the browser runs, imported here unchanged. Nothing
  * below hand-rolls a derivation, a wrap, an associated data or a hex encoding.
  * If the client and the server ever disagree about any of those, this goes red,
  * and it is the only test that can, because agreement between two sides cannot
@@ -1170,7 +1170,7 @@ describe("end to end", () => {
    * difference is a runtime one rather than a cryptographic one: the dashboard
    * wrapper only chooses between a Web Worker, main-thread WASM and the noble
    * backend, all pinned to the same frozen `ARGON2_PARAMS`.
-   * `apps/web/test/argon2-agreement.test.ts` pins those backends to identical
+   * `apps/admin/test/argon2-agreement.test.ts` pins those backends to identical
    * bytes, so the key derived here is the key a browser derives.
    */
   it(

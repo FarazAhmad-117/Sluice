@@ -1,0 +1,53 @@
+{
+  "$schema": "https://turborepo.com/schema.json",
+
+  // ONE TASK LIVES HERE, AND THAT IS ON PURPOSE.
+  //
+  // Turborepo is in this repository to solve one problem: `pnpm dev` has to
+  // start the marketing site and the admin panel together, in one terminal,
+  // with their output legible rather than interleaved. Everything else the tool
+  // can do -- remote caching, task graphs, `--filter` on builds -- is real and
+  // is not needed yet, and a config full of tasks nobody runs is a config
+  // nobody trusts.
+  //
+  // `build`, `lint`, `typecheck` and `test` deliberately stay on the `pnpm -r`
+  // scripts in package.json. They already work, they are understood, and the
+  // caching Turborepo would add is worth little on a repository this size. When
+  // a build starts taking long enough to notice, move them here, give them
+  // `inputs` and `outputs`, and delete the `:all` scripts in the same commit so
+  // there is only ever one way to run each thing.
+  //
+  // ON THE COMMENTS IN THIS FILE. `turbo.json` is parsed as JSONC, so these are
+  // legal. A `"//"` KEY IS NOT -- Turborepo validates the schema strictly and
+  // rejects any key it does not recognise, including that one. Use `//` line
+  // comments here, never the JSON-object comment idiom.
+
+  // Each persistent task gets its own pane, with arrow keys to switch between
+  // them and stdin routed to whichever is focused. Named explicitly rather than
+  // left to the default, so a CI run or a non-interactive terminal is the only
+  // thing that falls back to stream output.
+  "ui": "tui",
+
+  "tasks": {
+    "dev": {
+      // `persistent` tells Turborepo this task never exits. It is what puts the
+      // task in its own pane, and it is also a guard: Turbo refuses to let a
+      // non-persistent task depend on a persistent one, so nobody can
+      // accidentally wire `build` behind a dev server that never finishes.
+      //
+      // `cache: false` because there is no output to cache, and a cache hit on
+      // a dev server would mean replaying an old log instead of starting one.
+      //
+      // NO `dependsOn`. `@sluice/crypto` publishes TypeScript SOURCE rather
+      // than a build artefact, deliberately -- see the note at the top of
+      // `packages/crypto/src/index.ts` -- so there is nothing to build before
+      // either application can start. If that package ever grows a build step,
+      // this needs `"dependsOn": ["^build"]` or both dev servers will race it.
+      //
+      // Only `apps/web` and `apps/admin` define a `dev` script, so those are
+      // the two panes. Turborepo skips packages that do not have the task.
+      "cache": false,
+      "persistent": true
+    }
+  }
+}

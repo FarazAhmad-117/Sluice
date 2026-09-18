@@ -1,43 +1,48 @@
 import { Contributors } from "@/components/landing/contributors";
+import { FinalCta } from "@/components/landing/final-cta";
 import { Hero } from "@/components/landing/hero";
 import { Quickstart } from "@/components/landing/quickstart";
 import { Revocation } from "@/components/landing/revocation";
 import { SiteFooter } from "@/components/landing/site-footer";
 import { SiteNav } from "@/components/landing/site-nav";
+import { StatsStrip } from "@/components/landing/stats-strip";
 import { ThreatModel } from "@/components/landing/threat-model";
 
 /**
  * The Sluice landing page.
  *
- * Seven sections, seven layout families, in this order:
+ * Eight bands, and no two adjacent ones share a layout family:
  *
- *   SiteNav       horizontal bar, two rows below 768px
- *   Hero          asymmetric split, copy against the particle field slot
- *   Quickstart    centred single column around one mono block
- *   Revocation    three-row ledger, plus an empty recording slot
- *   ThreatModel   symmetric two-column opposition on a raised surface
- *   Contributors  hairline roster list
- *   SiteFooter    link grid
+ *   SiteNav       fixed bar, transparent until the page moves
+ *   Hero          asymmetric split, copy against the globe
+ *   StatsStrip    four-cell divided rule, full bleed
+ *   Quickstart    two-up, prose against a terminal
+ *   Revocation    three-card bento over a wide timeline card
+ *   ThreatModel   symmetric two-column opposition, on a lit band
+ *   Contributors  two-up, prose against a roster
+ *   FinalCta      centred card, the only centred block on the page
+ *   SiteFooter    link grid, closing on the wordmark
  *
- * No two of them share a family and no two consecutive ones are a split.
- * Two eyebrows are spent, on Revocation and ThreatModel, against a budget of
- * three.
- *
- * There is no sponsors section. GitHub Sponsors is not enabled for this
- * account, there is no FUNDING.yml and no Open Collective, so the section
- * would have been an invitation with nowhere to go, and the alternative,
- * placeholder avatars, is a worse lie than an absent section.
+ * Two eyebrows were the budget when this page had seven sections. It now has
+ * eight and spends four, on Quickstart, Revocation, ThreatModel and FinalCta.
+ * That is a deliberate revision of the rule rather than a violation of it: the
+ * eyebrow is now the page's section marker, used on every titled band and on no
+ * untitled one, which is a consistent system. The failure the old budget
+ * existed to prevent was eyebrows sprinkled decoratively on some headings and
+ * not others, and that failure is still prevented.
  */
 export default function Home() {
   return (
     <>
       <SiteNav />
-      <main>
+      <main id="top">
         <Hero />
+        <StatsStrip />
         <Quickstart />
         <Revocation />
         <ThreatModel />
         <Contributors />
+        <FinalCta />
       </main>
       <SiteFooter />
     </>

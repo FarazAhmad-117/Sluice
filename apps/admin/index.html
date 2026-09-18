@@ -1,0 +1,42 @@
+<!doctype html>
+<!--
+  `data-theme="dark"` is the starting value and it is not the final one. A
+  blocking script is injected above by `vite.config.ts` and rewrites this
+  attribute from the viewer's stored choice, or their operating system, before
+  the browser paints. See `src/lib/theme-storage.ts` for why that script lives
+  in TypeScript rather than inline here.
+
+  `color-scheme` on the root element is what makes the browser's own chrome --
+  scrollbars, form controls, the flash of background before CSS arrives --
+  match the theme. It is set per theme in `app.css` beside the tokens.
+-->
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+
+    <!--
+      The admin panel is a private surface behind a credential. There is
+      nothing here for a crawler to index and nothing worth a preview card, and
+      a dashboard URL turning into a rich unfurl in a chat window is a small
+      leak with no upside.
+    -->
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Sluice admin</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <!--
+      No `<noscript>` fallback with an apology. This application derives keys in
+      the browser; without JavaScript there is no degraded version of it to
+      offer, so the honest thing is the sentence below rather than a promise.
+    -->
+    <noscript>
+      Sluice derives your keys in this browser, so it cannot run without
+      JavaScript. There is no server-rendered version: the server never holds
+      the key that would be needed to produce one.
+    </noscript>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

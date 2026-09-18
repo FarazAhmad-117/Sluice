@@ -81,7 +81,7 @@ export type { RevocationNotice } from "./revocation";
  * These are the only exports here that exist for a reason of LOCATION rather
  * than of function. None is novel cryptography: three are UTF-8 strings, the
  * fourth a domain-separated SHA-256. They are in this package because it is the
- * one module `convex/`, `apps/web` and `packages/sdk` all already depend on,
+ * one module `convex/`, `apps/admin` and `packages/sdk` all already depend on,
  * and because each of them, computed differently on two sides, fails without an
  * error anybody can act on -- an opaque AEAD rejection at read time, a
  * revocation query that joins on nothing, a project data key that no client can

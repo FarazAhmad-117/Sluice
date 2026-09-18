@@ -1,65 +1,36 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import type { NextConfig } from "next";
 
 /**
- * WHY THIS FILE READS AN ENV FILE BY HAND.
+ * THE CONVEX URL BRIDGE THAT USED TO LIVE HERE IS GONE, AND ITS ABSENCE IS THE
+ * POINT.
  *
- * `npx convex dev` writes `CONVEX_URL` into the REPOSITORY ROOT `.env.local`.
- * Next only ever loads env files from the application directory, which is
- * `apps/web`, and it only exposes a variable to the browser when its name
- * starts with `NEXT_PUBLIC_`. So the value the CLI wrote is invisible twice
- * over: wrong directory and wrong prefix.
+ * This file used to read the repository root `.env.local` by hand, because
+ * `npx convex dev` writes `CONVEX_URL` there and Next reads env files only from
+ * the application directory and exposes only `NEXT_PUBLIC_*`. That bridge moved
+ * with the code that needed it: the dashboard is `apps/admin` now, and
+ * `apps/admin/vite.config.ts` carries the same search with the same reasoning.
  *
- * The failure that costs an afternoon is that nothing errors. `next build`
- * succeeds, the page renders, and the first Convex call fails at runtime with
- * a message about an undefined deployment URL. So the bridge is built here,
- * once, and `src/lib/convex-url.ts` turns a missing value into a visible
- * message on the page rather than a rejected promise nobody awaited.
+ * THIS APPLICATION NO LONGER TALKS TO CONVEX AT ALL. The landing page opens no
+ * WebSocket, holds no session and reads no deployment URL, which was already
+ * the intent -- the previous revision kept the three providers off the landing
+ * page precisely so that marketing could not open a socket -- and is now true
+ * by construction rather than by discipline. If a marketing page ever needs
+ * live data, put the bridge back here rather than reaching into `apps/admin`.
  *
- * PRECEDENCE, highest first:
- *   1. `NEXT_PUBLIC_CONVEX_URL` in the process environment.
- *   2. `CONVEX_URL` in the process environment (CI, Vercel).
- *   3. either name in `apps/web/.env.local`, then `apps/web/.env`.
- *   4. either name in the repo root `.env.local`, then the repo root `.env`.
- *
- * The value is INLINED INTO THE CLIENT BUNDLE, which is correct and is not a
- * leak: a Convex deployment URL is a public address, the same one every
- * browser must dial. Nothing secret may ever be added to this map.
+ * `NEXT_PUBLIC_ADMIN_URL` is read directly by `src/components/landing/links.ts`
+ * and needs no bridge: it is a plain `NEXT_PUBLIC_*` variable that belongs in
+ * `apps/web/.env.local`, which is exactly where Next already looks.
  */
-const ENV_FILE_CANDIDATES = [".env.local", ".env", "../../.env.local", "../../.env"];
-
-const URL_LINE = /^\s*(?:export\s+)?(?:NEXT_PUBLIC_)?CONVEX_URL\s*=\s*["']?([^"'\r\n#]+)["']?/m;
-
-function readConvexUrl(): string | undefined {
-  const fromProcess = process.env.NEXT_PUBLIC_CONVEX_URL ?? process.env.CONVEX_URL;
-  if (fromProcess !== undefined && fromProcess.length > 0) return fromProcess.trim();
-
-  for (const candidate of ENV_FILE_CANDIDATES) {
-    let text: string;
-    try {
-      text = readFileSync(resolve(process.cwd(), candidate), "utf8");
-    } catch {
-      // An absent env file is the normal case in CI and in a fresh clone. It
-      // must not fail the build: the page says so at runtime instead.
-      continue;
-    }
-    const match = URL_LINE.exec(text);
-    const value = match?.[1]?.trim();
-    if (value !== undefined && value.length > 0) return value;
-  }
-  return undefined;
-}
-
-const convexUrl = readConvexUrl();
-
 const nextConfig: NextConfig = {
   /**
    * `@sluice/crypto` publishes TypeScript SOURCE (`"main": "./src/index.ts"`)
    * rather than a build artefact, which is deliberate -- an audited crypto
    * package that shipped a compiled bundle would be one whose reviewed code and
-   * shipped code are different files. Next therefore has to compile it, in the
-   * main bundle and in the key-derivation worker alike.
+   * shipped code are different files. Next therefore has to compile it.
+   *
+   * Still required after the dashboard moved: `lib/landing/hero-revocation.ts`
+   * signs a real revocation notice in the browser to drive the hero animation,
+   * so the landing page imports the package too.
    *
    * This pairs with the extensionless relative imports inside that package: see
    * the note at the top of `packages/crypto/src/index.ts`. Turbopack applies
@@ -68,11 +39,6 @@ const nextConfig: NextConfig = {
    * config option fixes it -- `experimental.extensionAlias` is webpack-only.
    */
   transpilePackages: ["@sluice/crypto"],
-
-  // Only set when a value was actually found. Assigning `undefined` here makes
-  // Next emit the literal string "undefined" into the bundle, which reads as a
-  // configured value and then dials a host that does not exist.
-  ...(convexUrl === undefined ? {} : { env: { NEXT_PUBLIC_CONVEX_URL: convexUrl } }),
 };
 
 export default nextConfig;

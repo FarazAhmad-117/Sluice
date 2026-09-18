@@ -193,7 +193,7 @@ export class MasterUnlockKey {
  * WASM backend on the main thread is ten times faster and still blocks; a
  * Worker without a WASM backend still costs the user eleven seconds. The
  * browser application supplies a WASM backend and runs this inside a Worker;
- * see `apps/web/src/lib/crypto/`.
+ * see `apps/admin/src/lib/crypto/`.
  *
  * THE BACKEND IS NOT A PARAMETER KNOB. It receives a frozen copy of
  * {@link ARGON2_PARAMS} and is checked against cheap Argon2id conformance
