@@ -44,15 +44,20 @@ import * as api from "../src/index";
  * zero-knowledge property itself. Without this export the package can mint
  * tokens and never use one.
  *
- * `secretAssociatedData` and `tokenIdHash` ARE here, and their constants are
- * not. These two are the reason the package exists at all for the SDK: they are
- * the constructions where the backend and the SDK computing different bytes
- * fails silently -- an opaque AEAD rejection months later, or a revocation that
- * never reaches the bundle -- so there must be exactly one implementation and
- * both sides must reach it. `SECRET_AAD_PREFIX` and `TOKEN_ID_HASH_LABEL` stay
- * private precisely so that reaching them means calling the function; an
- * exported prefix is a hand-joined string waiting to happen, which is the
- * failure the move was made to delete.
+ * `pdkAssociatedData`, `secretAssociatedData` and `tokenIdHash` ARE here, and
+ * their constants are not. These three are the reason the package exists at all
+ * for the SDK and the dashboard: they are the constructions where two sides
+ * computing different bytes fails silently -- an opaque AEAD rejection months
+ * later, a revocation that never reaches the bundle, or a project data key no
+ * client can unwrap -- so there must be exactly one implementation and every
+ * side must reach it. `SECRET_AAD_PREFIX`, `PDK_AAD_PREFIX` and
+ * `TOKEN_ID_HASH_LABEL` stay private precisely so that reaching them means
+ * calling the function; an exported prefix is a hand-joined string waiting to
+ * happen, which is the failure the move was made to delete.
+ *
+ * `PDKGranteeType` is absent from the list below and that is not an oversight:
+ * it is an interface-like type alias, erased at compile time, so `Object.keys`
+ * cannot see it and only `tsc` guards it.
  *
  * `mukSalt`, `handshakeMessage`, `encode`, `assertValidNotice`, `importKey` and
  * the `*_INFO` / `*_PATTERN` / `*_BYTES` / `*_LABEL` constants stay private.
@@ -71,6 +76,7 @@ const PUBLIC_SURFACE = [
   "fromHex",
   "mintToken",
   "parseToken",
+  "pdkAssociatedData",
   "randomBytes",
   "seal",
   "secretAssociatedData",
@@ -110,7 +116,7 @@ describe("public API surface", () => {
   });
 
   /**
-   * The two protocol labels stay private, and this says so out loud rather
+   * The three protocol labels stay private, and this says so out loud rather
    * than leaving it implicit in the list above.
    *
    * An exported `SECRET_AAD_PREFIX` reads like documentation and behaves like
@@ -121,7 +127,10 @@ describe("public API surface", () => {
    */
   it("does not export the protocol labels, only the functions that bind them", () => {
     expect(Object.keys(api)).not.toContain("SECRET_AAD_PREFIX");
+    expect(Object.keys(api)).not.toContain("PDK_AAD_PREFIX");
     expect(Object.keys(api)).not.toContain("TOKEN_ID_HASH_LABEL");
+    expect(Object.keys(api)).not.toContain("SEPARATOR");
+    expect(Object.keys(api)).not.toContain("GRANTEE_TYPES");
   });
 
   it("binds every exported name to something defined", () => {

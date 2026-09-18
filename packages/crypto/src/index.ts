@@ -76,20 +76,26 @@ export { signRevocation, verifyRevocation } from "./revocation";
 export type { RevocationNotice } from "./revocation";
 
 /**
- * The two rules both ends of the wire must agree on, byte for byte.
+ * The three rules both ends of the wire must agree on, byte for byte.
  *
  * These are the only exports here that exist for a reason of LOCATION rather
- * than of function. Neither is novel cryptography: one is a UTF-8 string, the
- * other a domain-separated SHA-256. They are in this package because it is the
- * one module `convex/` and `packages/sdk` both already depend on, and because
- * each of them, computed differently on the two sides, fails without an error
- * anybody can act on -- an opaque AEAD rejection at read time, or a revocation
- * query that joins on nothing and returns an empty bundle.
+ * than of function. None is novel cryptography: two are UTF-8 strings, the
+ * third a domain-separated SHA-256. They are in this package because it is the
+ * one module `convex/`, `apps/web` and `packages/sdk` all already depend on,
+ * and because each of them, computed differently on two sides, fails without an
+ * error anybody can act on -- an opaque AEAD rejection at read time, a
+ * revocation query that joins on nothing, or a project data key that no client
+ * can unwrap and no server can help with.
  *
- * `SECRET_AAD_PREFIX` and `TOKEN_ID_HASH_LABEL` are deliberately NOT exported
- * alongside them. A caller who can reach the prefix can join the string
- * themselves, at their own call site, without the validation -- which is
- * exactly the hand-copied literal this move exists to delete. The only way to
- * obtain either value is to call the function that binds it.
+ * `pdkAssociatedData` is the one the dashboard is blocked on: the reason org
+ * creation stalled was that no document stated the associated data for a key
+ * wrap, so nobody could write the client half without inventing a literal.
+ *
+ * `SECRET_AAD_PREFIX`, `PDK_AAD_PREFIX` and `TOKEN_ID_HASH_LABEL` are
+ * deliberately NOT exported alongside them. A caller who can reach a prefix can
+ * join the string themselves, at their own call site, without the validation --
+ * which is exactly the hand-copied literal this move exists to delete. The only
+ * way to obtain any of those values is to call the function that binds it.
  */
-export { secretAssociatedData, tokenIdHash } from "./protocol";
+export { pdkAssociatedData, secretAssociatedData, tokenIdHash } from "./protocol";
+export type { PDKGranteeType } from "./protocol";
