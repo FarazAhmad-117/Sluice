@@ -44,16 +44,18 @@ import * as api from "../src/index";
  * zero-knowledge property itself. Without this export the package can mint
  * tokens and never use one.
  *
- * `pdkAssociatedData`, `secretAssociatedData` and `tokenIdHash` ARE here, and
- * their constants are not. These three are the reason the package exists at all
- * for the SDK and the dashboard: they are the constructions where two sides
- * computing different bytes fails silently -- an opaque AEAD rejection months
- * later, a revocation that never reaches the bundle, or a project data key no
- * client can unwrap -- so there must be exactly one implementation and every
- * side must reach it. `SECRET_AAD_PREFIX`, `PDK_AAD_PREFIX` and
- * `TOKEN_ID_HASH_LABEL` stay private precisely so that reaching them means
- * calling the function; an exported prefix is a hand-joined string waiting to
- * happen, which is the failure the move was made to delete.
+ * `pdkAssociatedData`, `revocationKeyAssociatedData`, `secretAssociatedData`
+ * and `tokenIdHash` ARE here, and their constants are not. These four are the
+ * reason the package exists at all for the SDK and the dashboard: they are the
+ * constructions where two sides computing different bytes fails silently -- an
+ * opaque AEAD rejection months later, a revocation that never reaches the
+ * bundle, a project data key no client can unwrap, or an organisation whose
+ * revocation signing key nobody can open -- so there must be exactly one
+ * implementation and every side must reach it. `SECRET_AAD_PREFIX`,
+ * `PDK_AAD_PREFIX`, `REVOCATION_KEY_AAD_PREFIX` and `TOKEN_ID_HASH_LABEL` stay
+ * private precisely so that reaching them means calling the function; an
+ * exported prefix is a hand-joined string waiting to happen, which is the
+ * failure the move was made to delete.
  *
  * `PDKGranteeType` is absent from the list below and that is not an oversight:
  * it is an interface-like type alias, erased at compile time, so `Object.keys`
@@ -78,6 +80,7 @@ const PUBLIC_SURFACE = [
   "parseToken",
   "pdkAssociatedData",
   "randomBytes",
+  "revocationKeyAssociatedData",
   "seal",
   "secretAssociatedData",
   "signHandshake",
@@ -128,6 +131,7 @@ describe("public API surface", () => {
   it("does not export the protocol labels, only the functions that bind them", () => {
     expect(Object.keys(api)).not.toContain("SECRET_AAD_PREFIX");
     expect(Object.keys(api)).not.toContain("PDK_AAD_PREFIX");
+    expect(Object.keys(api)).not.toContain("REVOCATION_KEY_AAD_PREFIX");
     expect(Object.keys(api)).not.toContain("TOKEN_ID_HASH_LABEL");
     expect(Object.keys(api)).not.toContain("SEPARATOR");
     expect(Object.keys(api)).not.toContain("GRANTEE_TYPES");

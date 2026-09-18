@@ -5,14 +5,14 @@ import { concat, toHex, utf8 } from "./bytes";
  * THE RULES BOTH ENDS OF THE WIRE MUST AGREE ON, BYTE FOR BYTE.
  *
  * Nothing else belongs in this file. These are not helpers and not utilities:
- * they are the three constructions where the backend and the SDK computing
+ * they are the four constructions where the backend and the SDK computing
  * slightly different bytes produces a silent, unrecoverable failure rather than
  * an error anybody can act on. They live in `@sluice/crypto` because it is the
  * ONE module both sides already depend on, and because the alternative -- a
  * literal in `convex/` and a hand-copied literal in `packages/sdk` -- is two
  * things that can drift apart by one character.
  *
- * WHAT DRIFT COSTS, CONCRETELY, so nobody edits either constant casually.
+ * WHAT DRIFT COSTS, CONCRETELY, so nobody edits any constant casually.
  *
  * The associated data: AES-GCM authenticates it. A single wrong byte and
  * `unseal` fails, and it fails the way AEAD is DESIGNED to fail -- opaquely,
@@ -29,13 +29,19 @@ import { concat, toHex, utf8 } from "./bytes";
  * seeds both rows by hand still passes, because a hand-seeded fixture agrees
  * with itself.
  *
- * NO PARAMETER HERE SELECTS A VERSION OR A DOMAIN. Both labels are bound inside
- * their function. A version a caller can pass is a version a caller can get
+ * The revocation key wrap: `revocationGrants.wrappedRevocationKey` holds the
+ * only thing in the product that can sign a notice an SDK will honour. A client
+ * that wrapped it under associated data the next client does not reproduce
+ * produces an org whose kill switch cannot be armed, and nothing says so until
+ * somebody tries to use it, during the incident it exists for.
+ *
+ * NO PARAMETER HERE SELECTS A VERSION OR A DOMAIN. Every label is bound inside
+ * its function. A version a caller can pass is a version a caller can get
  * wrong, and on the AAD it would additionally be a downgrade a client could
  * perform on itself. A new construction gets a new `/v2` label and a new
  * function; it does not get an argument.
  *
- * NEITHER OF THESE MAY BE FETCHED FROM A SERVER AT RUNTIME. They are pinned in
+ * NONE OF THESE MAY BE FETCHED FROM A SERVER AT RUNTIME. They are pinned in
  * client code. A server that could choose the associated data could hand a
  * client the AAD of a different environment and undo the environment binding
  * entirely, which is the one thing that binding exists to prevent.
@@ -68,6 +74,13 @@ const TOKEN_ID_HASH_LABEL = "sluice/token-id/v1";
  * {@link pdkAssociatedData}.
  */
 const PDK_AAD_PREFIX = "sluice/pdk/v1|";
+
+/**
+ * The associated data prefix for a wrapped organisation revocation signing
+ * key. NOT exported, for the same reason as the three above: reaching it means
+ * calling {@link revocationKeyAssociatedData}.
+ */
+const REVOCATION_KEY_AAD_PREFIX = "sluice/revocation-key/v1|";
 
 /** The separator, written once so no call site spells it. */
 const SEPARATOR = "|";
@@ -270,6 +283,81 @@ export function pdkAssociatedData(params: {
   // two known literals, and `granteeId` cannot contain the separator. No two
   // distinct inputs produce one string.
   return utf8.encode(PDK_AAD_PREFIX + granteeType + SEPARATOR + granteeId);
+}
+
+/**
+ * THE ASSOCIATED DATA RULE FOR A WRAPPED ORGANISATION REVOCATION SIGNING KEY.
+ * READ THIS BEFORE WRITING A CLIENT THAT CREATES AN ORG OR SIGNS A NOTICE.
+ *
+ * Every `revocationGrants.wrappedRevocationKey` in Sluice is sealed with
+ * AES-GCM under associated data of exactly:
+ *
+ *     utf8("sluice/revocation-key/v1|" + granteeId)
+ *
+ * where `granteeId` is the `users` document id of the person the key is wrapped
+ * to, spelled exactly as it is stored on the row.
+ *
+ * WHAT IS WRAPPED IS THE ED25519 SEED, 32 bytes, the private half of
+ * `orgs.revocationPublicKey`. It is generated in a browser, it is the one thing
+ * that can sign a revocation notice any SDK will honour, and this server has
+ * never held it. That is the product's wedge.
+ *
+ * WHY THE ORG ID IS NOT IN HERE, WHICH IS THE FIRST THING A READER WILL EXPECT
+ * AND MUST NOT ADD. It is the identical constraint {@link pdkAssociatedData}
+ * documents about the environment id, arriving for the identical reason.
+ *
+ * It CANNOT be. The grant is written in the same transaction that creates its
+ * org, because `convex/orgs.ts` says at that call site that an org without one
+ * is an org for which no revocation notice can ever be signed -- the wedge
+ * broken at creation time, discovered during the incident it exists for. The
+ * server never sees the plaintext signing key, so the wrap happens in the
+ * CLIENT before that mutation runs, at which point the org has no id: Convex
+ * mints document ids on insert and no client can predict or choose one. The
+ * only way to bind one would be to split creation into two mutations, and the
+ * state between them is precisely the un-openable org this design exists to
+ * make unrepresentable. A worse failure, bought with a weaker one.
+ *
+ * The slug is available at wrap time and is NOT a substitute. It is the one
+ * field `createOrg` can reject after the wrap has happened -- two people
+ * creating `acme` at once means one of them retries under a different slug --
+ * and a client that retried without re-wrapping would write exactly the
+ * unopenable grant this construction exists to prevent. It is also renameable
+ * in a way a document id is not.
+ *
+ * AND IT IS NOT NEEDED, which is why the trade is acceptable rather than merely
+ * forced. A revocation key IS the org: one keypair per org, and it signs
+ * nothing else. The org binding that matters is carried on every notice by
+ * `verifyRevocation`, which checks the signature against `orgs`'s own stored
+ * public key, in this server and again in every SDK. A grant blob moved into
+ * another org's row by someone with database write access yields a key whose
+ * signatures that org rejects. That is a failure, loudly, and not an
+ * escalation: the mover cannot produce a wrap the target's grantee can open
+ * without already holding that grantee's master unlock key, and if they held
+ * that they would not need the row.
+ *
+ * WHY THE GRANTEE IS IN HERE. `granteeId` is a COLUMN, and a column is not
+ * authenticated. Naming the grantee inside the associated data is what makes a
+ * row whose grantee was edited stop opening instead of claiming to belong to
+ * somebody it does not.
+ *
+ * WHY THERE IS NO `granteeType`. Unlike `pdkGrants`, only a person can sign a
+ * revocation: the schema types `revocationGrants.granteeId` as `v.id("users")`
+ * rather than as a string, so there is one namespace and nothing for a type to
+ * separate. A service token that could sign its own revocation would be a
+ * kill switch the compromised party holds.
+ *
+ * THE DOMAIN IS WHAT KEEPS THIS BLOB AND A PROJECT DATA KEY APART, and that
+ * matters more here than domain separation usually does: both are sealed under
+ * the SAME master unlock key, so the prefix is the only reason a
+ * `pdkGrants.wrappedPDK` cannot be written into `revocationGrants` and opened
+ * as a signing key.
+ */
+export function revocationKeyAssociatedData(params: { granteeId: string }): Uint8Array {
+  const granteeId = assertIdentifier("granteeId", params.granteeId);
+
+  // Unambiguous by construction: the prefix is fixed-width and `granteeId`
+  // cannot contain the separator. No two distinct inputs produce one string.
+  return utf8.encode(REVOCATION_KEY_AAD_PREFIX + granteeId);
 }
 
 /**
