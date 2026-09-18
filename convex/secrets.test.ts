@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { convexTest } from "convex-test";
-import { deriveMUK, toHex } from "@sluice/crypto";
+import { deriveMUK, signRevocation, toHex, verifyRevocation } from "@sluice/crypto";
 import schema from "./schema";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -13,7 +13,10 @@ import {
   insertSecret as insertSecretRow,
 } from "./repo/secrets";
 import { listAuditEventsByActor } from "./repo/audit";
-import { insertOrgMember } from "./repo/orgs";
+import {
+  getRevocationGrant as getRevocationGrantRow,
+  insertOrgMember,
+} from "./repo/orgs";
 import {
   getPDKGrant,
   insertPDKGrant as insertPDKGrantRow,
@@ -39,6 +42,12 @@ import {
   unwrapIdentity,
 } from "../apps/web/src/lib/auth/identity";
 import { normaliseEmail as normaliseWebEmail } from "../apps/web/src/lib/auth/email";
+import {
+  createRevocationKeypair,
+  revocationKeyMatches,
+  unwrapRevocationKey,
+  wrapRevocationKey,
+} from "../apps/web/src/lib/orgs/revocation-key";
 import {
   createProjectDataKey,
   unwrapProjectDataKey,
@@ -1128,16 +1137,16 @@ describe("the audit log", () => {
  * with no grant, so that its secrets were ciphertext under a key no client
  * could obtain, with nothing erroring at any point.
  *
- * THE ONE LINK IT DOES NOT EXERCISE, NAMED RATHER THAN HIDDEN.
- * `createOrg`'s `wrappedRevocationKey` is passed as an opaque placeholder,
- * exactly as every other test in `convex/` passes it, because THE ASSOCIATED
- * DATA FOR THAT WRAP IS NOT DEFINED ANYWHERE. `@sluice/crypto` defines three
- * constructions, `secretAssociatedData`, `pdkAssociatedData` and
- * `tokenIdHash`, and none of them is the revocation key wrap. Inventing a
- * fourth here would pin a literal that the SDK and the backend would later have
- * to match by coincidence, which is the precise drift that module exists to
- * delete. The server treats the field as opaque and never opens it, so nothing
- * below depends on its contents. Signed revocation does, and it is not built.
+ * THE LINK THAT USED TO BE MISSING, AND NOW IS NOT. `createOrg`'s
+ * `wrappedRevocationKey` was passed as an opaque placeholder, because the
+ * associated data for that wrap was defined nowhere and inventing a literal
+ * here would have pinned bytes the SDK and the backend later had to match by
+ * coincidence. `revocationKeyAssociatedData` now defines it in
+ * `@sluice/crypto`, so step 3 below performs a REAL wrap through the
+ * dashboard's own module, step 4 reads the grant back, opens it, and signs a
+ * notice that `verifyRevocation` accepts under the public key the server
+ * stored. That chain is the product's wedge, and until now nothing exercised
+ * it end to end.
  */
 describe("end to end", () => {
   // A throwaway pepper. Set on `process.env` directly, because that is what the
@@ -1204,18 +1213,80 @@ describe("end to end", () => {
       expect(identityMatches(restored, pub)).toBe(true);
       expect(session.userId).toBe(signedUpUserId);
 
-      // ---- 3. An organisation. --------------------------------------------
+      // ---- 3. An organisation, whose revocation key is minted HERE. -------
+      // This is the product's wedge. The seed below is the only thing that can
+      // sign a notice any SDK will honour, it is generated in the client, and
+      // this deployment has never held it.
+      const revocationKeypair = createRevocationKeypair();
+      const wrappedRevocation = await wrapRevocationKey(muk, revocationKeypair.privateKey, {
+        granteeId: signedUpUserId,
+      });
       const orgId = await t.mutation(api.orgs.createOrg, {
         sessionToken,
         name: "Acme Rockets",
         slug: "acme-rockets",
-        revocationPublicKey: "ab".repeat(32),
-        // Opaque placeholder. See the note above this describe block.
-        wrappedRevocationKey: "wrapped-revocation-key-blob",
-        revocationKeyNonce: "0f1e2d3c4b5a69788796a5b4",
+        revocationPublicKey: revocationKeypair.revocationPublicKey,
+        ...wrappedRevocation,
       });
 
-      // ---- 4. A project. ---------------------------------------------------
+      // ---- 4. Open the revocation grant and sign with what comes back. ----
+      // From here the test uses `recoveredKey` and never `revocationKeypair
+      // .privateKey`. Using the local copy would let a grant that round trips
+      // incorrectly pass unnoticed, which is the entire failure this link
+      // exists to catch: an org whose kill switch cannot be armed, discovered
+      // during the incident it exists for.
+      const revocationGrant = await t.query(api.orgs.getMyRevocationGrant, {
+        sessionToken,
+        orgId,
+      });
+      // The server stores the wrap and the public half; the seed is in neither.
+      const grantDump = JSON.stringify(
+        await t.run(async (ctx) => getRevocationGrantRow(ctx, orgId, signedUpUserId)),
+      );
+      expect(grantDump).not.toContain(toHex(revocationKeypair.privateKey));
+      expect(grantDump).not.toContain(toHex(muk.bytes));
+
+      const recoveredKey = await unwrapRevocationKey(
+        muk,
+        {
+          wrappedRevocationKey: revocationGrant.wrappedRevocationKey,
+          nonce: revocationGrant.nonce,
+        },
+        { granteeId: signedUpUserId },
+      );
+      expect(toHex(recoveredKey)).toBe(toHex(revocationKeypair.privateKey));
+
+      // The seed and the column the org publishes belong together. Nothing
+      // cryptographic ties them, because the org id does not exist at wrap time
+      // and so cannot be in the associated data; this is the check that stands
+      // in for it.
+      const storedOrg = await t.query(api.orgs.getOrg, { sessionToken, orgId });
+      expect(revocationKeyMatches(recoveredKey, storedOrg.revocationPublicKey)).toBe(true);
+
+      // AND IT SIGNS. A notice built the way the SDK will read one, signed by
+      // the key that came back out of the database, verified against the public
+      // key the SERVER stored rather than the one the client kept.
+      const noticeToSign = {
+        tokenId: "3f".repeat(16),
+        epoch: 1,
+        revokedAt: 1_800_000_000_000,
+        reason: "Laptop stolen.",
+      };
+      const signature = signRevocation(recoveredKey, noticeToSign);
+      expect(verifyRevocation(storedOrg.revocationPublicKey, noticeToSign, signature)).toBe(true);
+
+      // A different org's key must not verify under this one, or the check
+      // above is a check that accepts anything.
+      const stranger = createRevocationKeypair();
+      expect(
+        verifyRevocation(
+          storedOrg.revocationPublicKey,
+          noticeToSign,
+          signRevocation(stranger.privateKey, noticeToSign),
+        ),
+      ).toBe(false);
+
+      // ---- 5. A project. ---------------------------------------------------
       const projectId = await t.mutation(api.projects.createProject, {
         sessionToken,
         orgId,
@@ -1223,7 +1294,7 @@ describe("end to end", () => {
         slug: "api",
       });
 
-      // ---- 5. An environment, whose project data key is minted HERE. -------
+      // ---- 6. An environment, whose project data key is minted HERE. -------
       // The server has never held the plaintext of this key and cannot: it
       // arrives wrapped, under associated data this deployment computes
       // nowhere.
@@ -1239,7 +1310,7 @@ describe("end to end", () => {
         ...wrappedPdk,
       });
 
-      // ---- 6. Fetch the grant back and open it. ---------------------------
+      // ---- 7. Fetch the grant back and open it. ---------------------------
       // From this line on the test uses `openedPdk`, NOT `pdk`. Using the local
       // copy would let a grant that round trips incorrectly pass unnoticed,
       // which is exactly the failure this whole chain exists to catch.
@@ -1257,7 +1328,7 @@ describe("end to end", () => {
       );
       expect(toHex(openedPdk)).toBe(toHex(pdk));
 
-      // ---- 7. Seal a secret and write it. ---------------------------------
+      // ---- 8. Seal a secret and write it. ---------------------------------
       const NAME = "DATABASE_URL";
       const VALUE = "postgres://app:hunter2@db.internal:5432/production";
 
@@ -1279,7 +1350,7 @@ describe("end to end", () => {
       expect(rowDump).not.toContain(VALUE);
       expect(rowDump).not.toContain(toHex(openedPdk));
 
-      // ---- 8. List it and open it, which is what the dashboard does. -------
+      // ---- 9. List it and open it, which is what the dashboard does. -------
       const listed = await t.query(api.secrets.listSecrets, { sessionToken, environmentId });
       expect(listed).toHaveLength(1);
 
@@ -1289,7 +1360,7 @@ describe("end to end", () => {
       expect(opened.name).toBe(NAME);
       expect(opened.value).toBe(VALUE);
 
-      // ---- 9. And the environment binding actually binds. ------------------
+      // ---- 10. And the environment binding actually binds. -----------------
       // The same key, the same ciphertext, one different environment id in the
       // associated data. It must fail, or the per-environment binding is
       // decoration.
@@ -1306,7 +1377,7 @@ describe("end to end", () => {
         openSecret(openedPdk, { ...row, environmentId: other }),
       ).rejects.toThrow(SecretOpenError);
 
-      // ---- 10. An update, through the same path, reads back updated. ------
+      // ---- 11. An update, through the same path, reads back updated. ------
       const NEW_VALUE = "postgres://app:hunter3@db.internal:5432/production";
       const resealed = await sealSecret(openedPdk, {
         environmentId,
