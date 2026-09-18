@@ -19,6 +19,7 @@ import {
   listPDKGrantsByEnvironment,
 } from "./repo/environments";
 import { listAuditEventsByActor } from "./repo/audit";
+import { insertOrgMember } from "./repo/orgs";
 import * as tokensModule from "./tokens";
 
 export const modules = import.meta.glob("./**/*.ts");
@@ -313,6 +314,116 @@ describe("a token's wrapped project data key", () => {
       listPDKGrantsByEnvironment(ctx, environmentId),
     );
     expect(grants.filter((g) => g.granteeType === "token")).toEqual([]);
+  });
+
+  /**
+   * MEMBERSHIP AUTHORISED THIS WRITE AND A GRANT IS WHAT MAKES IT MEANINGFUL.
+   * BOTH MUST HOLD, and until this test there was only one of them.
+   *
+   * `requireEnvironment` proves the caller is in the org. It says nothing about
+   * whether they hold the project data key, and every SECOND member of an org
+   * is in exactly that state today, because nothing wraps an existing key to a
+   * new member. Such a member could register a token whose `wrappedPDK` is
+   * arbitrary bytes: the row lands, `pdkVersion` is copied off the environment
+   * so it claims a real key version, the bundle ships it, the workload boots,
+   * and every decrypt fails as a bare AEAD rejection with no indication of
+   * which input was wrong -- in production, possibly months later.
+   *
+   * The server cannot repair it, only refuse it: this deployment has never held
+   * the plaintext project data key, so any grant it wrote itself would be a row
+   * whose ciphertext is not a key. `secrets.ts` makes the identical check for
+   * the identical reason on `createSecret` and `updateSecret`.
+   */
+  it("refuses a member of the org who holds no key for the environment", async () => {
+    const t = convexTest(schema, modules);
+    const alice = await seedUser(t, "alice@example.test");
+    const bob = await seedUser(t, "bob@example.test");
+    const { orgId, environmentId } = await tenant(t, alice, "acme");
+    // A real member, added the way a second person joins an org. He passes
+    // `requireEnvironment` and holds no grant, which is the whole point.
+    await t.run(async (ctx) =>
+      insertOrgMember(ctx, { orgId, userId: bob.userId, role: "member" }),
+    );
+
+    const minted = mintToken({ environment: "production" });
+    await expect(
+      t.mutation(api.tokens.createServiceToken, {
+        sessionToken: bob.sessionToken,
+        environmentId,
+        tokenId: minted.upload.tokenId,
+        publicKey: minted.upload.publicKey,
+        wrappedPDK: "cc".repeat(48),
+        pdkNonce: "0102030405060708090a0b0c",
+      }),
+    ).rejects.toThrow("You hold no key for this environment");
+  });
+
+  /**
+   * THE REFUSAL WRITES NOTHING. A partial create here is worse than the refusal
+   * it replaces: a `serviceTokens` row with no grant is a token that
+   * authenticates and can open nothing, and an audit trail that records a
+   * create which did not happen is an audit trail nobody can trust.
+   */
+  it("writes no token, no grant and no audit row when the caller holds no key", async () => {
+    const t = convexTest(schema, modules);
+    const alice = await seedUser(t, "alice@example.test");
+    const bob = await seedUser(t, "bob@example.test");
+    const { orgId, environmentId } = await tenant(t, alice, "acme");
+    await t.run(async (ctx) =>
+      insertOrgMember(ctx, { orgId, userId: bob.userId, role: "member" }),
+    );
+
+    const minted = mintToken({ environment: "production" });
+    await expect(
+      t.mutation(api.tokens.createServiceToken, {
+        sessionToken: bob.sessionToken,
+        environmentId,
+        tokenId: minted.upload.tokenId,
+        publicKey: minted.upload.publicKey,
+        wrappedPDK: "cc".repeat(48),
+        pdkNonce: "0102030405060708090a0b0c",
+      }),
+    ).rejects.toThrow();
+
+    // Looked up by the hash, because that is the only identifier the server
+    // keeps and the only one the handshake can reach.
+    const row = await t.run(async (ctx) =>
+      getServiceTokenByIdHash(ctx, tokenIdHash({ tokenId: minted.tokenId })),
+    );
+    expect(row).toBeNull();
+
+    // Alice's own user grant, and nothing else. No token grant was created.
+    const grants = await t.run(async (ctx) =>
+      listPDKGrantsByEnvironment(ctx, environmentId),
+    );
+    expect(grants.map((g) => g.granteeType)).toEqual(["user"]);
+
+    const events = await t.run(async (ctx) =>
+      listAuditEventsByActor(ctx, bob.userId, 10),
+    );
+    expect(events).toEqual([]);
+  });
+
+  /**
+   * The check is on the CALLER'S OWN grant and not on "some grant exists for
+   * this environment". Alice holds one and is refused nothing, which is what
+   * keeps the guard above from being a guard that refuses everybody.
+   */
+  it("still admits the member who does hold the key", async () => {
+    const t = convexTest(schema, modules);
+    const alice = await seedUser(t, "alice@example.test");
+    const bob = await seedUser(t, "bob@example.test");
+    const { orgId, environmentId } = await tenant(t, alice, "acme");
+    await t.run(async (ctx) =>
+      insertOrgMember(ctx, { orgId, userId: bob.userId, role: "member" }),
+    );
+
+    const { minted, serviceTokenId } = await issue(t, alice, environmentId);
+    expect(serviceTokenId).toBeDefined();
+    const grant = await t.run(async (ctx) =>
+      getPDKGrant(ctx, environmentId, "token", tokenIdHash({ tokenId: minted.tokenId })),
+    );
+    expect(grant).not.toBeNull();
   });
 });
 

@@ -9,7 +9,7 @@ import type { Id } from "./_generated/dataModel";
 import { recordUserEvent } from "./lib/audit";
 import { sessionArg, NOT_PERMITTED, requireEnvironment, requireSession } from "./lib/authz";
 import { assertHexAtLeast, assertHexBytes } from "./lib/hex";
-import { insertPDKGrant } from "./repo/environments";
+import { getPDKGrant, insertPDKGrant } from "./repo/environments";
 import {
   getServiceTokenByIdHash,
   insertRevocation,
@@ -77,6 +77,41 @@ const NOT_SIGNED =
 const EPOCH_NOT_MONOTONIC =
   "This token has already been revoked at that epoch or a later one.";
 
+/**
+ * MEMBERSHIP AUTHORISES A REGISTRATION. A GRANT IS WHAT MAKES ONE MEANINGFUL,
+ * AND BOTH MUST HOLD.
+ *
+ * `requireEnvironment` proves the caller is in the org. It proves nothing about
+ * whether they hold the environment's project data key, and a member who does
+ * not hold it cannot produce a real `wrappedPDK`: whatever they send is a wrap
+ * of something else, or of nothing. The row lands, `pdkVersion` is copied off
+ * the environment so it claims a real key version, the bundle ships it to the
+ * workload, and the whole thing fails exactly once -- as a bare AEAD rejection
+ * at boot, with no indication of which input was wrong, in production and
+ * possibly months later.
+ *
+ * It is not hypothetical. Every SECOND member of an org is in this state today,
+ * because nothing wraps an existing project data key to a new member:
+ * `createEnvironment` mints exactly one grant and it belongs to its creator.
+ *
+ * THE SERVER CANNOT FIX IT, ONLY REFUSE IT. Minting the missing grant here is
+ * the tempting repair and it is impossible: this deployment has never held the
+ * plaintext project data key and never will, so any grant it wrote would be a
+ * row whose ciphertext is not a key.
+ *
+ * THE SENTENCE IS VERBATIM THE ONE `secrets.ts` USES, deliberately. It is one
+ * rule -- "you hold no key for this environment" -- and one rule with two
+ * spellings is the drift `@sluice/crypto/protocol.ts` exists to delete. It is
+ * repeated rather than imported because `secrets.ts` keeps it private and this
+ * change does not own that file; hoisting both into `lib/authz.ts` is the right
+ * follow-up and is a change to a file this one must not edit. The message stays
+ * distinct from `NOT_PERMITTED` for the reason `secrets.ts` gives: the caller
+ * has already passed `requireEnvironment`, so the only fact disclosed is one
+ * about their own grant, which they can establish by asking about themselves.
+ */
+const NO_GRANT =
+  "You hold no key for this environment, so nothing you wrote here could ever be read.";
+
 function refuse(): never {
   throw new ConvexError(NOT_PERMITTED);
 }
@@ -116,6 +151,18 @@ export const createServiceToken = mutation({
       args.sessionToken,
       args.environmentId,
     );
+
+    // Before any validation and before the token id is hashed, so a caller with
+    // no key cannot learn anything from the order in which their arguments were
+    // rejected, and cannot probe which token ids are already taken. Same
+    // position, for the same reason, as in `secrets.createSecret`.
+    //
+    // `granteeType` is pinned to `"user"`: this is the CALLER'S grant, and the
+    // caller is a person. A `tokenIdHash` and a `users` id are both opaque
+    // strings in one index, and the type column is all that separates them.
+    if ((await getPDKGrant(ctx, environment._id, "user", user._id)) === null) {
+      throw new ConvexError(NO_GRANT);
+    }
 
     assertHexBytes("tokenId", args.tokenId, TOKEN_ID_BYTES);
     assertHexBytes("publicKey", args.publicKey, PUBLIC_KEY_BYTES);
