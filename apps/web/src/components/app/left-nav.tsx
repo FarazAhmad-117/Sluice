@@ -4,7 +4,11 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import type { Id } from "@convex/_generated/dataModel";
 import { Eyebrow, StatusPill, focusRing, quietButton, textLink } from "@/components/app/controls";
-import { NewEnvironmentForm, NewProjectForm } from "@/components/app/create-forms";
+import {
+  NewEnvironmentForm,
+  NewOrgForm,
+  NewProjectForm,
+} from "@/components/app/create-forms";
 import { ThemeToggle } from "@/components/app/theme-toggle";
 import { useAuth } from "@/lib/auth/auth-context";
 
@@ -127,8 +131,8 @@ export function LeftNav({
             <p className="px-2.5 text-base text-text-muted">Loading</p>
           ) : orgs.length === 0 ? (
             <p className="px-2.5 text-base text-text-muted">
-              No organisations yet, and this dashboard cannot create one. The reason is in the
-              right hand panel.
+              No organisations yet. Create one below to get a project, an environment and a place
+              to put a secret.
             </p>
           ) : (
             <ul className="flex flex-col gap-0.5">
@@ -146,6 +150,11 @@ export function LeftNav({
               ))}
             </ul>
           )}
+
+          {/* Always present, not only when the list is empty. A second org is
+              an ordinary thing to want, and a control that appears only on an
+              empty list is a control nobody finds again. */}
+          {orgs === undefined ? null : <NewOrgForm onCreated={onSelectOrg} />}
         </section>
 
         <section className="flex flex-col gap-2">

@@ -215,12 +215,13 @@ export function RightPanel({ secret, keyState }: RightPanelProps) {
         <Eyebrow>Not built yet</Eyebrow>
         <ul className="flex list-disc flex-col gap-2 pl-5 text-base text-text-muted">
           <li>
-            Creating an organisation. It is the one gap that leaves a new account with nowhere to
-            go, and it is deliberate. An org carries a revocation signing key that has to be
-            wrapped to its creator, and the associated data for that wrap is not defined anywhere
-            in this codebase. Choosing a value here would pin bytes the SDK and the backend would
-            later have to match by accident, and a mismatch means a revocation notice that cannot
-            be signed, found during the incident it exists for.
+            Signing a revocation. An org now mints its revocation key in your browser and wraps it
+            to your account, so the key exists and can be read back. Nothing here builds a notice,
+            signs it and sends it, so the kill switch is armed and has no button.
+          </li>
+          <li>
+            Wrapping the revocation key to a second person. Only the creator of an org holds it,
+            which is the bus factor the grants table was split out to fix.
           </li>
           <li>
             Sharing an environment key with a colleague. Only the person who created an

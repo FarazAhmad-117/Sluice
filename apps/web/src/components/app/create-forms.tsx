@@ -15,6 +15,7 @@ import {
 } from "@/components/app/controls";
 import { useAuth } from "@/lib/auth/auth-context";
 import { SLUG_HINT, isSlug } from "@/lib/naming";
+import { createRevocationKeypair, wrapRevocationKey } from "@/lib/orgs/revocation-key";
 import { createProjectDataKey, wrapProjectDataKey } from "@/lib/secrets/pdk";
 import { sealSecret } from "@/lib/secrets/seal";
 
@@ -40,17 +41,21 @@ import { sealSecret } from "@/lib/secrets/seal";
  * and unreachable. Closing the disclosure unmounts the body, and everything
  * typed into it goes with it.
  *
- * CREATING AN ORGANISATION IS NOT HERE, and its absence is the one thing that
- * still leaves a fresh account with nowhere to go. `orgs.createOrg` requires
- * `wrappedRevocationKey`: the org's Ed25519 revocation signing key, wrapped to
- * its creator. THE ASSOCIATED DATA FOR THAT WRAP IS NOT DEFINED ANYWHERE.
- * `@sluice/crypto` defines exactly three cross-wire constructions,
- * `secretAssociatedData`, `pdkAssociatedData` and `tokenIdHash`, and none of
- * them is this one. Choosing a literal here would pin bytes that the backend
- * and the SDK would later have to match by coincidence, and if they did not,
- * the failure is a revocation notice that cannot be signed, discovered during
- * the incident revocation exists for. That belongs in the package, beside its
- * three siblings, and not in a form component.
+ *   organisation an Ed25519 revocation keypair is generated here, and its
+ *                private half is wrapped under the master unlock key before
+ *                anything is sent. `createOrg` writes the org, the ownership
+ *                row and that first revocation grant in ONE transaction, so an
+ *                org whose kill switch nobody can arm cannot exist.
+ *
+ * CREATING AN ORGANISATION USED TO BE ABSENT FROM THIS FILE, and the reason is
+ * worth keeping. `orgs.createOrg` requires `wrappedRevocationKey`, and until
+ * `revocationKeyAssociatedData` was added to `@sluice/crypto` the associated
+ * data for that wrap was defined nowhere. Choosing a literal here would have
+ * pinned bytes the backend and the SDK later had to match by coincidence, and
+ * a mismatch is a revocation notice that cannot be signed, discovered during
+ * the incident revocation exists for. The rule now lives in the package beside
+ * its three siblings, which is the only reason the form below can exist. Do not
+ * reintroduce a literal at this call site.
  */
 
 /**
@@ -101,6 +106,127 @@ function messageFor(cause: unknown): string {
   }
   if (cause instanceof Error && cause.name === "PdkUnwrapError") return cause.message;
   return "That did not work. Try again.";
+}
+
+function OrgFields({
+  onCreated,
+  close,
+}: {
+  onCreated(orgId: Id<"orgs">): void;
+  close(): void;
+}) {
+  const { session, muk } = useAuth();
+  const createOrg = useMutation(api.orgs.createOrg);
+  const nameId = useId();
+  const slugId = useId();
+  const [name, setName] = useState("");
+  const [slug, setSlug] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const ready = name.trim().length > 0 && isSlug(slug) && !busy && session !== null && muk !== null;
+
+  return (
+    <form
+      className="flex flex-col gap-3"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!ready || session === null || muk === null) return;
+        setBusy(true);
+        setError(null);
+        void (async () => {
+          try {
+            /**
+             * MINTED HERE, AND MINTED AGAIN ON EVERY ATTEMPT.
+             *
+             * The seed exists in plaintext only inside this frame: it is never
+             * lifted into React state, never logged, never sent. What crosses
+             * the wire is a public key and two hex strings.
+             *
+             * Generating inside the handler rather than once per mount is
+             * load-bearing rather than tidy. `createOrg` can refuse AFTER the
+             * wrap has happened, and the refusal a person will actually hit is
+             * the duplicate slug: two people creating `acme` at the same time
+             * means one of them retries under another name. A form that reused
+             * a keypair across attempts would be a form that could pair a wrap
+             * with the wrong attempt's state. A fresh pair per submit cannot.
+             */
+            const keypair = createRevocationKeypair();
+            const wrapped = await wrapRevocationKey(muk, keypair.privateKey, {
+              granteeId: session.userId,
+            });
+            const orgId = await createOrg({
+              sessionToken: session.sessionToken,
+              name: name.trim(),
+              slug,
+              revocationPublicKey: keypair.revocationPublicKey,
+              ...wrapped,
+            });
+            onCreated(orgId);
+            close();
+          } catch (cause) {
+            setError(messageFor(cause));
+            setBusy(false);
+          }
+        })();
+      }}
+    >
+      <Field label="Name" htmlFor={nameId}>
+        <input
+          id={nameId}
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+          className={inputControl}
+          autoComplete="off"
+        />
+      </Field>
+      <Field label="Slug" htmlFor={slugId} hint={SLUG_HINT}>
+        <input
+          id={slugId}
+          value={slug}
+          onChange={(event) => setSlug(event.target.value)}
+          className={`${inputControl} font-mono`}
+          autoComplete="off"
+          spellCheck={false}
+        />
+      </Field>
+      <p className="text-base text-text-muted">
+        A revocation signing key is generated in this browser and wrapped to your account. It is
+        the only thing that can kill a stolen token, and the server never sees it.
+      </p>
+      {error === null ? null : <FormError>{error}</FormError>}
+      <button type="submit" className={primaryButton} disabled={!ready}>
+        {busy ? "Creating" : "Create organisation"}
+      </button>
+    </form>
+  );
+}
+
+/**
+ * THE FORM THAT MINTS AN ORGANISATION REVOCATION KEY.
+ *
+ * It needs the master unlock key, so it says so while the vault is locked
+ * rather than failing on submit. An org whose revocation key was wrapped under
+ * nothing is an org whose kill switch cannot be armed, and that is not a state
+ * this offers.
+ */
+export function NewOrgForm({ onCreated }: { onCreated(orgId: Id<"orgs">): void }) {
+  const { session, muk } = useAuth();
+
+  if (session === null || muk === null) {
+    return (
+      <p className="px-2.5 py-1.5 text-base text-text-muted">
+        Unlock your vault to create an organisation. Creating one mints its revocation signing key
+        in this browser.
+      </p>
+    );
+  }
+
+  return (
+    <Disclosure label="New organisation">
+      {(close) => <OrgFields onCreated={onCreated} close={close} />}
+    </Disclosure>
+  );
 }
 
 function ProjectFields({
