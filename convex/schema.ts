@@ -97,14 +97,60 @@ export default defineSchema({
     // also the uniqueness check when an environment is created.
     .index("by_project_name", ["projectId", "name"]),
 
+  // THE ONE HOME FOR A WRAPPED PROJECT DATA KEY. THERE IS NO SECOND ONE.
+  //
+  // `serviceTokens` carried `wrappedPDK` and `nonce` of its own until this
+  // commit, while this table existed for the same purpose and already had
+  // `"token"` in its `granteeType` union. Two authoritative homes for one blob,
+  // with nothing that fails when they disagree, is the defect class that
+  // produced the duplicate associated-data definition: the bundle would ship
+  // one of them, the dashboard would read the other, and a re-key that updated
+  // only one would hand a live workload a key the stored ciphertext is not
+  // under. Nothing would throw.
+  //
+  // THE COLUMN LOST RATHER THAN THE TABLE, and the choice is not close. A
+  // project data key must reach USERS as well as tokens, and a user is not a
+  // service token row, so deleting this table would mean inventing it again
+  // under another name the moment the dashboard can decrypt anything. The
+  // column was the shortcut.
+  //
+  // The counter-argument was real and is answered: the bundle is the product's
+  // hottest query and now does one extra read. That read is
+  // `by_environment_grantee` with all three fields equal, which is a single
+  // indexed point lookup on a query that already performs four. Neither table
+  // had a row when this was decided, so the merge cost nothing exactly once.
+  //
+  // `granteeId` IS A STRING BECAUSE THE TWO GRANTEE NAMESPACES ARE NOT THE SAME
+  // KIND OF THING. For a user it is the `users` document id. For a token it is
+  // the `tokenIdHash`, NOT the `serviceTokens` document id, because the bundle
+  // knows an authenticated token only by its hash, and because the client has
+  // to compute the same identifier to build the associated data it wraps under
+  // before any document exists. `granteeType` is what keeps the two namespaces
+  // from colliding in one index.
   pdkGrants: defineTable({
     environmentId: v.id("environments"),
     granteeType: v.union(v.literal("user"), v.literal("token")),
     granteeId: v.string(),
     wrappedPDK: v.string(),
     nonce: v.string(),
+    // WHICH project data key version this blob opens, copied off the
+    // environment row at write time and never taken from a caller. Without it
+    // the bundle would have to report `environments.pdkVersion` beside a
+    // wrapped key from this row: two rows describing one key, free to disagree,
+    // which is the very thing the column above was deleted for.
+    pdkVersion: v.number(),
   })
-    .index("by_environment", ["environmentId"])
+    // Prefix-queried by `environmentId` alone for "every grant on this
+    // environment", and read with all three fields equal for "this grantee's
+    // grant", which is the bundle's lookup and the dashboard's. One index, two
+    // queries, no scan.
+    .index("by_environment_grantee", [
+      "environmentId",
+      "granteeType",
+      "granteeId",
+    ])
+    // "Everything this grantee can open", which the index above cannot answer
+    // because it is keyed by environment first.
     .index("by_grantee", ["granteeType", "granteeId"]),
 
   secrets: defineTable({
@@ -153,8 +199,10 @@ export default defineSchema({
     // identifiers. Lookups hash the incoming id and match on this.
     tokenIdHash: v.string(),
     publicKey: v.string(),
-    wrappedPDK: v.string(),
-    nonce: v.string(),
+    // NO `wrappedPDK` AND NO `nonce`. They lived here and in `pdkGrants` at the
+    // same time, for the same blob, with nothing that failed when the two
+    // disagreed. `pdkGrants` won; see the note on that table. Do not put them
+    // back: a second home is not a cache, it is a second answer.
     epoch: v.number(),
     status: v.union(v.literal("active"), v.literal("revoked")),
     lastSeenAt: v.optional(v.number()),

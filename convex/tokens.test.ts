@@ -14,7 +14,12 @@ import {
   listRevocationsByTokenIdHash,
   listRevocationsByTokenId,
 } from "./repo/tokens";
+import {
+  getPDKGrant,
+  listPDKGrantsByEnvironment,
+} from "./repo/environments";
 import { listAuditEventsByActor } from "./repo/audit";
+import * as tokensModule from "./tokens";
 
 export const modules = import.meta.glob("./**/*.ts");
 
@@ -185,6 +190,116 @@ describe("createServiceToken", () => {
         t.mutation(api.tokens.createServiceToken, { ...good, ...bad }),
       ).rejects.toThrow();
     }
+  });
+});
+
+/**
+ * ONE HOME FOR A TOKEN'S WRAPPED PROJECT DATA KEY, AND IT IS `pdkGrants`.
+ *
+ * `serviceTokens` used to carry `wrappedPDK` and `nonce` of its own while
+ * `pdkGrants` existed for the same purpose with a `granteeType` of `"token"`
+ * already in its union. Two authoritative homes for one blob, with nothing that
+ * fails when they disagree, is the defect class that produced the duplicate
+ * associated-data definition. These assertions are what stop the column coming
+ * back.
+ */
+describe("a token's wrapped project data key", () => {
+  it("lands in pdkGrants and leaves no copy on the service token row", async () => {
+    const t = convexTest(schema, modules);
+    const alice = await seedUser(t, "alice@example.test");
+    const { environmentId } = await tenant(t, alice, "acme");
+    const { minted, serviceTokenId } = await issue(t, alice, environmentId);
+
+    const row = await t.run(async (ctx) => getServiceToken(ctx, serviceTokenId));
+    // Structural, against the stored document rather than against a type. A
+    // column added back later fails here before anything can read the wrong
+    // one of the two.
+    expect(Object.keys(row ?? {})).not.toContain("wrappedPDK");
+    expect(Object.keys(row ?? {})).not.toContain("nonce");
+
+    const grant = await t.run(async (ctx) =>
+      getPDKGrant(ctx, environmentId, "token", tokenIdHash({ tokenId: minted.tokenId })),
+    );
+    expect(grant?.wrappedPDK).toBe("cc".repeat(48));
+    expect(grant?.nonce).toBe("0102030405060708090a0b0c");
+  });
+
+  /**
+   * The grantee id for a token is its `tokenIdHash` and NOT its `serviceTokens`
+   * document id, for two reasons that both have to hold.
+   *
+   * The bundle knows an authenticated token only by its hash, so the hash is
+   * what the lookup has. And the CLIENT has to compute the same identifier to
+   * build the associated data it wraps under, before the document exists: it
+   * mints the token, so it can compute the hash and cannot know the id.
+   */
+  it("is keyed by tokenIdHash, the one identifier both ends can compute", async () => {
+    const t = convexTest(schema, modules);
+    const alice = await seedUser(t, "alice@example.test");
+    const { environmentId } = await tenant(t, alice, "acme");
+    const { minted, serviceTokenId } = await issue(t, alice, environmentId);
+
+    const grants = await t.run(async (ctx) =>
+      listPDKGrantsByEnvironment(ctx, environmentId),
+    );
+    const forToken = grants.filter((g) => g.granteeType === "token");
+    expect(forToken).toHaveLength(1);
+    expect(forToken[0]?.granteeId).toBe(tokenIdHash({ tokenId: minted.tokenId }));
+    expect(forToken[0]?.granteeId).not.toBe(serviceTokenId);
+    expect(JSON.stringify(forToken)).not.toContain(minted.upload.tokenId);
+  });
+
+  /**
+   * Which project data key version the blob opens is copied off the environment
+   * row, exactly as `secrets.ts` copies it, and is not an argument. A caller
+   * that could choose it could label a stale wrap as current.
+   */
+  it("records the environment's pdkVersion and never one the caller chose", async () => {
+    const t = convexTest(schema, modules);
+    const alice = await seedUser(t, "alice@example.test");
+    const { environmentId } = await tenant(t, alice, "acme");
+    const { minted } = await issue(t, alice, environmentId);
+
+    const grant = await t.run(async (ctx) =>
+      getPDKGrant(ctx, environmentId, "token", tokenIdHash({ tokenId: minted.tokenId })),
+    );
+    expect(grant?.pdkVersion).toBe(1);
+
+    const args = JSON.parse(
+      (
+        tokensModule.createServiceToken as unknown as { exportArgs: () => string }
+      ).exportArgs(),
+    ) as { value: Record<string, unknown> };
+    expect(Object.keys(args.value)).not.toContain("pdkVersion");
+  });
+
+  /**
+   * The same atomicity argument `createOrg` makes for its revocation grant. A
+   * token registered without a grant is a token that can never open a secret,
+   * and nothing would error at any point.
+   */
+  it("is written in the same transaction, so a refused create leaves no grant", async () => {
+    const t = convexTest(schema, modules);
+    const alice = await seedUser(t, "alice@example.test");
+    const mallory = await seedUser(t, "mallory@example.test");
+    const { environmentId } = await tenant(t, alice, "acme");
+
+    const minted = mintToken({ environment: "production" });
+    await expect(
+      t.mutation(api.tokens.createServiceToken, {
+        sessionToken: mallory.sessionToken,
+        environmentId,
+        tokenId: minted.upload.tokenId,
+        publicKey: minted.upload.publicKey,
+        wrappedPDK: "cc".repeat(48),
+        pdkNonce: "0102030405060708090a0b0c",
+      }),
+    ).rejects.toThrow(NOT_PERMITTED);
+
+    const grants = await t.run(async (ctx) =>
+      listPDKGrantsByEnvironment(ctx, environmentId),
+    );
+    expect(grants.filter((g) => g.granteeType === "token")).toEqual([]);
   });
 });
 

@@ -16,8 +16,16 @@ import { insertUser } from "./repo/users";
 import { insertSession } from "./repo/sessions";
 import { SESSION_LIFETIME_MS, hashSessionToken } from "./lib/session";
 import { BUNDLE_TOKEN_LIFETIME_MS, signBundleToken } from "./lib/jwt";
-import { patchEnvironment } from "./repo/environments";
-import { getServiceTokenByIdHash, patchServiceToken } from "./repo/tokens";
+import {
+  getPDKGrant,
+  patchEnvironment,
+  patchPDKGrant,
+} from "./repo/environments";
+import {
+  getServiceTokenByIdHash,
+  insertServiceToken,
+  patchServiceToken,
+} from "./repo/tokens";
 import * as bundleModule from "./bundle";
 
 export const modules = import.meta.glob("./**/*.ts");
@@ -427,7 +435,7 @@ describe("the bundle", () => {
     expect(bundle.revocationNotice?.epoch).toBe(5);
   });
 
-  it("changes the wrapped PDK a token receives when the epoch bumps", async () => {
+  it("changes the wrapped PDK a token receives when the key is re-wrapped", async () => {
     const t = convexTest(schema, modules);
     const alice = await seedUser(t, "alice@example.test");
     const acme = await tenant(t, alice, "acme");
@@ -440,20 +448,21 @@ describe("the bundle", () => {
     const before = await t.query(api.bundle.getBundle, { token: bundleToken });
     expect(before.epoch).toBe(0);
     expect(before.wrappedPDK).toBe("cc".repeat(48));
+    expect(before.pdkVersion).toBe(1);
 
-    // A re-key: the environment's epoch moves and the project data key is
-    // re-wrapped for the token, in one transaction. Both halves, because a
-    // bumped epoch with a stale wrapped key hands the token a blob that opens
-    // a key the stored ciphertext is no longer under.
+    // A re-key: the environment's epoch and key version move and the project
+    // data key is re-wrapped for the token, in one transaction. Every half,
+    // because a bumped version with a stale wrapped key hands the token a blob
+    // that opens a key the stored ciphertext is no longer under.
     const hash = tokenIdHash({ tokenId: minted.tokenId });
     await t.run(async (ctx) => {
-      const row = await getServiceTokenByIdHash(ctx, hash);
-      if (row === null) throw new Error("fixture did not register the token");
-      await patchEnvironment(ctx, acme.production, { epoch: 1 });
-      await patchServiceToken(ctx, row._id, {
-        epoch: 1,
+      const grant = await getPDKGrant(ctx, acme.production, "token", hash);
+      if (grant === null) throw new Error("fixture did not write the grant");
+      await patchEnvironment(ctx, acme.production, { epoch: 1, pdkVersion: 2 });
+      await patchPDKGrant(ctx, grant._id, {
         wrappedPDK: "ee".repeat(48),
         nonce: "aabbccddeeff001122334455",
+        pdkVersion: 2,
       });
     });
 
@@ -461,6 +470,85 @@ describe("the bundle", () => {
     expect(after.epoch).toBe(1);
     expect(after.wrappedPDK).toBe("ee".repeat(48));
     expect(after.pdkNonce).toBe("aabbccddeeff001122334455");
+    expect(after.pdkVersion).toBe(2);
+  });
+
+  /**
+   * THE WRAPPED KEY COMES OFF THE GRANT AND THE VERSION COMES OFF THE SAME ROW.
+   *
+   * Reporting `environments.pdkVersion` beside a wrapped key from `pdkGrants`
+   * would be two rows describing one key, free to disagree, which is the whole
+   * reason `serviceTokens.wrappedPDK` was deleted. Mid re-key they DO disagree,
+   * and the answer a client can act on is the version of the key it was handed.
+   */
+  it("reports the version of the key it hands over, not the environment's", async () => {
+    const t = convexTest(schema, modules);
+    const alice = await seedUser(t, "alice@example.test");
+    const acme = await tenant(t, alice, "acme");
+    const { bundleToken } = await issueAndHandshake(t, alice, acme.production);
+
+    // The environment moves on; this token has not been re-wrapped yet.
+    await t.run(async (ctx) =>
+      patchEnvironment(ctx, acme.production, { pdkVersion: 7 }),
+    );
+
+    const bundle = await t.query(api.bundle.getBundle, { token: bundleToken });
+    expect(bundle.pdkVersion).toBe(1);
+    expect(bundle.wrappedPDK).toBe("cc".repeat(48));
+  });
+
+  /**
+   * RULE ONE, APPLIED TO A MISSING GRANT.
+   *
+   * A token with no grant cannot open anything, and the reflex is to refuse the
+   * bundle. That reflex is the bug: refusing also withholds the signed
+   * revocation notice, so a token whose grant vanished could never be told it
+   * was revoked, which is the one failure this product cannot have.
+   */
+  it("still delivers the revocation notice when there is no grant", async () => {
+    const t = convexTest(schema, modules);
+    const alice = await seedUser(t, "alice@example.test");
+    const acme = await tenant(t, alice, "acme");
+
+    // A token row with no grant beside it. `createServiceToken` cannot produce
+    // this state, which is the point: it is written through the repository so
+    // the query is exercised against the state a future writer could leave
+    // behind rather than against the one the current writer happens to produce.
+    const minted = mintToken({ environment: "production" });
+    const hash = tokenIdHash({ tokenId: minted.tokenId });
+    const serviceTokenId = await t.run(async (ctx) =>
+      insertServiceToken(ctx, {
+        environmentId: acme.production,
+        tokenIdHash: hash,
+        publicKey: minted.upload.publicKey,
+        epoch: 0,
+        status: "active",
+      }),
+    );
+
+    const payload = {
+      tokenId: minted.upload.tokenId,
+      epoch: 1,
+      revokedAt: 1_800_000_000_000,
+      reason: "Grant removed.",
+    };
+    await t.mutation(api.tokens.revokeServiceToken, {
+      sessionToken: alice.sessionToken,
+      ...payload,
+      signature: toHex(signRevocation(acme.keys.authSeed, payload)),
+    });
+
+    const bundle = await t.query(api.bundle.getBundle, {
+      token: signBundleToken({
+        subject: serviceTokenId,
+        now: Date.now(),
+      }),
+    });
+    expect(bundle.wrappedPDK).toBeUndefined();
+    expect(bundle.pdkNonce).toBeUndefined();
+    expect(bundle.pdkVersion).toBeUndefined();
+    expect(bundle.revocationNotice?.epoch).toBe(1);
+    expect(bundle.revocationNotice?.reason).toBe("Grant removed.");
   });
 
   it("carries nothing that could be plaintext", async () => {

@@ -62,8 +62,40 @@ export async function listPDKGrantsByEnvironment(
 ): Promise<Doc<"pdkGrants">[]> {
   return await ctx.db
     .query("pdkGrants")
-    .withIndex("by_environment", (q) => q.eq("environmentId", environmentId))
+    .withIndex("by_environment_grantee", (q) =>
+      q.eq("environmentId", environmentId),
+    )
     .collect();
+}
+
+/**
+ * ONE GRANTEE'S GRANT ON ONE ENVIRONMENT. The bundle's lookup and the
+ * dashboard's.
+ *
+ * `.unique()` rather than `.first()`, and that is deliberate. A second grant
+ * for one grantee on one environment is not a tie to break silently: it means
+ * two wrapped copies of a key are live at once and nothing says which is
+ * current, which is exactly the two-homes failure `pdkGrants` was consolidated
+ * to remove. Throwing makes it visible; picking one hides it until a re-key.
+ *
+ * `granteeId` is the `users` document id for a user and the `tokenIdHash` for a
+ * token. See the note on the table.
+ */
+export async function getPDKGrant(
+  ctx: QueryCtx,
+  environmentId: Id<"environments">,
+  granteeType: Doc<"pdkGrants">["granteeType"],
+  granteeId: string,
+): Promise<Doc<"pdkGrants"> | null> {
+  return await ctx.db
+    .query("pdkGrants")
+    .withIndex("by_environment_grantee", (q) =>
+      q
+        .eq("environmentId", environmentId)
+        .eq("granteeType", granteeType)
+        .eq("granteeId", granteeId),
+    )
+    .unique();
 }
 
 export async function listPDKGrantsByGrantee(
@@ -84,4 +116,18 @@ export async function insertPDKGrant(
   doc: WithoutSystemFields<Doc<"pdkGrants">>,
 ): Promise<Id<"pdkGrants">> {
   return await ctx.db.insert("pdkGrants", doc);
+}
+
+/**
+ * Used by a re-key, which must replace `wrappedPDK`, `nonce` and `pdkVersion`
+ * together. Patching the blob without the version, or the version without the
+ * blob, leaves a row that says it opens a key it does not, and nothing errors
+ * until somebody decrypts.
+ */
+export async function patchPDKGrant(
+  ctx: MutationCtx,
+  id: Id<"pdkGrants">,
+  patch: Partial<WithoutSystemFields<Doc<"pdkGrants">>>,
+): Promise<void> {
+  await ctx.db.patch(id, patch);
 }

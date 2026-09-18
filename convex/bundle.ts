@@ -2,7 +2,7 @@ import { ConvexError, v } from "convex/values";
 import { query } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import { verifyBundleToken } from "./lib/jwt";
-import { getEnvironment } from "./repo/environments";
+import { getEnvironment, getPDKGrant } from "./repo/environments";
 import { listCurrentSecretsByEnvironment } from "./repo/secrets";
 import {
   getServiceToken,
@@ -120,9 +120,19 @@ export const getBundle = query({
     // of that rule.
     environmentId: v.id("environments"),
     epoch: v.number(),
-    pdkVersion: v.number(),
-    wrappedPDK: v.string(),
-    pdkNonce: v.string(),
+    // THE THREE KEY FIELDS ARE OPTIONAL, AND THAT IS RULE ONE APPLIED TO A
+    // MISSING GRANT RATHER THAN TO A REVOCATION.
+    //
+    // They come from one `pdkGrants` row. If that row is absent the token
+    // cannot open anything, and the reflex is to refuse the whole bundle. That
+    // reflex is the bug: refusing would also withhold the signed revocation
+    // notice, so a token whose grant vanished could never be told it was
+    // revoked. The bundle therefore always answers, and simply carries no key.
+    // A client that receives no key has a loud, immediate failure with a name;
+    // one that receives no answer has a retry loop.
+    pdkVersion: v.optional(v.number()),
+    wrappedPDK: v.optional(v.string()),
+    pdkNonce: v.optional(v.string()),
     secrets: v.array(v.object(secretShape)),
     revocationNotice: v.optional(v.object(revocationShape)),
   }),
@@ -149,6 +159,21 @@ export const getBundle = query({
       await listRevocationsByTokenIdHash(ctx, token.tokenIdHash),
     );
 
+    // THE WRAPPED PROJECT DATA KEY, FROM `pdkGrants` AND FROM NOWHERE ELSE.
+    // `serviceTokens` used to carry its own copy; see the note on the table in
+    // `schema.ts` for why exactly one of the two homes was allowed to survive.
+    //
+    // Keyed by `tokenIdHash` for the same reason the revocation join is: it is
+    // the only identifier this server has for an authenticated token, and it is
+    // the one the client could compute before the token row existed. One
+    // indexed point lookup with all three fields equal.
+    const grant = await getPDKGrant(
+      ctx,
+      token.environmentId,
+      "token",
+      token.tokenIdHash,
+    );
+
     // A revoked token gets the notice and no secrets. See ONE above.
     const secrets =
       revocationNotice === undefined
@@ -163,11 +188,21 @@ export const getBundle = query({
       // lives per token id on the notice below. Two different numbers in two
       // different namespaces, and conflating them breaks the kill switch.
       epoch: environment.epoch,
-      pdkVersion: environment.pdkVersion,
-      // Sealed to a key derived from the token secret, which this server has
-      // never held and cannot derive from anything it stores.
-      wrappedPDK: token.wrappedPDK,
-      pdkNonce: token.nonce,
+      // THE GRANT'S `pdkVersion`, NOT THE ENVIRONMENT'S. They are the same
+      // number until a re-key and different during one, and the honest answer
+      // is the version of the key actually being handed over. Reporting the
+      // environment's would tell a client holding a version 1 wrap that it
+      // holds version 2, and every decryption would then fail opaquely with the
+      // client blaming the ciphertext.
+      ...(grant === null
+        ? {}
+        : {
+            pdkVersion: grant.pdkVersion,
+            // Sealed to a key derived from the token secret, which this server
+            // has never held and cannot derive from anything it stores.
+            wrappedPDK: grant.wrappedPDK,
+            pdkNonce: grant.nonce,
+          }),
       secrets: secrets.map(view),
       ...(revocationNotice === undefined ? {} : { revocationNotice }),
     };

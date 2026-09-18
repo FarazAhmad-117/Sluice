@@ -9,6 +9,7 @@ import type { Id } from "./_generated/dataModel";
 import { recordUserEvent } from "./lib/audit";
 import { sessionArg, NOT_PERMITTED, requireEnvironment, requireSession } from "./lib/authz";
 import { assertHexAtLeast, assertHexBytes } from "./lib/hex";
+import { insertPDKGrant } from "./repo/environments";
 import {
   getServiceTokenByIdHash,
   insertRevocation,
@@ -139,16 +140,35 @@ export const createServiceToken = mutation({
       environmentId: environment._id,
       tokenIdHash: hash,
       publicKey: args.publicKey,
-      wrappedPDK: args.wrappedPDK,
-      nonce: args.pdkNonce,
-      // From the environment, never from the caller, exactly as `secrets.ts`
-      // copies `pdkVersion`. This records WHICH project data key the wrapped
-      // blob above opens. A re-key must bump this and re-wrap in the same
-      // mutation that bumps `environments.epoch`, or a token is handed a
-      // wrapped key for a version the stored ciphertext is no longer under.
+      // From the environment, never from the caller. This is the token's
+      // REVOCATION epoch floor, and it is not the project data key version:
+      // that lives on the grant below, where the wrapped blob it describes
+      // lives too.
       epoch: environment.epoch,
       status: "active",
       ...(args.expiresAt === undefined ? {} : { expiresAt: args.expiresAt }),
+    });
+
+    // THE GRANT IS WRITTEN HERE, IN THIS MUTATION, for the same reason
+    // `createOrg` writes its revocation grant in one transaction: a token
+    // registered without one is a token that can never open a secret, with no
+    // error at any point until a workload starts and cannot decrypt.
+    //
+    // THE GRANTEE IS THE HASH, NOT `serviceTokenId`. The bundle knows an
+    // authenticated token only by its hash, and the client had to compute the
+    // same identifier to build the associated data it wrapped under, before
+    // this document existed. A document id satisfies neither.
+    await insertPDKGrant(ctx, {
+      environmentId: environment._id,
+      granteeType: "token",
+      granteeId: hash,
+      wrappedPDK: args.wrappedPDK,
+      nonce: args.pdkNonce,
+      // Off the environment row, exactly as `secrets.ts` copies it. A re-key
+      // must bump `environments.pdkVersion` and re-wrap every grant in the one
+      // mutation, or a token is handed a key the stored ciphertext is not
+      // under.
+      pdkVersion: environment.pdkVersion,
     });
 
     await recordUserEvent(ctx, {
