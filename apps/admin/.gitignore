@@ -1,0 +1,10 @@
+node_modules/
+dist/
+dist-ssr/
+*.local
+*.tsbuildinfo
+
+# Vite reads these; `npx convex dev` writes the repository root one instead.
+.env
+.env.*
+!.env.example

@@ -17,6 +17,9 @@ dist/
 # Convex
 .convex/
 
+# Turborepo
+.turbo/
+
 # Editor / OS
 .DS_Store
 Thumbs.db

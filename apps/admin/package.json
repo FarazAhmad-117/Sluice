@@ -1,0 +1,42 @@
+{
+  "name": "admin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@fontsource-variable/geist": "^5.2.5",
+    "@fontsource-variable/geist-mono": "^5.2.5",
+    "@noble/curves": "^1.6.0",
+    "@sluice/crypto": "workspace:*",
+    "convex": "^1.45.0",
+    "hash-wasm": "^4.12.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "react-router": "^7.9.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9",
+    "@tailwindcss/vite": "^4",
+    "@types/node": "^22.20.3",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^5.1.0",
+    "eslint": "^9",
+    "eslint-plugin-react-hooks": "^7",
+    "eslint-plugin-react-refresh": "^0.4.24",
+    "globals": "^16",
+    "tailwindcss": "^4",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8",
+    "vite": "^8.3.0",
+    "vitest": "^2.1.9"
+  }
+}

@@ -3,14 +3,25 @@
 /* ---------------------------------------------------------------------------
    Sluice design tokens.
 
-   Dark is the default set because the landing page is dark-locked. The
-   dashboard is dual-theme: it flips by putting data-theme="light" on a root
-   element, which re-points these same custom properties. Components never
-   name a colour, only a token, so light mode stays a token change instead of
-   a component rewrite.
+   This site is DARK LOCKED, so there is one set of values and no theme
+   switch. The dual-theme half of this system lives in apps/admin/src/app.css,
+   which declares the SAME tokens and re-points them for the admin panel. The
+   two files must stay in agreement: one product whose marketing blue and whose
+   dashboard blue differ is a drift nobody files a bug about and everybody
+   notices.
 
-   Brand, status and radius are theme-independent, so the light block below
-   only overrides the values that actually change.
+   Brand, status and radius are theme-independent, so only the surface, hairline
+   and text values differ between this file and the admin panel's.
+
+   ON THE SURFACE RAMP. The canvas is pure black and every surface above it is
+   LIGHTER, in small steps, with one exception: `--surface-deep`, which is both
+   darker and cooler than the panel above it and is reserved for code wells. A
+   recessed well reads as recessed because it is colder, not because it has an
+   inset shadow. There are no drop shadows anywhere in this system. Depth is
+   carried by three things and only these three: a luminance step between
+   surfaces, a translucent white hairline, and a low-opacity atmospheric glow.
+   Adding a `box-shadow` to a card here will make it look like a different
+   website, which is the point of writing this down.
    --------------------------------------------------------------------------- */
 
 :root {
@@ -20,7 +31,8 @@
      Two tokens, because no single blue does both jobs. A blue light enough to
      read as link text on the near-black base is too light to carry white
      button text, and a blue dark enough for white text disappears against the
-     base. Measured, not guessed:
+     base. Measured against the ORIGINAL #0a0a0b base; the canvas has since
+     gone to pure black, which only widens every ratio below:
 
        --brand       on --surface-base   5.20:1  PASS AA   link text
        --brand       white text on it    3.81:1  FAIL      never fill with this
@@ -36,44 +48,75 @@
   --brand-solid-hover: #2d7ff9;
   --text-on-brand-solid: #ffffff;
 
+  /* The loudest control on the page.
+     On a pure-black canvas the highest-contrast thing available is not the
+     brand blue, it is plain white, and a filled white pill outranks any
+     coloured button next to it. So the primary CTA is white and the brand blue
+     keeps the jobs it is measured for: links, focus rings, active nav, and the
+     globe's arcs. At most one of these per viewport, or it stops being the
+     loudest thing. The admin panel inverts this pair under its light theme,
+     where white would vanish; here there is nothing to invert. */
+  --control-solid: #fcfdff;
+  --control-solid-hover: #ffffff;
+  --text-on-control-solid: #000000;
+
   /* Status */
   --status-healthy: #10b981;
   --status-warning: #f59e0b;
   --status-danger: #ef4444;
 
-  /* Surfaces */
-  --surface-base: #0a0a0b;
-  --surface-panel: #131315;
-  --surface-card: #1a1a1d;
-  --hairline: #26262a;
+  /* Surfaces. See the ramp note above before adding one. */
+  --surface-base: #050608;
+  --surface-panel: #0a0c10;
+  --surface-card: #12151c;
+  /* Colder and darker than the panel. Code wells only. */
+  --surface-deep: #07080b;
 
-  /* Text */
-  --text-primary: #f4f4f5;
-  --text-muted: #8a8a93;
+  /* Hairlines.
+     Translucent white rather than an opaque grey, so a border over a glow
+     picks the glow up instead of punching a flat grey line through it. The
+     strong one is for anything that has to survive sitting on a lit surface. */
+  --hairline: rgb(255 255 255 / 0.08);
+  --hairline-strong: rgb(255 255 255 / 0.14);
+
+  /* Text.
+     Four steps, not three. `--text-body` exists because long-form paragraphs
+     set in full-strength white on pure black vibrate; dropping them to 86%
+     opacity is the single cheapest legibility win in the whole system. */
+  --text-primary: #eceef3;
+  --text-body: rgb(236 238 243 / 0.88);
+  --text-muted: #8a91a3;
+  --text-faint: #5c6374;
   --text-on-brand: #0a0a0b;
-}
 
-[data-theme="light"] {
-  color-scheme: light;
-
-  --surface-base: #ffffff;
-  --surface-panel: #f7f7f8;
-  --surface-card: #ffffff;
-  --hairline: #e4e4e7;
-
-  --text-primary: #18181b;
-  --text-muted: #52525b;
+  /* Atmospheric glows.
+     These are never surfaces, never borders and never text. They are radial
+     washes at the top of a band or behind a hero object, at an opacity low
+     enough that you notice the absence rather than the presence. Anything
+     above roughly 35% alpha here stops reading as atmosphere and starts
+     reading as a coloured rectangle. */
+  --glow-brand: rgb(37 99 235 / 0.55);
+  --glow-cyan: #67e8f9;
+  --glow-danger: rgb(255 32 71 / 0.30);
+  --glow-healthy: rgb(34 255 153 / 0.18);
 }
 
 /* Map the tokens onto Tailwind's namespaces. `inline` means the utility
-   carries var(--token) rather than a frozen value, so overriding the token
-   under [data-theme="light"] moves every utility with it. */
+   carries var(--token) rather than a frozen value, so re-pointing a token
+   moves every utility with it. Nothing re-points them here, because this site
+   is dark-locked; it is written this way so the two stylesheets stay the same
+   shape, and so a token can be overridden for one section without touching a
+   component. */
 @theme inline {
   --color-brand: var(--brand);
   --color-brand-hover: var(--brand-hover);
   --color-brand-subtle: var(--brand-subtle);
   --color-brand-solid: var(--brand-solid);
   --color-brand-solid-hover: var(--brand-solid-hover);
+
+  --color-control-solid: var(--control-solid);
+  --color-control-solid-hover: var(--control-solid-hover);
+  --color-text-on-control-solid: var(--text-on-control-solid);
 
   --color-status-healthy: var(--status-healthy);
   --color-status-warning: var(--status-warning);
@@ -82,63 +125,532 @@
   --color-surface-base: var(--surface-base);
   --color-surface-panel: var(--surface-panel);
   --color-surface-card: var(--surface-card);
+  --color-surface-deep: var(--surface-deep);
+
   --color-hairline: var(--hairline);
+  --color-hairline-strong: var(--hairline-strong);
 
   --color-text-primary: var(--text-primary);
+  --color-text-body: var(--text-body);
   --color-text-muted: var(--text-muted);
+  --color-text-faint: var(--text-faint);
   --color-text-on-brand: var(--text-on-brand);
   --color-text-on-brand-solid: var(--text-on-brand-solid);
 
+  --color-glow-brand: var(--glow-brand);
+  --color-glow-cyan: var(--glow-cyan);
+  --color-glow-danger: var(--glow-danger);
+  --color-glow-healthy: var(--glow-healthy);
+
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --font-display: var(--font-instrument-serif);
 }
 
 /* Radius never changes with theme, so it is declared as a real theme scale.
-   That emits --radius-input, --radius-card and --radius-modal on :root and
-   generates rounded-input, rounded-card and rounded-modal in one step.
    Rows and dividers use Tailwind's built-in rounded-none. */
 @theme static {
-  --radius-input: 4px;
-  --radius-card: 8px;
-  --radius-modal: 12px;
+  --radius-input: 8px;
+  --radius-card: 12px;
+  --radius-modal: 16px;
 }
 
 body {
   background-color: var(--surface-base);
-  color: var(--text-primary);
+  color: var(--text-body);
   font-family: var(--font-sans);
 }
 
 /* ---------------------------------------------------------------------------
-   Dashboard motion. Dial 3: one indeterminate sweep, used by the key
-   derivation progress bar and by nothing else.
+   Display type.
 
-   Argon2id exposes no progress, so a determinate bar would be an invented
-   number. This sweep says "working" and the elapsed time beside it says how
-   long, which is the only honest pair available.
+   The headline face is an editorial serif and the rest of the page is a
+   grotesque and a mono. That pairing is the single biggest reason this page
+   does not look like the other six secrets managers, all of which set their
+   headlines in the same UI sans they set their buttons in.
 
-   Written as a named class rather than a Tailwind arbitrary animation utility
-   so that the reduced-motion override below can target it without escaping a
-   class name full of brackets and dots.
+   A serif at display size needs its tracking pulled in hard or it reads as a
+   book rather than as a headline, and the amount it needs is size-dependent,
+   which is why this is a class per step and not one global rule. Line height
+   is at or below 1 on the two largest steps: display serifs have short
+   descenders and a 1.0 leading is what makes a two-line headline read as a
+   single typographic block rather than as two sentences.
    --------------------------------------------------------------------------- */
-@keyframes sluice-sweep {
-  0% {
-    transform: translateX(-100%);
+.display-xl {
+  font-family: var(--font-instrument-serif), Georgia, serif;
+  font-weight: 400;
+  font-size: clamp(2.75rem, 7.2vw, 6rem);
+  line-height: 0.98;
+  letter-spacing: -0.02em;
+}
+
+.display-lg {
+  font-family: var(--font-instrument-serif), Georgia, serif;
+  font-weight: 400;
+  font-size: clamp(2rem, 4.6vw, 3.5rem);
+  line-height: 1.04;
+  letter-spacing: -0.015em;
+}
+
+/* ---------------------------------------------------------------------------
+   Atmosphere.
+
+   One class, driven by two custom properties the caller sets inline, so that a
+   section can place a wash without inventing its own gradient string. The
+   element is always inert: it is `pointer-events: none` and aria-hidden at the
+   call site, and it must never be the thing that sizes its parent.
+   --------------------------------------------------------------------------- */
+.atmosphere {
+  position: absolute;
+  pointer-events: none;
+  background: radial-gradient(
+    closest-side,
+    var(--atmosphere-color, transparent),
+    transparent 100%
+  );
+  filter: blur(var(--atmosphere-blur, 0px));
+}
+
+/* ---------------------------------------------------------------------------
+   Landing entrance.
+
+   One fade-and-rise, applied to the hero's own children on a short stagger and
+   to nothing else on the page. Scroll-triggered reveals on every section were
+   considered and rejected: they delay content behind an observer, they fight
+   the browser's find-in-page, and by the fourth section the reader has stopped
+   reading them as motion and started reading them as lag.
+   --------------------------------------------------------------------------- */
+@keyframes sluice-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
   }
-  100% {
-    transform: translateX(300%);
+  to {
+    opacity: 1;
+    transform: none;
   }
 }
 
-.sluice-sweep {
-  animation: sluice-sweep 1.4s ease-in-out infinite;
+.sluice-rise {
+  animation: sluice-rise 0.7s cubic-bezier(0.16, 1, 0.3, 1) backwards;
 }
 
-/* Replaced by a static full-width bar rather than removed, so the control
-   still reads as active for a viewer who has asked for less motion. */
 @media (prefers-reduced-motion: reduce) {
-  .sluice-sweep {
+  .sluice-rise {
     animation: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Smooth scrolling.
+
+   Every in-page link on this site is an anchor into a long document, and a
+   jump cut between two dark bands that look alike loses the reader's place
+   entirely -- there is no visual landmark to tell them they moved. The scroll
+   is the landmark.
+
+   Honoured only when the viewer has not asked for less motion. A smooth scroll
+   is exactly the kind of vestibular motion `prefers-reduced-motion` exists for,
+   and it is one of the few places where obeying that query means doing LESS
+   work rather than writing a second code path.
+   --------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Gradient ink.
+
+   A headline that fades from full white at the cap height to a muted grey at
+   the baseline. It is the single cheapest way to make large type look lit on a
+   dark canvas rather than pasted onto it, and at display sizes it reads as
+   depth instead of as a gradient.
+
+   `padding-bottom` is not optional. `background-clip: text` clips to the glyph
+   box, and a serif's descenders reach below it, so without the pad the tails of
+   g, y and p are sheared off. Found the hard way.
+   --------------------------------------------------------------------------- */
+.ink {
+  background: linear-gradient(180deg, var(--text-primary) 38%, #8e97ad 115%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  padding-bottom: 0.12em;
+}
+
+/* The one accented phrase in the hero headline. Used once, on one word. */
+.ink-accent {
+  background: linear-gradient(92deg, #9cc3ff, var(--glow-cyan));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  font-style: normal;
+}
+
+/* ---------------------------------------------------------------------------
+   Card, with a lit top edge.
+
+   The pseudo-element is a one-pixel gradient border that is bright at the top
+   and gone by 40% down, which is what a surface catching light from above
+   actually looks like. A uniform 1px border all the way round reads as a box;
+   this reads as a panel. The mask-composite trick is the only way to get a
+   gradient BORDER rather than a gradient background.
+   --------------------------------------------------------------------------- */
+.panel {
+  position: relative;
+  background: linear-gradient(
+    180deg,
+    rgb(255 255 255 / 0.035),
+    rgb(255 255 255 / 0.01)
+  );
+  border: 1px solid var(--hairline);
+  border-radius: 18px;
+  overflow: hidden;
+}
+
+.panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.14), transparent 40%);
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+/* ---------------------------------------------------------------------------
+   The hero's graph-paper wash.
+
+   A 64px grid, masked to an ellipse behind the globe so it never reaches an
+   edge and never reads as a repeating tile. It exists to give the black
+   something to be measured against; without it the upper half of the page has
+   no sense of scale and the globe floats in a void.
+   --------------------------------------------------------------------------- */
+.graph-paper {
+  background-image:
+    linear-gradient(var(--hairline) 1px, transparent 1px),
+    linear-gradient(90deg, var(--hairline) 1px, transparent 1px);
+  background-size: 64px 64px;
+  -webkit-mask-image: radial-gradient(
+    ellipse 70% 60% at 68% 38%,
+    #000 10%,
+    transparent 70%
+  );
+  mask-image: radial-gradient(
+    ellipse 70% 60% at 68% 38%,
+    #000 10%,
+    transparent 70%
+  );
+  opacity: 0.45;
+}
+
+/* ---------------------------------------------------------------------------
+   Scroll reveal.
+
+   The resting state is the HIDDEN one, which is a deliberate and slightly
+   dangerous choice: if the observer never runs, the content never appears. The
+   guard is that the reveal component adds this class from an effect, so
+   server-rendered HTML and any client without JavaScript carry no `.reveal` at
+   all and the content is simply visible. Never author `reveal` into static
+   markup.
+   --------------------------------------------------------------------------- */
+.reveal {
+  opacity: 0;
+  transform: translateY(22px);
+  transition:
+    opacity 0.9s cubic-bezier(0.2, 0.7, 0.2, 1),
+    transform 0.9s cubic-bezier(0.2, 0.7, 0.2, 1);
+  will-change: opacity, transform;
+}
+
+.reveal-in {
+  opacity: 1;
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+}
+
+/* The hero's glow breathes, slowly enough to read as a light rather than a
+   pulse. Seven seconds is long enough that it is never the thing you look at. */
+@keyframes sluice-breathe {
+  50% {
+    opacity: 0.75;
+    transform: translate(-40%, -50%) scale(1.06);
+  }
+}
+
+.sluice-breathe {
+  transform: translate(-40%, -50%);
+  animation: sluice-breathe 7s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sluice-breathe {
+    animation: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   The docking navigation bar.
+
+   At the top of the document the bar is full width, transparent and borderless,
+   so the hero reads as one unbroken field. Once the page moves it CONTRACTS:
+   the sides pull in, the corners round, a hairline and a glass blur appear, and
+   it lifts off the top edge to float as a detached island.
+
+   Everything that moves is a property the compositor can animate cheaply --
+   `max-width`, `border-radius`, `margin`, `background-color`, `box-shadow` --
+   and every one of them is on the same duration and easing, which is what makes
+   the contraction read as one gesture rather than as five things changing at
+   once. `translate` is deliberately NOT used: the bar must stay in normal flow
+   for `position: fixed` to keep it pinned while its own box shrinks.
+
+   The blue is an inner light, not a border. It is a radial wash inside the
+   island plus a wide downward shadow, so the island looks lit from within by
+   the same thing lighting the globe, rather than outlined in brand colour.
+   --------------------------------------------------------------------------- */
+.nav-dock {
+  --dock: 0;
+  transition:
+    max-width 0.55s cubic-bezier(0.22, 1, 0.36, 1),
+    margin-top 0.55s cubic-bezier(0.22, 1, 0.36, 1),
+    border-radius 0.55s cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 0.4s ease,
+    background-color 0.4s ease,
+    box-shadow 0.5s ease;
+  max-width: 1200px;
+  margin-top: 0;
+  border: 1px solid transparent;
+  border-radius: 0;
+  background-color: transparent;
+}
+
+.nav-dock[data-docked="true"] {
+  max-width: 980px;
+  margin-top: 12px;
+  border-radius: 999px;
+  border-color: var(--hairline-strong);
+  background-color: rgb(10 12 16 / 0.72);
+  -webkit-backdrop-filter: blur(16px) saturate(170%);
+  backdrop-filter: blur(16px) saturate(170%);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.07),
+    0 10px 40px -12px rgb(37 99 235 / 0.45),
+    0 2px 10px -4px rgb(0 0 0 / 0.6);
+}
+
+/* The light inside the island. Fades in with the dock and is inert. */
+.nav-dock::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  opacity: 0;
+  transition: opacity 0.5s ease;
+  pointer-events: none;
+  background: radial-gradient(
+    120% 180% at 50% -40%,
+    rgb(59 130 246 / 0.22),
+    transparent 62%
+  );
+}
+
+.nav-dock[data-docked="true"]::after {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nav-dock,
+  .nav-dock::after {
+    transition: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   The footer wordmark, and the light that moves over it.
+
+   Two copies of the same text stacked exactly. The lower one is the resting
+   state, barely above the background. The upper one is bright and is masked to
+   a radial spot that follows the pointer, so moving across the footer wipes the
+   letters into visibility and they fade back out behind it.
+
+   The mask is what makes this cheap: nothing is re-laid-out and nothing is
+   re-painted except the masked layer, and the whole effect is two custom
+   properties being written on pointermove.
+   --------------------------------------------------------------------------- */
+.wordmark {
+  font-family: var(--font-instrument-serif), Georgia, serif;
+  font-size: clamp(120px, 24vw, 340px);
+  line-height: 0.8;
+  /*
+    POSITIVE, and it has to be.
+
+    The reference this was cloned from sets its wordmark at -0.07em, which works
+    there because it is a heavy sans set as continuous text, where the browser
+    applies kerning pairs and the glyphs are drawn in one run. Here every letter
+    is its own `inline-block`, so each box is placed at advance width plus
+    tracking with no kerning between them, and this is a high-contrast display
+    serif with generous side bearings. At -0.06em and 340px that pulled each box
+    twenty pixels into its neighbour and the serifs collided -- the `l` sat
+    inside the `s`, the `u` inside the `l`.
+
+    A hair of positive tracking separates the boxes and lets each letter's own
+    serifs breathe, which also matters now that one of them can rise out of the
+    line: a letter that lifts while overlapping its neighbours tears a hole in
+    the word instead of stepping out of it.
+  */
+  letter-spacing: 0.012em;
+  text-align: center;
+  user-select: none;
+}
+
+/*
+  THE GRADIENT LIVES ON EACH LETTER, NOT ON THE WORD.
+
+  It has to, now that letters move. `background-clip: text` clips an element's
+  background to the glyphs of that element, and a transformed descendant is
+  painted in its own layer after that clip is computed -- so a gradient on the
+  <p> would stay put while a lifted letter slid out from underneath its own
+  ink. Per-letter backgrounds clip per letter and travel with it.
+
+  Nothing is lost by the move: both gradients run 180deg over glyphs that all
+  share a baseline and a cap height, so a gradient per letter and a gradient
+  over the whole word are the same picture.
+*/
+.wordmark-letter {
+  display: inline-block;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  /* Long enough to read as a lift rather than a twitch, and eased so the letter
+     settles instead of stopping. Transform only: no layout, no reflow, and the
+     letters either side never move.
+
+     `translate3d` in the resting state, not `none`, so the glyph is already on
+     its own compositor layer before the first hover. Promoting on the first
+     frame of the transition is what made the lift hitch as it started: the
+     browser had to rasterise the letter afresh at the moment it began moving. */
+  transform: translate3d(0, 0, 0);
+  /*
+    ONE DEFINITION OF THE LIFT, shared by both copies.
+
+    It was written out twice, and the two drifted: the resting copy also
+    transitions `background-image`, so its rule restated the whole `transition`
+    shorthand and restated the duration as 0.4s while this one said 0.45s. The
+    two stacked copies of a letter therefore rose at different speeds and
+    visibly came apart for the length of the animation -- read as the whole
+    effect being unsteady, which it was. A variable makes the two impossible to
+    disagree.
+  */
+  --lift-motion: 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: transform var(--lift-motion);
+  will-change: transform;
+}
+
+.wordmark-base .wordmark-letter {
+  background-image: linear-gradient(
+    180deg,
+    rgb(255 255 255 / 0.09),
+    rgb(255 255 255 / 0) 85%
+  );
+  transition:
+    transform var(--lift-motion),
+    background-image 0.6s ease;
+}
+
+/* Hovering lifts the whole word a step, independently of the spotlight, so the
+   footer answers before the cursor has reached a letter. */
+.wordmark-stage:hover .wordmark-base .wordmark-letter {
+  background-image: linear-gradient(
+    180deg,
+    rgb(255 255 255 / 0.16),
+    rgb(255 255 255 / 0.02) 85%
+  );
+}
+
+.wordmark-lit {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 0.45s ease;
+  -webkit-mask-image: radial-gradient(
+    22rem 22rem at var(--spot-x, 50%) var(--spot-y, 50%),
+    #000 0%,
+    rgb(0 0 0 / 0.55) 35%,
+    transparent 70%
+  );
+  mask-image: radial-gradient(
+    22rem 22rem at var(--spot-x, 50%) var(--spot-y, 50%),
+    #000 0%,
+    rgb(0 0 0 / 0.55) 35%,
+    transparent 70%
+  );
+}
+
+.wordmark-lit .wordmark-letter {
+  background-image: linear-gradient(180deg, #cfe0ff, rgb(96 165 250 / 0.25) 90%);
+}
+
+.wordmark-stage:hover .wordmark-lit {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wordmark-lit,
+  .wordmark-letter {
+    transition: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   The scroll-drawn timeline.
+
+   `--p` is written by `ScrollTrack` on every frame the section is on screen and
+   runs 0 to 1 across its pass through the viewport. Registering it as a real
+   `<number>` is what lets the arithmetic below work: an unregistered custom
+   property is an unparsed token, so `calc()` on it silently produces an invalid
+   value and every dot stays dark.
+
+   Each dot declares the point on the line it sits at, and lights when the line
+   reaches it. The multiplier in the clamp is a hardness control: high numbers
+   make a dot snap on as the line touches it, which is what a connection being
+   made looks like. A slow fade would look like a loading bar.
+   --------------------------------------------------------------------------- */
+@property --p {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+
+.track-line {
+  width: calc(var(--p) * 100%);
+  background: linear-gradient(90deg, var(--status-healthy), #67e8f9);
+  box-shadow: 0 0 12px var(--status-healthy);
+}
+
+.track-dot-lit {
+  opacity: clamp(0, calc((var(--p) - var(--at)) * 14), 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .track-line {
     width: 100%;
+  }
+
+  .track-dot-lit {
+    opacity: 1;
   }
 }

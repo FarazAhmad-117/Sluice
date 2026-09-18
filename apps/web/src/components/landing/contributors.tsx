@@ -1,13 +1,13 @@
-import {
-  CONTRIBUTING_URL,
-  REPO_URL,
-  SECURITY_URL,
-} from "@/components/landing/links";
+import { CONTRIBUTING_URL, REPO_URL } from "@/components/landing/links";
+import { Reveal } from "@/components/landing/motion";
 import {
   Container,
+  Eyebrow,
+  Section,
   SectionHeading,
   focusRing,
-  textLink,
+  primaryAction,
+  secondaryAction,
 } from "@/components/landing/primitives";
 
 /**
@@ -93,107 +93,114 @@ async function loadContributors(): Promise<Roster> {
   }
 }
 
+/**
+ * Two initials on a gradient chip.
+ *
+ * Deliberately not a GitHub avatar image. Avatars would mean three more network
+ * requests to a third-party CDN on a page that otherwise makes none, a layout
+ * shift while they land, and a privacy footnote, all to show faces nobody
+ * recognises. Initials render instantly and say the same thing.
+ */
+function Initials({ login }: { login: string }) {
+  const letters = login.replace(/[^a-zA-Z]/g, "").slice(0, 2).toUpperCase() || "?";
+  return (
+    <span
+      aria-hidden="true"
+      className="grid size-9 shrink-0 place-items-center rounded-full text-[13px] font-semibold text-white"
+      style={{ background: "linear-gradient(135deg, #3b82f6, #1e3a8a)" }}
+    >
+      {letters}
+    </span>
+  );
+}
+
 export async function Contributors() {
   const { contributors, live } = await loadContributors();
 
   return (
-    <section
-      id="contributors"
-      className="scroll-mt-28 border-b border-hairline"
-      aria-labelledby="contributors-heading"
-    >
-      <Container className="py-20 sm:py-24">
-        <SectionHeading id="contributors-heading" className="max-w-[22ch]">
-          Everyone who has committed to Sluice
-        </SectionHeading>
+    <Section id="contributors" labelledBy="contributors-heading">
+      <Container className="grid gap-14 lg:grid-cols-2 lg:items-start">
+        <div>
+          <Reveal>
+            <Eyebrow>Contributors</Eyebrow>
+          </Reveal>
 
-        <p className="mt-6 max-w-[62ch] text-base leading-relaxed text-text-muted sm:text-lg">
-          The list below is the whole of it, and it is short because the
-          project is young. The crypto core is where review is worth the most
-          right now, so a test case, a reproduction or an argument with a
-          domain separator is a more useful contribution than a large feature.
-          Vulnerabilities go to{" "}
-          <a
-            href={SECURITY_URL}
-            target="_blank"
-            rel="noreferrer noopener"
-            className={textLink}
-          >
-            SECURITY.md
-          </a>
-          , never to an issue.
-        </p>
+          <Reveal delay={80}>
+            <SectionHeading id="contributors-heading" className="ink mt-5">
+              Everyone who has committed to Sluice.
+            </SectionHeading>
+          </Reveal>
 
-        <ul className="mt-12 max-w-2xl divide-y divide-hairline border-y border-hairline">
-          {contributors.map((contributor) => (
-            <li key={contributor.login}>
+          <Reveal delay={160}>
+            <p className="mt-6 text-[17px] leading-relaxed text-text-muted">
+              The list is short because the project is young. The crypto core is
+              where review is worth the most right now, so a test case, a
+              reproduction or an argument about a domain separator beats a large
+              feature.
+            </p>
+          </Reveal>
+
+          <Reveal delay={240}>
+            <div className="mt-8 flex flex-wrap gap-2.5">
               <a
-                href={contributor.profileUrl}
+                href={CONTRIBUTING_URL}
                 target="_blank"
                 rel="noreferrer noopener"
-                className={`group flex cursor-pointer items-baseline justify-between gap-6 py-5 transition-colors hover:text-brand ${focusRing}`}
+                className={`${primaryAction} h-9 rounded-full px-4 text-[13px]`}
               >
-                <span className="font-mono text-base text-text-primary transition-colors group-hover:text-brand">
-                  {contributor.login}
-                </span>
-                {contributor.commits !== undefined ? (
-                  <span className="shrink-0 font-mono text-sm text-text-muted">
-                    {contributor.commits === 1
-                      ? "1 commit"
-                      : `${contributor.commits} commits`}
-                  </span>
-                ) : null}
+                Read CONTRIBUTING.md
               </a>
-            </li>
-          ))}
-        </ul>
-
-        <p className="mt-4 max-w-2xl text-base leading-relaxed text-text-muted">
-          {live ? (
-            <>
-              Read from the GitHub API when this page was built, so it counts
-              accounts with commits rather than people.
-            </>
-          ) : (
-            <>
-              The GitHub API could not be reached when this page was built, so
-              this is the static fallback. The{" "}
               <a
-                href={`${REPO_URL}/graphs/contributors`}
+                href={`${REPO_URL}/issues`}
                 target="_blank"
                 rel="noreferrer noopener"
-                className={textLink}
+                className={`${secondaryAction} h-9 rounded-full px-4 text-[13px]`}
               >
-                contributor graph
-              </a>{" "}
-              is authoritative.
-            </>
-          )}
-        </p>
-
-        <div className="mt-10 flex flex-wrap items-center gap-x-8 gap-y-3">
-          <a
-            href={CONTRIBUTING_URL}
-            target="_blank"
-            rel="noreferrer noopener"
-            className={`${textLink} text-base`}
-          >
-            Read CONTRIBUTING.md
-          </a>
-          <a
-            href={`${REPO_URL}/issues`}
-            target="_blank"
-            rel="noreferrer noopener"
-            className={`${textLink} text-base`}
-          >
-            Open an issue
-          </a>
-          <p className="text-base text-text-muted">
-            Commits need a Developer Certificate of Origin sign-off. There is no
-            contributor licence agreement and there is not going to be one.
-          </p>
+                Open an issue
+              </a>
+            </div>
+          </Reveal>
         </div>
+
+        <Reveal delay={120}>
+          <ul className="panel">
+            {contributors.map((contributor, index) => (
+              <li
+                key={contributor.login}
+                className={index === 0 ? "" : "border-t border-hairline"}
+              >
+                <a
+                  href={contributor.profileUrl}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className={`flex cursor-pointer items-center gap-3.5 px-5 py-4 transition-colors hover:bg-white/3 ${focusRing}`}
+                >
+                  <Initials login={contributor.login} />
+                  <span className="font-mono text-sm text-text-primary">
+                    {contributor.login}
+                  </span>
+                  {contributor.commits !== undefined ? (
+                    <span className="ml-auto shrink-0 font-mono text-[12.5px] text-text-muted">
+                      {contributor.commits === 1
+                        ? "1 commit"
+                        : `${contributor.commits} commits`}
+                    </span>
+                  ) : null}
+                </a>
+              </li>
+            ))}
+          </ul>
+
+          <p className="mt-4 text-[13px] leading-relaxed text-text-faint">
+            {live
+              ? "Read from the GitHub API at build time; it counts accounts with commits rather than people. "
+              : "The GitHub API could not be reached at build time, so this is the static fallback; the contributor graph is authoritative. "}
+            Vulnerabilities go to SECURITY.md, never an issue. Commits need a
+            Developer Certificate of Origin sign-off &mdash; no CLA, and there is
+            not going to be one.
+          </p>
+        </Reveal>
       </Container>
-    </section>
+    </Section>
   );
 }

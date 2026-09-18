@@ -200,7 +200,7 @@ describe("deriveMUK backend injection", () => {
    *
    * The cross-IMPLEMENTATION version of this test, noble against WASM, cannot
    * live here: `@sluice/crypto` deliberately has no WASM dependency. It lives
-   * in `apps/web/test/argon2-agreement.test.ts`, which owns the WASM backend.
+   * in `apps/admin/test/argon2-agreement.test.ts`, which owns the WASM backend.
    */
   it("derives the pinned known-answer vector through the seam", async () => {
     const viaSeam: Argon2Backend = (pw, salt, p) =>

@@ -1,0 +1,19 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node", "vite/client"],
+    "isolatedModules": true,
+    "allowImportingTsExtensions": true,
+    "moduleDetection": "force",
+    "resolveJsonModule": true,
+    "paths": {
+      "@/*": ["./src/*"],
+      "@convex/*": ["../../convex/*"]
+    }
+  },
+  "include": ["src", "test", "vite.config.ts", "vitest.config.ts", "eslint.config.mjs"]
+}
