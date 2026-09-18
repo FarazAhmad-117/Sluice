@@ -173,6 +173,28 @@ secret-decrypting material. Nothing that could open customer data is stored
 server side. If you find a place where that is not true, that is a critical
 finding and this project wants to hear about it before anyone else does.
 
+### What revocation does and does not undo
+
+Revoking a service token stops **delivery**. Every live process holding that
+token receives a signed notice and shuts down, and the token can never fetch a
+bundle again.
+
+It does not undo **decryption**. A token that has fetched its bundle once has
+already unwrapped the project data key for its environment, and revocation does
+not re-key that environment. So an attacker who pulled the key before the
+revocation, or who holds a copy of the database, can still open every secret in
+that environment, including secrets written after the revocation, until someone
+re-keys.
+
+**No re-key exists yet.** When it does, rotating an environment's key must
+re-wrap every grant on that environment in one transaction, and revocation
+should trigger it.
+
+The honest summary: revocation is an instant, cryptographically authenticated
+stop on a machine identity. It is not a guarantee that the secrets that
+identity could read are still secret. Rotate the underlying credentials at the
+provider too, which is the same thing you would do after any credential leak.
+
 ### Where the dashboard session token lives
 
 In `sessionStorage`, in plaintext, alongside the user id, the normalised email,
