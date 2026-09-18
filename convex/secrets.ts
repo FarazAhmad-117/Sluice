@@ -1,7 +1,7 @@
 import { ConvexError, v } from "convex/values";
 import { randomBytes, toHex } from "@sluice/crypto";
 import { mutation, query } from "./_generated/server";
-import type { Doc } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { recordUserEvent } from "./lib/audit";
 import {
@@ -11,6 +11,7 @@ import {
   requireSecret,
 } from "./lib/authz";
 import { assertHexAtLeast, assertHexBytes } from "./lib/hex";
+import { getPDKGrant } from "./repo/environments";
 import {
   insertSecret,
   listCurrentSecretsByEnvironment,
@@ -93,6 +94,55 @@ const INCONSISTENT = "This secret's version history is inconsistent.";
 
 function refuse(): never {
   throw new ConvexError(NOT_PERMITTED);
+}
+
+/**
+ * MEMBERSHIP AUTHORISES A WRITE. A GRANT IS WHAT MAKES ONE MEANINGFUL, AND
+ * BOTH MUST HOLD.
+ *
+ * A member of the org with no row in `pdkGrants` for this environment holds no
+ * project data key, so whatever they seal is sealed under a key NOBODY IN THE
+ * SYSTEM HOLDS. Nothing downstream notices. The row lands, `pdkVersion` is
+ * copied off the environment so it claims a real key version, the listing shows
+ * it beside rows that are fine, the bundle ships it to every workload, and the
+ * whole thing fails exactly once: as a bare AEAD rejection, at read time, with
+ * no indication of which input was wrong, possibly months later and possibly in
+ * production. It is the same class of silent, unrecoverable write that
+ * `createEnvironment` mints its grant in-transaction to avoid.
+ *
+ * It is not a hypothetical. Every SECOND member of an org is in this state
+ * today, because nothing wraps an existing project data key to a new member:
+ * `createEnvironment` mints exactly one grant and it belongs to its creator.
+ *
+ * THE SERVER CANNOT FIX IT, ONLY REFUSE IT. Minting the missing grant here is
+ * the tempting repair and it is impossible: this deployment has never held the
+ * plaintext project data key and never will, so any grant it wrote would be a
+ * row whose ciphertext is not a key. Refusing is the whole of the remedy.
+ *
+ * THE MESSAGE IS DISTINCT FROM `NOT_PERMITTED`, DELIBERATELY. `getMyPdkGrant`
+ * answers a missing grant with the shared refusal, because there a distinct
+ * string would let someone map which colleague can open which environment: a
+ * map of who to compromise. Here the caller has ALREADY passed
+ * `requireEnvironment`, so they are a member of the org, and the only fact this
+ * string discloses is one about the caller's own grant, which they can
+ * establish anyway by calling `getMyPdkGrant` on themselves. Nothing is leaked
+ * and, in exchange, a person gets a sentence they can act on instead of "not
+ * found" about an environment they are looking at.
+ *
+ * `granteeType` is pinned to `"user"` and is not a parameter. A user id and a
+ * `tokenIdHash` are both opaque strings in one index, and the type column is
+ * the only thing keeping the two namespaces apart.
+ */
+const NO_GRANT =
+  "You hold no key for this environment, so nothing you wrote here could ever be read.";
+
+async function requirePDKGrant(
+  ctx: QueryCtx,
+  environmentId: Id<"environments">,
+  userId: Id<"users">,
+): Promise<void> {
+  const grant = await getPDKGrant(ctx, environmentId, "user", userId);
+  if (grant === null) throw new ConvexError(NO_GRANT);
 }
 
 interface SealedFields {
@@ -245,6 +295,10 @@ export const createSecret = mutation({
       args.sessionToken,
       args.environmentId,
     );
+    // Before any validation and before the lineage is minted, so a caller with
+    // no key cannot consume a lineage id or learn anything from the order in
+    // which their arguments were rejected.
+    await requirePDKGrant(ctx, environment._id, user._id);
     assertSealed(args);
 
     const lineageId = await mintLineageId(ctx);
@@ -296,6 +350,12 @@ export const updateSecret = mutation({
       args.sessionToken,
       args.secretId,
     );
+    // On the environment the row ALREADY belongs to, read off the row, never
+    // from an argument. A grant on some other environment is not a key for
+    // this one, and `updateSecret` takes no environment id precisely so that
+    // the two can never disagree.
+    await requirePDKGrant(ctx, secret.environmentId, user._id);
+
     const { versions, current } = await lineageOf(ctx, secret);
 
     // Deleted is checked before superseded, so a deleted secret answers with

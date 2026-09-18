@@ -12,6 +12,12 @@ import {
   insertSecret as insertSecretRow,
 } from "./repo/secrets";
 import { listAuditEventsByActor } from "./repo/audit";
+import { insertOrgMember } from "./repo/orgs";
+import {
+  getPDKGrant,
+  insertPDKGrant as insertPDKGrantRow,
+  listPDKGrantsByEnvironment,
+} from "./repo/environments";
 import * as secretsModule from "./secrets";
 
 export const modules = import.meta.glob("./**/*.ts");
@@ -263,6 +269,265 @@ describe("secrets authorisation", () => {
       ).exportArgs(),
     );
     expect(fieldNames(args)).not.toContain("environmentId");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A write from a caller who holds no project data key.
+// ---------------------------------------------------------------------------
+
+/**
+ * THE HOLE THIS CLOSES, STATED PLAINLY.
+ *
+ * Membership authorises a write. Holding a grant is what makes the write
+ * MEANINGFUL, and until this block the two were never checked together. A
+ * member of the org with no row in `pdkGrants` for the environment has no
+ * project data key at all, so whatever they seal is sealed under a key NOBODY
+ * IN THE SYSTEM HOLDS. Every part of the system then behaves perfectly: the row
+ * lands, `pdkVersion` is copied off the environment so it claims a real key
+ * version, the listing shows it beside rows that are fine, the bundle ships it,
+ * and the failure surfaces as a bare AEAD rejection the first time somebody
+ * reads it. That may be in production, months later.
+ *
+ * It is not a hypothetical state. It is the state EVERY SECOND MEMBER of an org
+ * is in today, because nothing wraps an existing project data key to a new
+ * member: `createEnvironment` mints exactly one grant, to its creator.
+ *
+ * The refusal is a DISTINCT message rather than the shared `NOT_PERMITTED`, and
+ * that is deliberate. `getMyPdkGrant` uses the shared string because a distinct
+ * one there would let a caller map which colleague can open which environment.
+ * Here the caller has already passed `requireEnvironment`, so they are a member,
+ * and the only fact the message discloses is one about the caller's OWN grant,
+ * which they can already establish by calling `getMyPdkGrant` on themselves. In
+ * exchange it says something a person can act on, instead of "not found" on an
+ * environment they are looking at.
+ */
+describe("a write from a caller who holds no project data key", () => {
+  const NO_GRANT =
+    "You hold no key for this environment, so nothing you wrote here could ever be read.";
+
+  /** A member of the org, added the way an invite would add one: no grant. */
+  async function memberWithoutGrant(t: Harness, orgId: Id<"orgs">, email: string) {
+    const actor = await seedUser(t, email);
+    await t.run(async (ctx) =>
+      insertOrgMember(ctx, { orgId, userId: actor.userId, role: "member" }),
+    );
+    return actor;
+  }
+
+  it("has a fixture that really is a member and really has no grant", async () => {
+    // Guards the guard. If the membership row stopped being written, every
+    // assertion below would pass for the wrong reason: the refusal would be
+    // NOT_PERMITTED from `requireEnvironment` rather than the grant check.
+    const t = convexTest(schema, modules);
+    const { a } = await world(t);
+    const bob = await memberWithoutGrant(t, a.orgId, "bob@example.test");
+
+    // A member: a read that needs only membership succeeds.
+    const rows = await t.query(api.secrets.listSecrets, {
+      sessionToken: bob.sessionToken,
+      environmentId: a.production,
+    });
+    expect(rows).toEqual([]);
+
+    // And no grant.
+    const grant = await t.run(async (ctx) =>
+      getPDKGrant(ctx, a.production, "user", bob.userId),
+    );
+    expect(grant).toBeNull();
+  });
+
+  it("refuses createSecret", async () => {
+    const t = convexTest(schema, modules);
+    const { a } = await world(t);
+    const bob = await memberWithoutGrant(t, a.orgId, "bob@example.test");
+
+    await expect(
+      t.mutation(api.secrets.createSecret, secretArgs(bob, a.production)),
+    ).rejects.toThrow(NO_GRANT);
+  });
+
+  it("refuses updateSecret", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, a } = await world(t);
+    const bob = await memberWithoutGrant(t, a.orgId, "bob@example.test");
+
+    // Created by someone who DOES hold a grant, so the row is healthy and the
+    // only thing wrong with the update is who is making it.
+    const { secretId } = await t.mutation(
+      api.secrets.createSecret,
+      secretArgs(alice, a.production),
+    );
+
+    await expect(
+      t.mutation(api.secrets.updateSecret, {
+        sessionToken: bob.sessionToken,
+        secretId,
+        nameCiphertext: "cc".repeat(24),
+        nameNonce: "111111111111111111111111",
+        valueCiphertext: "dd".repeat(40),
+        valueNonce: "222222222222222222222222",
+      }),
+    ).rejects.toThrow(NO_GRANT);
+  });
+
+  it("writes nothing at all when it refuses", async () => {
+    // A refusal that had already inserted the row, or already superseded the
+    // previous version, would be worse than no check. Convex mutations are
+    // atomic, so this asserts the property rather than the mechanism.
+    const t = convexTest(schema, modules);
+    const { alice, a } = await world(t);
+    const bob = await memberWithoutGrant(t, a.orgId, "bob@example.test");
+    const first = await t.mutation(
+      api.secrets.createSecret,
+      secretArgs(alice, a.production),
+    );
+
+    await expect(
+      t.mutation(api.secrets.createSecret, secretArgs(bob, a.production)),
+    ).rejects.toThrow(NO_GRANT);
+    await expect(
+      t.mutation(api.secrets.updateSecret, {
+        sessionToken: bob.sessionToken,
+        secretId: first.secretId,
+        nameCiphertext: "cc".repeat(24),
+        nameNonce: "111111111111111111111111",
+        valueCiphertext: "dd".repeat(40),
+        valueNonce: "222222222222222222222222",
+      }),
+    ).rejects.toThrow(NO_GRANT);
+
+    const live = await t.query(api.secrets.listSecrets, {
+      sessionToken: alice.sessionToken,
+      environmentId: a.production,
+    });
+    expect(live.map((row) => row.secretId)).toEqual([first.secretId]);
+    expect(live[0]?.version).toBe(1);
+  });
+
+  /**
+   * The grant is checked on the ENVIRONMENT BEING WRITTEN TO, not merely on
+   * "some environment". A member who holds a grant on `staging` must not be
+   * able to write a `production` row nobody can open, which is the shape this
+   * bug would take once grants start being issued selectively.
+   */
+  it("refuses a caller who holds a grant on a different environment", async () => {
+    const t = convexTest(schema, modules);
+    const { a } = await world(t);
+    const bob = await memberWithoutGrant(t, a.orgId, "bob@example.test");
+
+    await t.run(async (ctx) =>
+      insertPDKGrantRow(ctx, {
+        environmentId: a.staging,
+        granteeType: "user",
+        granteeId: bob.userId,
+        wrappedPDK: WRAP.wrappedPDK,
+        nonce: WRAP.pdkNonce,
+        pdkVersion: 1,
+      }),
+    );
+
+    await expect(
+      t.mutation(api.secrets.createSecret, secretArgs(bob, a.production)),
+    ).rejects.toThrow(NO_GRANT);
+
+    // And the same caller, on the environment they DO hold a key for, is fine.
+    // Without this the test above would pass against a check that refuses
+    // everybody.
+    const ok = await t.mutation(api.secrets.createSecret, secretArgs(bob, a.staging));
+    expect(ok.version).toBe(1);
+  });
+
+  /**
+   * A TOKEN'S grant is not a user's. `granteeType` separates two namespaces of
+   * opaque strings, and a check that ignored it would accept a `tokenIdHash`
+   * that happened to equal a user id, and more realistically would be one
+   * refactor away from doing so.
+   */
+  it("does not accept a token grant as a user's", async () => {
+    const t = convexTest(schema, modules);
+    const { a } = await world(t);
+    const bob = await memberWithoutGrant(t, a.orgId, "bob@example.test");
+
+    await t.run(async (ctx) =>
+      insertPDKGrantRow(ctx, {
+        environmentId: a.production,
+        granteeType: "token",
+        granteeId: bob.userId,
+        wrappedPDK: WRAP.wrappedPDK,
+        nonce: WRAP.pdkNonce,
+        pdkVersion: 1,
+      }),
+    );
+
+    await expect(
+      t.mutation(api.secrets.createSecret, secretArgs(bob, a.production)),
+    ).rejects.toThrow(NO_GRANT);
+  });
+
+  it("lets a member write as soon as a grant is wrapped to them", async () => {
+    const t = convexTest(schema, modules);
+    const { a } = await world(t);
+    const bob = await memberWithoutGrant(t, a.orgId, "bob@example.test");
+
+    await t.run(async (ctx) =>
+      insertPDKGrantRow(ctx, {
+        environmentId: a.production,
+        granteeType: "user",
+        granteeId: bob.userId,
+        wrappedPDK: WRAP.wrappedPDK,
+        nonce: WRAP.pdkNonce,
+        pdkVersion: 1,
+      }),
+    );
+
+    const created = await t.mutation(
+      api.secrets.createSecret,
+      secretArgs(bob, a.production),
+    );
+    expect(created.version).toBe(1);
+
+    const updated = await t.mutation(api.secrets.updateSecret, {
+      sessionToken: bob.sessionToken,
+      secretId: created.secretId,
+      nameCiphertext: "cc".repeat(24),
+      nameNonce: "111111111111111111111111",
+      valueCiphertext: "dd".repeat(40),
+      valueNonce: "222222222222222222222222",
+    });
+    expect(updated.version).toBe(2);
+  });
+
+  /**
+   * The check must not become a side channel of its own. Both mutations refuse
+   * a non-member with the SHARED string, so "you are not in this org" and "you
+   * are in it but hold no key" are told apart only by somebody who is already
+   * in the org.
+   */
+  it("still refuses an outsider with the shared refusal, not this one", async () => {
+    const t = convexTest(schema, modules);
+    const { mallory, a } = await world(t);
+
+    await expect(
+      t.mutation(api.secrets.createSecret, secretArgs(mallory, a.production)),
+    ).rejects.toThrow(NOT_PERMITTED);
+  });
+
+  it("does not write a grant of its own on the way past", async () => {
+    // A tempting "fix" is to mint the missing grant here. It cannot be done:
+    // the server has never held the plaintext project data key and cannot wrap
+    // it to anybody. A handler that wrote a grant row would be writing one
+    // whose ciphertext is not a key.
+    const t = convexTest(schema, modules);
+    const { alice, a } = await world(t);
+    const before = await t.run(async (ctx) =>
+      listPDKGrantsByEnvironment(ctx, a.production),
+    );
+    await t.mutation(api.secrets.createSecret, secretArgs(alice, a.production));
+    const after = await t.run(async (ctx) =>
+      listPDKGrantsByEnvironment(ctx, a.production),
+    );
+    expect(after.length).toBe(before.length);
   });
 });
 
