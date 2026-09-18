@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { convexTest } from "convex-test";
+import { deriveMUK, toHex } from "@sluice/crypto";
 import schema from "./schema";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -18,7 +19,33 @@ import {
   insertPDKGrant as insertPDKGrantRow,
   listPDKGrantsByEnvironment,
 } from "./repo/environments";
+import { getUser as getUserRow } from "./repo/users";
 import * as secretsModule from "./secrets";
+
+/**
+ * THE DASHBOARD'S OWN MODULES, IMPORTED UNCHANGED, for the end-to-end test at
+ * the bottom of this file.
+ *
+ * They are reached by relative path rather than through a package, because
+ * `apps/web` is an application and not one. The alternative to importing them
+ * is re-implementing the client half here, which would prove that this file
+ * agrees with itself and nothing about whether the browser agrees with the
+ * server. That agreement is the only thing the last test exists to establish.
+ */
+import {
+  createIdentity,
+  deriveAuthVerifier,
+  identityMatches,
+  unwrapIdentity,
+} from "../apps/web/src/lib/auth/identity";
+import { normaliseEmail as normaliseWebEmail } from "../apps/web/src/lib/auth/email";
+import {
+  createProjectDataKey,
+  unwrapProjectDataKey,
+  wrapProjectDataKey,
+} from "../apps/web/src/lib/secrets/pdk";
+import { sealSecret } from "../apps/web/src/lib/secrets/seal";
+import { SecretOpenError, openSecret } from "../apps/web/src/lib/secrets/decrypt";
 
 export const modules = import.meta.glob("./**/*.ts");
 
@@ -1080,4 +1107,227 @@ describe("the audit log", () => {
       expect(dump).not.toContain(leak);
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// End to end: a person signs up and reads a secret back in the clear.
+// ---------------------------------------------------------------------------
+
+/**
+ * THE TEST THAT PROVES THE PRODUCT WORKS, THROUGH BOTH SIDES OF THE WIRE.
+ *
+ * Every other test in this file drives the server with fixture strings. This
+ * one drives it with the DASHBOARD'S OWN CODE: the modules under
+ * `apps/web/src/lib` that the browser runs, imported here unchanged. Nothing
+ * below hand-rolls a derivation, a wrap, an associated data or a hex encoding.
+ * If the client and the server ever disagree about any of those, this goes red,
+ * and it is the only test that can, because agreement between two sides cannot
+ * be observed from either side alone.
+ *
+ * WHAT IT WOULD HAVE CAUGHT, had it existed earlier: an environment created
+ * with no grant, so that its secrets were ciphertext under a key no client
+ * could obtain, with nothing erroring at any point.
+ *
+ * THE ONE LINK IT DOES NOT EXERCISE, NAMED RATHER THAN HIDDEN.
+ * `createOrg`'s `wrappedRevocationKey` is passed as an opaque placeholder,
+ * exactly as every other test in `convex/` passes it, because THE ASSOCIATED
+ * DATA FOR THAT WRAP IS NOT DEFINED ANYWHERE. `@sluice/crypto` defines three
+ * constructions, `secretAssociatedData`, `pdkAssociatedData` and
+ * `tokenIdHash`, and none of them is the revocation key wrap. Inventing a
+ * fourth here would pin a literal that the SDK and the backend would later have
+ * to match by coincidence, which is the precise drift that module exists to
+ * delete. The server treats the field as opaque and never opens it, so nothing
+ * below depends on its contents. Signed revocation does, and it is not built.
+ */
+describe("end to end", () => {
+  // A throwaway pepper. Set on `process.env` directly, because that is what the
+  // deployment reads: a test that proved a mock worked would prove nothing.
+  const TEST_PEPPER =
+    "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+  beforeEach(() => {
+    process.env.AUTH_PEPPER = TEST_PEPPER;
+  });
+  afterEach(() => {
+    delete process.env.AUTH_PEPPER;
+  });
+
+  /**
+   * One real Argon2id derivation at the shipping parameters: 64 MiB, t=3, p=4.
+   * That is the cost the product actually pays, and it is why this test carries
+   * its own timeout.
+   *
+   * `deriveMUK` rather than the dashboard's `deriveMasterUnlockKey`, and the
+   * difference is a runtime one rather than a cryptographic one: the dashboard
+   * wrapper only chooses between a Web Worker, main-thread WASM and the noble
+   * backend, all pinned to the same frozen `ARGON2_PARAMS`.
+   * `apps/web/test/argon2-agreement.test.ts` pins those backends to identical
+   * bytes, so the key derived here is the key a browser derives.
+   */
+  it(
+    "signs up, creates an org, a project, an environment and a secret, then reads it back decrypted",
+    async () => {
+      const t = convexTest(schema, modules);
+
+      const email = "founder@example.test";
+      const password = "correct horse battery staple";
+
+      // ---- 1. Signup, exactly as `auth-context.tsx` performs it. -----------
+      // Normalised FIRST, because this exact string is the Argon2id salt input
+      // and the server normalises the address the same way.
+      const salt = normaliseWebEmail(email);
+      const muk = await deriveMUK(password, salt);
+      const { wrapped, pub } = await createIdentity(muk);
+      const authVerifier = await deriveAuthVerifier(muk);
+
+      const signedUpUserId = await t.mutation(api.auth.signup, {
+        email: salt,
+        authVerifier,
+        publicKey: wrapped.publicKey,
+        verifyKey: wrapped.verifyKey,
+        wrappedPrivateKey: wrapped.wrappedPrivateKey,
+        wrappedSigningKey: wrapped.wrappedSigningKey,
+      });
+
+      // Only public material and two opaque blobs went over the wire. Asserted
+      // rather than assumed, because "the server never sees it" is the whole
+      // product and a regression would be invisible.
+      const storedUser = await t.run(async (ctx) => getUserRow(ctx, signedUpUserId));
+      const userDump = JSON.stringify(storedUser);
+      expect(userDump).not.toContain(password);
+      expect(userDump).not.toContain(toHex(muk.bytes));
+
+      // ---- 2. Login and unwrap, which is what yields a session. ------------
+      const session = await t.mutation(api.auth.login, { email: salt, authVerifier });
+      const sessionToken = session.sessionToken;
+      const restored = await unwrapIdentity(muk, session);
+      expect(identityMatches(restored, pub)).toBe(true);
+      expect(session.userId).toBe(signedUpUserId);
+
+      // ---- 3. An organisation. --------------------------------------------
+      const orgId = await t.mutation(api.orgs.createOrg, {
+        sessionToken,
+        name: "Acme Rockets",
+        slug: "acme-rockets",
+        revocationPublicKey: "ab".repeat(32),
+        // Opaque placeholder. See the note above this describe block.
+        wrappedRevocationKey: "wrapped-revocation-key-blob",
+        revocationKeyNonce: "0f1e2d3c4b5a69788796a5b4",
+      });
+
+      // ---- 4. A project. ---------------------------------------------------
+      const projectId = await t.mutation(api.projects.createProject, {
+        sessionToken,
+        orgId,
+        name: "API",
+        slug: "api",
+      });
+
+      // ---- 5. An environment, whose project data key is minted HERE. -------
+      // The server has never held the plaintext of this key and cannot: it
+      // arrives wrapped, under associated data this deployment computes
+      // nowhere.
+      const pdk = createProjectDataKey();
+      const wrappedPdk = await wrapProjectDataKey(muk, pdk, {
+        granteeType: "user",
+        granteeId: session.userId,
+      });
+      const environmentId = await t.mutation(api.environments.createEnvironment, {
+        sessionToken,
+        projectId,
+        name: "production",
+        ...wrappedPdk,
+      });
+
+      // ---- 6. Fetch the grant back and open it. ---------------------------
+      // From this line on the test uses `openedPdk`, NOT `pdk`. Using the local
+      // copy would let a grant that round trips incorrectly pass unnoticed,
+      // which is exactly the failure this whole chain exists to catch.
+      const grant = await t.query(api.environments.getMyPdkGrant, {
+        sessionToken,
+        environmentId,
+      });
+      expect(grant.environmentId).toBe(environmentId);
+      expect(grant.pdkVersion).toBe(1);
+
+      const openedPdk = await unwrapProjectDataKey(
+        muk,
+        { wrappedPDK: grant.wrappedPDK, nonce: grant.nonce },
+        { granteeType: "user", granteeId: session.userId },
+      );
+      expect(toHex(openedPdk)).toBe(toHex(pdk));
+
+      // ---- 7. Seal a secret and write it. ---------------------------------
+      const NAME = "DATABASE_URL";
+      const VALUE = "postgres://app:hunter2@db.internal:5432/production";
+
+      const sealed = await sealSecret(openedPdk, {
+        environmentId,
+        name: NAME,
+        value: VALUE,
+      });
+      const created = await t.mutation(api.secrets.createSecret, {
+        sessionToken,
+        environmentId,
+        ...sealed,
+      });
+
+      // The row the server stored contains neither the name nor the value.
+      const storedRow = await t.run(async (ctx) => getSecretRow(ctx, created.secretId));
+      const rowDump = JSON.stringify(storedRow);
+      expect(rowDump).not.toContain(NAME);
+      expect(rowDump).not.toContain(VALUE);
+      expect(rowDump).not.toContain(toHex(openedPdk));
+
+      // ---- 8. List it and open it, which is what the dashboard does. -------
+      const listed = await t.query(api.secrets.listSecrets, { sessionToken, environmentId });
+      expect(listed).toHaveLength(1);
+
+      const row = listed[0];
+      if (row === undefined) throw new Error("the listing returned no row");
+      const opened = await openSecret(openedPdk, row);
+      expect(opened.name).toBe(NAME);
+      expect(opened.value).toBe(VALUE);
+
+      // ---- 9. And the environment binding actually binds. ------------------
+      // The same key, the same ciphertext, one different environment id in the
+      // associated data. It must fail, or the per-environment binding is
+      // decoration.
+      const other = await t.mutation(api.environments.createEnvironment, {
+        sessionToken,
+        projectId,
+        name: "staging",
+        ...(await wrapProjectDataKey(muk, createProjectDataKey(), {
+          granteeType: "user",
+          granteeId: session.userId,
+        })),
+      });
+      await expect(
+        openSecret(openedPdk, { ...row, environmentId: other }),
+      ).rejects.toThrow(SecretOpenError);
+
+      // ---- 10. An update, through the same path, reads back updated. ------
+      const NEW_VALUE = "postgres://app:hunter3@db.internal:5432/production";
+      const resealed = await sealSecret(openedPdk, {
+        environmentId,
+        name: NAME,
+        value: NEW_VALUE,
+      });
+      await t.mutation(api.secrets.updateSecret, {
+        sessionToken,
+        secretId: created.secretId,
+        ...resealed,
+      });
+
+      const after = await t.query(api.secrets.listSecrets, { sessionToken, environmentId });
+      const currentRow = after[0];
+      if (currentRow === undefined) throw new Error("the listing returned no row");
+      expect(currentRow.version).toBe(2);
+      expect((await openSecret(openedPdk, currentRow)).value).toBe(NEW_VALUE);
+    },
+    // One Argon2id derivation at 64 MiB inside the edge-runtime VM. The default
+    // five seconds is not enough, and a flake here would be read as a real
+    // failure.
+    120_000,
+  );
 });
