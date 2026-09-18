@@ -1,4 +1,4 @@
-import { ParticleField } from "@/components/particle-field";
+import { RevokeDemo } from "@/components/landing/revoke-demo";
 import {
   Container,
   primaryAction,
@@ -53,23 +53,13 @@ export function Hero() {
 
         <div className="lg:col-span-5">
           {/*
-            The particle field is the one visual on this page, and it is not
-            decoration. A sphere of points that holds coherent and then
-            scatters is what revocation looks like, which is why the design
-            doc chose it.
-
-            It sizes itself from its wrapper, so the box below is load
-            bearing: an unsized host paints nothing rather than collapsing.
-            Do not pass `absolute` here. The component hardcodes `relative`
-            and Tailwind v4 resolves conflicts by source order, so `relative`
-            would win and the override would fail silently.
-
-            `state` is an edge trigger, not a held pose: passing "scattered"
-            detonates and reforms over roughly two seconds, then rests on the
-            sphere again. It is left at the "idle" default until there is a
-            real interaction worth spending it on.
+            The hero visual is the product mechanic, not decoration. A sphere
+            of points that holds coherent and then comes apart on a revoke is
+            what revocation looks like, which is why the design direction
+            chose it. It rotated and did nothing until 2026-09-18, which made
+            it exactly the decoration that direction ruled out.
           */}
-          <ParticleField className="mx-auto aspect-square w-full max-w-[380px] sm:max-w-[440px] lg:mr-0 lg:ml-auto lg:max-w-[520px]" />
+          <RevokeDemo />
         </div>
       </Container>
     </section>

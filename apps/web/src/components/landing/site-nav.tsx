@@ -56,23 +56,42 @@ export function SiteNav() {
           Sluice
         </a>
 
-        <div className="flex items-center gap-8">
+        <div className="flex items-center gap-6">
           <NavLinks
             label="Primary"
             className="hidden items-center gap-7 text-sm md:flex"
           />
-          <a href="#quickstart" className={primaryAction}>
-            Quickstart
+          {/*
+            Sign in is a plain text link immediately left of the primary
+            button, which is what every reference site in the category does
+            without exception. It is never styled as a button, because two
+            buttons of equal weight make neither of them the call to action.
+
+            This was missing entirely until 2026-09-18. The signup and login
+            pages existed and worked, and nothing on the marketing site
+            pointed at them, which is a broken product rather than a design
+            preference.
+          */}
+          <a href="/login" className={`hidden text-sm md:inline ${navLink}`}>
+            Sign in
+          </a>
+          <a href="/signup" className={primaryAction}>
+            Get started
           </a>
         </div>
       </Container>
 
       <div className="border-t border-hairline md:hidden">
-        <Container>
+        <Container className="flex h-10 items-center justify-between gap-4">
           <NavLinks
             label="Primary, compact"
-            className="flex h-10 items-center gap-6 text-base"
+            className="flex items-center gap-6 text-base"
           />
+          {/* Sign in follows the links into the compact strip rather than
+              disappearing below 768px, where most first visits happen. */}
+          <a href="/login" className={`text-base ${navLink}`}>
+            Sign in
+          </a>
         </Container>
       </div>
     </header>

@@ -24,7 +24,18 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       suppressHydrationWarning
       className={`${GeistSans.variable} ${GeistMono.variable} antialiased`}
     >
-      <body className="min-h-[100dvh] bg-surface-base text-text-primary">
+      {/*
+        Also suppressed on <body>, because that is where extensions actually
+        inject. BitDefender writes `bis_skin_checked` and `bis_register`,
+        ColorZilla writes `cz-shortcut-listen`, and React reports every one as
+        a hydration mismatch it "won't patch up". None of it is our markup and
+        none of it reaches a user without that extension, but the warning
+        buries real mismatches in dev, which is the actual cost.
+      */}
+      <body
+        suppressHydrationWarning
+        className="min-h-[100dvh] bg-surface-base text-text-primary"
+      >
         {children}
       </body>
     </html>
