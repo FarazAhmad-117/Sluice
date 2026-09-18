@@ -8,6 +8,7 @@ import { insertUser } from "./repo/users";
 import { insertSession } from "./repo/sessions";
 import { SESSION_LIFETIME_MS, hashSessionToken } from "./lib/session";
 import { listAuditEventsByActor } from "./repo/audit";
+import { insertOrgMember } from "./repo/orgs";
 import {
   getPDKGrant,
   listPDKGrantsByEnvironment,
@@ -481,8 +482,154 @@ describe("the environments surface", () => {
     expect(Object.keys(environmentsModule).sort()).toEqual([
       "createEnvironment",
       "getEnvironment",
+      "getMyPdkGrant",
       "listEnvironments",
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reading a grant back.
+// ---------------------------------------------------------------------------
+
+describe("getMyPdkGrant", () => {
+  it("returns the caller's own wrapped key and the version it opens", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, projectA } = await twoTenants(t);
+
+    const environmentId = await t.mutation(api.environments.createEnvironment, {
+      sessionToken: alice.sessionToken,
+      projectId: projectA,
+      name: "production",
+      ...wrap,
+    });
+
+    expect(
+      await t.query(api.environments.getMyPdkGrant, {
+        sessionToken: alice.sessionToken,
+        environmentId,
+      }),
+    ).toEqual({
+      environmentId,
+      wrappedPDK: WRAPPED_PDK,
+      nonce: PDK_NONCE,
+      pdkVersion: 1,
+    });
+  });
+
+  /**
+   * THE CROSS-TENANT QUESTION, ASKED OF THE ONE HANDLER THAT RETURNS KEY
+   * MATERIAL. It walks environment to project to org to membership through the
+   * same chain as every other handler, so a member of one org cannot address
+   * another org's environment however the id is obtained.
+   */
+  it("refuses another org's environment", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, environmentB } = await twoTenants(t);
+
+    await expect(
+      t.query(api.environments.getMyPdkGrant, {
+        sessionToken: alice.sessionToken,
+        environmentId: environmentB,
+      }),
+    ).rejects.toThrow(NOT_PERMITTED);
+  });
+
+  /**
+   * A MEMBER OF THE RIGHT ORG WITH NO GRANT GETS THE SHARED REFUSAL.
+   *
+   * This is the real state the moment a second person joins an org, because
+   * nothing wraps an existing key to a new member. It answers with the same
+   * string as "no such environment" on purpose: a distinct message would let
+   * anyone in the org map exactly which environments each colleague can open,
+   * which is a map of who to compromise.
+   */
+  it("refuses a member of the org who holds no grant", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, orgA, projectA } = await twoTenants(t);
+    const bob = await seedUser(t, "bob@example.test");
+
+    const environmentId = await t.mutation(api.environments.createEnvironment, {
+      sessionToken: alice.sessionToken,
+      projectId: projectA,
+      name: "production",
+      ...wrap,
+    });
+
+    // Seeded through the repository, because there is no invitation flow yet
+    // and this is exactly the state one will produce.
+    await t.run(async (ctx) =>
+      insertOrgMember(ctx, { orgId: orgA, userId: bob.userId, role: "member" }),
+    );
+
+    // Bob really is in the org: he can see the environment.
+    expect(
+      (
+        await t.query(api.environments.getEnvironment, {
+          sessionToken: bob.sessionToken,
+          environmentId,
+        })
+      ).name,
+    ).toBe("production");
+
+    await expect(
+      t.query(api.environments.getMyPdkGrant, {
+        sessionToken: bob.sessionToken,
+        environmentId,
+      }),
+    ).rejects.toThrow(NOT_PERMITTED);
+  });
+
+  /**
+   * NO GRANTEE ARGUMENT, AND THAT IS THE AUTHORISATION.
+   *
+   * The only grant anybody can read is their own. A `granteeId` parameter would
+   * make this an endpoint for fetching other people's wrapped key material,
+   * which is useless to them and is exactly the kind of read that looks
+   * harmless in review. `orgs.getMyRevocationGrant` makes the same argument.
+   */
+  it("takes no grantee argument", () => {
+    const args = JSON.parse(
+      (
+        environmentsModule.getMyPdkGrant as unknown as {
+          exportArgs: () => string;
+        }
+      ).exportArgs(),
+    ) as { value: Record<string, unknown> };
+
+    expect(Object.keys(args.value).sort()).toEqual([
+      "environmentId",
+      "sessionToken",
+    ]);
+  });
+
+  /** Two people, two environments, and neither sees the other's blob. */
+  it("hands each caller only their own grant", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, mallory, projectA, projectB, environmentB } =
+      await twoTenants(t);
+
+    const environmentA = await t.mutation(api.environments.createEnvironment, {
+      sessionToken: alice.sessionToken,
+      projectId: projectA,
+      name: "production",
+      wrappedPDK: "ab".repeat(48),
+      pdkNonce: PDK_NONCE,
+    });
+    expect(projectB).toBeDefined();
+
+    const mine = await t.query(api.environments.getMyPdkGrant, {
+      sessionToken: alice.sessionToken,
+      environmentId: environmentA,
+    });
+    const theirs = await t.query(api.environments.getMyPdkGrant, {
+      sessionToken: mallory.sessionToken,
+      environmentId: environmentB,
+    });
+
+    expect(mine.wrappedPDK).toBe("ab".repeat(48));
+    expect(theirs.wrappedPDK).toBe(WRAPPED_PDK);
+    expect(mine.wrappedPDK).not.toBe(theirs.wrappedPDK);
   });
 });
 

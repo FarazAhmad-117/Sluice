@@ -6,11 +6,13 @@ import {
   sessionArg,
   requireEnvironment,
   requireProject,
+  NOT_PERMITTED,
 } from "./lib/authz";
 import { assertHexAtLeast, assertHexBytes } from "./lib/hex";
 import { assertSlug } from "./lib/naming";
 import {
   getEnvironmentByName,
+  getPDKGrant,
   insertEnvironment,
   insertPDKGrant,
   listEnvironmentsByProject,
@@ -192,5 +194,60 @@ export const listEnvironments = query({
       pdkVersion: environment.pdkVersion,
       epoch: environment.epoch,
     }));
+  },
+});
+
+/**
+ * The caller's own wrapped project data key for one environment, for unwrapping
+ * on the client before any secret in that environment can be opened.
+ *
+ * IT TAKES NO GRANTEE ARGUMENT, AND THAT IS THE AUTHORISATION. The only grant
+ * anybody can read is their own. A `granteeId` parameter would make this an
+ * endpoint for fetching other people's wrapped key material, which is useless to
+ * them and is exactly the kind of read that looks harmless in review.
+ * `orgs.getMyRevocationGrant` is built the same way for the same reason.
+ *
+ * It returns ciphertext and a version number and nothing else. The server has
+ * never held the key inside `wrappedPDK` and cannot derive it from anything it
+ * stores: it is sealed to material derived from the caller's account, which
+ * exists only in their browser after unlock.
+ */
+export const getMyPdkGrant = query({
+  args: { ...sessionArg, environmentId: v.id("environments") },
+  returns: v.object({
+    // Echoed back so a client cannot pair this blob with the wrong
+    // environment's secrets, whose associated data binds the environment id.
+    environmentId: v.id("environments"),
+    wrappedPDK: v.string(),
+    nonce: v.string(),
+    // WHICH key this opens. It comes off the grant row, not the environment
+    // row: mid re-key they differ, and the honest answer is the version of the
+    // key the caller was actually handed.
+    pdkVersion: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    // The full chain: environment to project to org to membership. An
+    // environment id carries no organisation with it, so this is what stops a
+    // member of one org reading a grant on another org's environment.
+    const { environment, user } = await requireEnvironment(
+      ctx,
+      args.sessionToken,
+      args.environmentId,
+    );
+
+    const grant = await getPDKGrant(ctx, environment._id, "user", user._id);
+    // A member of the right org holding no grant is a real state, and it is the
+    // state every second member of an org is in today, because nothing wraps an
+    // existing key to a new member. It answers with the SHARED refusal rather
+    // than a distinct message, so the pair of strings cannot be used to map
+    // which colleague can open which environment: a map of who to compromise.
+    if (grant === null) throw new ConvexError(NOT_PERMITTED);
+
+    return {
+      environmentId: environment._id,
+      wrappedPDK: grant.wrappedPDK,
+      nonce: grant.nonce,
+      pdkVersion: grant.pdkVersion,
+    };
   },
 });

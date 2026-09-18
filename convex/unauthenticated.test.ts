@@ -289,6 +289,10 @@ const CALLS: Record<
     sessionToken,
     environmentId: w.environmentId,
   }),
+  "environments.getMyPdkGrant": (w, sessionToken) => ({
+    sessionToken,
+    environmentId: w.environmentId,
+  }),
   "environments.listEnvironments": (w, sessionToken) => ({
     sessionToken,
     projectId: w.projectId,
@@ -369,13 +373,14 @@ const FUNCTIONS = exportedFunctions();
 
 describe("the enumeration this file is built on", () => {
   it("finds every public function in the hierarchy", () => {
-    // Eighteen, written as a number as well as a list, so that an enumeration
+    // Nineteen, written as a number as well as a list, so that an enumeration
     // which silently starts returning nothing cannot make every assertion
     // below pass vacuously.
-    expect(FUNCTIONS.length).toBe(18);
+    expect(FUNCTIONS.length).toBe(19);
     expect(FUNCTIONS).toEqual([
       "environments.createEnvironment",
       "environments.getEnvironment",
+      "environments.getMyPdkGrant",
       "environments.listEnvironments",
       "orgs.createOrg",
       "orgs.getMyRevocationGrant",
