@@ -1,47 +1,66 @@
-import { Contributors } from "@/components/landing/contributors";
+import type { Metadata } from "next";
+
 import { FinalCta } from "@/components/landing/final-cta";
 import { Hero } from "@/components/landing/hero";
-import { Quickstart } from "@/components/landing/quickstart";
-import { Revocation } from "@/components/landing/revocation";
+import { KillSwitch } from "@/components/landing/kill-switch";
+import { MechanismSteps } from "@/components/landing/mechanism-steps";
+import { OpenSourceProof } from "@/components/landing/open-source-proof";
+import { Problem } from "@/components/landing/problem";
 import { SiteFooter } from "@/components/landing/site-footer";
-import { SiteNav } from "@/components/landing/site-nav";
+import { SiteHeader } from "@/components/landing/site-header";
 import { StatsStrip } from "@/components/landing/stats-strip";
-import { ThreatModel } from "@/components/landing/threat-model";
+import { WhatsReal } from "@/components/landing/whats-real";
 
 /**
- * The Sluice landing page.
+ * The homepage.
  *
- * Eight bands, and no two adjacent ones share a layout family:
+ * ITS READER is a senior developer with a live `.env` problem, arriving
+ * sceptical and short of time. Its job is to win two concessions in this order:
+ * this solves something I deal with, and this does one thing nobody else does.
+ * Everything here serves "should I adopt this" and nothing serves "should I
+ * contribute to this". Open source is one page, linked once, as evidence that
+ * the project is alive.
  *
- *   SiteNav       fixed bar, transparent until the page moves
- *   Hero          asymmetric split, copy against the globe
- *   StatsStrip    four-cell divided rule, full bleed
- *   Quickstart    two-up, prose against a terminal
- *   Revocation    three-card bento over a wide timeline card
- *   ThreatModel   symmetric two-column opposition, on a lit band
- *   Contributors  two-up, prose against a roster
- *   FinalCta      centred card, the only centred block on the page
- *   SiteFooter    link grid, closing on the wordmark
+ * WHAT EACH BAND HAS TO PROVE, and the layout family it uses, none of which
+ * repeats next to itself:
  *
- * Two eyebrows were the budget when this page had seven sections. It now has
- * eight and spends four, on Quickstart, Revocation, ThreatModel and FinalCta.
- * That is a deliberate revision of the rule rather than a violation of it: the
- * eyebrow is now the page's section marker, used on every titled band and on no
- * untitled one, which is a consistent system. The failure the old budget
- * existed to prevent was eyebrows sprinkled decoratively on some headings and
- * not others, and that failure is still prevented.
+ *   SiteNav          fixed bar        the shape they already know
+ *   Hero             asymmetric split this is for me, and it is different
+ *   StatsStrip       divided rule     the numbers are checkable in a minute
+ *   Problem          card grid        these failures are real, not invented
+ *   KillSwitch       split + bento    the difference, demonstrated live
+ *   MechanismSteps   two-up ledger    simple to state, specific to check
+ *   WhatsReal        two panels       we tell you the bad news first
+ *   OpenSourceProof  single rule      the project is alive. One line.
+ *   FinalCta         centred card     one honest next action
+ *   SiteFooter       link grid        everything the header does not carry
+ *
+ * THE CALL TO ACTION APPEARS TWICE ON THIS PAGE, in the navigation and in the
+ * hero, and a third time in the closing card. NOTHING BETWEEN THE HERO AND THAT
+ * CARD ASKS FOR ANYTHING. Sections four and six carry text links to deeper
+ * pages, which is not the same act: a link offers, a button asks. A page that
+ * asks every screen is negotiating, and a reader who is being negotiated with
+ * stops reading.
  */
+
+export const metadata: Metadata = {
+  title: "Sluice: secrets you can take back",
+  description:
+    "Zero-knowledge environment variables for Node, with signed revocation that reaches processes already running. Pre-release, Apache-2.0, not third-party audited yet.",
+};
+
 export default function Home() {
   return (
     <>
-      <SiteNav />
+      <SiteHeader />
       <main id="top">
         <Hero />
         <StatsStrip />
-        <Quickstart />
-        <Revocation />
-        <ThreatModel />
-        <Contributors />
+        <Problem />
+        <KillSwitch />
+        <MechanismSteps />
+        <WhatsReal />
+        <OpenSourceProof />
         <FinalCta />
       </main>
       <SiteFooter />

@@ -10,25 +10,32 @@ import { Reveal } from "@/components/landing/motion";
  * usually where the lying starts: uptime nobody measured, customers nobody
  * named, latency from a benchmark nobody published.
  *
- * So the rule for this component is that a number goes in only if running
- * `pnpm -r test`, reading `package.json` or reading section 4 of the plan
- * settles it. "187 tests" is what the suite prints. "0 runtime dependencies"
- * is `packages/crypto/package.json`, which lists two Noble packages as
- * dependencies of the package and ships nothing else into a consumer's runtime
- * graph -- stated as "no runtime dependency on a framework", which is the
- * honest reading and the one the label carries. "5s" is the specified drain
- * window, labelled as specified rather than as measured. "3 runtimes" is the
- * browser, Node and Bun, all three of which the suite is run under.
+ * So the rule for this component is that a number goes in only if running the
+ * suite or reading one named file settles it:
  *
- * Do not add a fourth kind of number here. There is no user count, no funding
- * line and no uptime, because there are no users, no funding and no uptime.
+ *   892       `pnpm test` at the root prints 323 and `pnpm -r test` prints
+ *             259 + 124 + 93 + 85 + 8. Six packages, one total.
+ *   599,184   `packages/sdk/test/property.test.ts`. The decision core's
+ *             "connection loss never kills a process" property is ENUMERATED
+ *             over that many event sequences rather than sampled from them,
+ *             which is why the label says proven and not tested.
+ *   5s        the default drain window before a revoked process exits, from
+ *             `SLUICE_DRAIN_MS` in `packages/cli/src/main.ts`. Specified and
+ *             implemented, not a measured field number.
+ *   0         `SECURITY.md`: the server stores public keys, wrapped blobs it
+ *             cannot open, and ciphertext. Nothing that could open customer
+ *             data is stored server side.
+ *
+ * Do not add a fifth kind of number here. There is no user count, no funding
+ * line, no uptime and no latency figure, because there are no users, no
+ * funding, no uptime measurement and no published benchmark.
  */
 
 const STATS = [
-  { value: "187", label: "tests across seven files" },
-  { value: "0", label: "framework dependencies" },
-  { value: "5s", label: "specified drain before exit" },
-  { value: "3", label: "runtimes: browser, Node, Bun" },
+  { value: "892", label: "tests across six packages" },
+  { value: "599,184", label: "event sequences the kill switch is proven over" },
+  { value: "5s", label: "drain before a revoked process exits" },
+  { value: "0", label: "keys on the server that can decrypt a secret" },
 ] as const;
 
 export function StatsStrip() {

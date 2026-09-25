@@ -1,26 +1,30 @@
+import Link from "next/link";
+
+import { CommandCta } from "@/components/landing/command-cta";
+import { ROUTES } from "@/components/landing/links";
 import { Reveal } from "@/components/landing/motion";
 import {
   Container,
   Eyebrow,
   SectionHeading,
-  primaryAction,
-  secondaryAction,
+  focusRing,
 } from "@/components/landing/primitives";
 
 /**
- * The closing card.
+ * The closing card. The third and last appearance of the command on this site.
  *
- * WHAT IT ASKS FOR, AND WHY IT IS NOT "GET STARTED". Every other landing page
- * in this category closes by asking for a signup. This one cannot: there is no
- * release, no published package and no upgrade path, so a signup would be
- * collecting an address against a product that does not exist and the visitor
- * would find that out on the next screen.
+ * ONE HONEST NEXT ACTION, PLUS A QUIETER ONE. The command goes to the
+ * quickstart, which opens by saying Sluice is not on npm and shows the clone
+ * that works today. Nothing here collects an email address, because there is no
+ * release to notify anyone about and no email delivery to do it with, and a
+ * waitlist form on a page whose whole argument is "we do not overclaim" would
+ * be the single loudest contradiction on the site.
  *
- * What it asks for instead is the thing the project genuinely needs at this
- * stage, which is adversarial reading. "Read the threat model before you read
- * the code" is a real instruction with a real destination, and it is a stronger
- * close than a disabled signup form because it is the only ask on the page that
- * a security-minded reader will actually respect.
+ * The second link is to `/security`, deliberately quiet and deliberately
+ * present. A meaningful share of the people who reach the bottom of this page
+ * are not going to run anything next; they are going to go looking for the
+ * reason to say no. Sending them somewhere better than a search engine is worth
+ * more than pretending they do not exist.
  *
  * The glow is anchored below the card and bleeds up through it, which is the
  * one place on the page where light comes from beneath. That is deliberate: it
@@ -35,42 +39,43 @@ export function FinalCta() {
             aria-hidden="true"
             className="pointer-events-none absolute bottom-[-260px] left-1/2 h-[420px] w-[760px] -translate-x-1/2"
             style={{
-              background:
-                "radial-gradient(ellipse, rgb(37 99 235 / 0.55), transparent 65%)",
+              background: "radial-gradient(ellipse, var(--glow-brand), transparent 65%)",
               filter: "blur(20px)",
             }}
           />
 
           <div className="relative">
             <div className="flex justify-center">
-              <Eyebrow>Start here</Eyebrow>
+              <Eyebrow>Run it</Eyebrow>
             </div>
 
             <SectionHeading
               id="final-cta-heading"
               className="ink mx-auto mt-5 max-w-[20ch]"
             >
-              Read the threat model before you read the code.
+              Put it in front of one process and see.
             </SectionHeading>
 
-            <p className="mx-auto mt-5 max-w-[46ch] text-[17px] leading-relaxed text-text-muted">
-              Then clone it, break it, and tell us where it bends.
+            <p className="mx-auto mt-5 max-w-[52ch] text-[17px] leading-relaxed text-text-muted">
+              The quickstart installs the CLI from a clone, because nothing is on
+              npm yet, and gets you from an empty environment to a revoked
+              process without touching your application code.
             </p>
 
-            <div className="mt-9 flex flex-wrap justify-center gap-3">
-              <a
-                href="#quickstart"
-                className={`${primaryAction} h-11 rounded-full px-5 text-[15px]`}
-              >
-                Clone and run the tests
-              </a>
-              <a
-                href="#threat-model"
-                className={`${secondaryAction} h-11 rounded-full px-5 text-[15px]`}
-              >
-                Threat model
-              </a>
+            <div className="mt-9 flex flex-wrap justify-center gap-4">
+              <CommandCta size="md" />
             </div>
+
+            <p className="mt-7 text-[16px] text-text-muted">
+              Looking for a reason to say no?{" "}
+              <Link
+                href={ROUTES.security}
+                className={`cursor-pointer rounded-input text-brand underline underline-offset-4 transition-colors hover:text-brand-hover ${focusRing}`}
+              >
+                Read the threat model first
+              </Link>
+              .
+            </p>
           </div>
         </Reveal>
       </Container>
