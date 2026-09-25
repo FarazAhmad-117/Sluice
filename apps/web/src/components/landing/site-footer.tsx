@@ -1,9 +1,14 @@
+import Link from "next/link";
+
 import {
   CONTRIBUTING_URL,
   IMPLEMENTATION_PLAN_URL,
+  ISSUES_URL,
   LICENCE_URL,
   README_URL,
   REPO_URL,
+  ROUTES,
+  SECURITY_CONTACT,
   SECURITY_URL,
 } from "@/components/landing/links";
 import { Container, focusRing } from "@/components/landing/primitives";
@@ -13,17 +18,23 @@ import { Wordmark } from "@/components/landing/wordmark";
 /**
  * Footer.
  *
- * Layout family: a link grid, which nothing else on the page uses. No version
+ * Layout family: a link grid, which nothing else on the site uses. No version
  * string, no locale or time strip, no status dot, no build hash. The only
  * things here are destinations and the licence.
  *
- * There is no sponsors section above this one. See the report: GitHub Sponsors
- * is not enabled for this account, there is no FUNDING.yml and no Open
- * Collective, so an invitation to sponsor would have had nowhere to point.
+ * IT CARRIES WHAT THE HEADER DOES NOT. The navigation bar shows three
+ * destinations; this shows eleven, including the contributor-facing ones. That
+ * split is the whole reason a multi-page site can keep a four-item header: a
+ * reader who wants `CONTRIBUTING.md` will look down here, and a reader
+ * evaluating the product never has to walk past it.
+ *
+ * The security contact is written out rather than hidden behind a "contact us".
+ * It is the only address on the site and it is the same one `SECURITY.md`
+ * gives.
  *
  * ON THE GIANT WORDMARK. It is set in the display serif at up to 340px, clipped
  * to a gradient that fades out before the baseline, and pushed half off the
- * bottom of the document. It is the one purely expressive thing on the page and
+ * bottom of the document. It is the one purely expressive thing on the site and
  * it earns its place by being the LAST thing: a reader who reaches it has
  * finished, and a page that ends on a link grid ends on admin. It parallaxes
  * gently against the scroll, which is what stops it reading as a watermark.
@@ -38,31 +49,29 @@ type FooterLink = { label: string; href: string; external: boolean };
 
 const GROUPS: { title: string; links: FooterLink[] }[] = [
   {
+    title: "Product",
+    links: [
+      { label: "How it works", href: ROUTES.howItWorks, external: false },
+      { label: "Security", href: ROUTES.security, external: false },
+      { label: "Status", href: ROUTES.status, external: false },
+    ],
+  },
+  {
     title: "Project",
     links: [
+      { label: "Open source", href: ROUTES.openSource, external: false },
       { label: "GitHub", href: REPO_URL, external: true },
-      { label: "Readme", href: README_URL, external: true },
-      {
-        label: "Implementation plan",
-        href: IMPLEMENTATION_PLAN_URL,
-        external: true,
-      },
+      { label: "Licence", href: LICENCE_URL, external: true },
+      { label: "Contributing", href: CONTRIBUTING_URL, external: true },
     ],
   },
   {
-    title: "Security",
+    title: "Reference",
     links: [
       { label: "Security policy", href: SECURITY_URL, external: true },
-      { label: "Threat model", href: "#threat-model", external: false },
-      { label: "Kill switch", href: "#revocation", external: false },
-    ],
-  },
-  {
-    title: "Contribute",
-    links: [
-      { label: "Contributing", href: CONTRIBUTING_URL, external: true },
-      { label: "Issues", href: `${REPO_URL}/issues`, external: true },
-      { label: "Licence", href: LICENCE_URL, external: true },
+      { label: "Implementation plan", href: IMPLEMENTATION_PLAN_URL, external: true },
+      { label: "Readme", href: README_URL, external: true },
+      { label: "Issues", href: ISSUES_URL, external: true },
     ],
   },
 ];
@@ -77,9 +86,18 @@ export function SiteFooter() {
           <p className="text-[1.0625rem] font-semibold tracking-[-0.02em] text-text-primary">
             Sluice
           </p>
-          <p className="mt-3 max-w-[34ch] text-sm leading-relaxed text-text-muted">
+          <p className="mt-3 max-w-[34ch] text-base leading-relaxed text-text-muted">
             Zero-knowledge environment variable delivery, with cryptographically
             signed revocation of live processes. Pre-release.
+          </p>
+          <p className="mt-5 text-base leading-relaxed text-text-muted">
+            Report a vulnerability:{" "}
+            <a
+              href={`mailto:${SECURITY_CONTACT}`}
+              className={`cursor-pointer rounded-input text-brand underline underline-offset-4 transition-colors hover:text-brand-hover ${focusRing}`}
+            >
+              {SECURITY_CONTACT}
+            </a>
           </p>
         </div>
 
@@ -94,15 +112,20 @@ export function SiteFooter() {
             <ul className="mt-4 space-y-3">
               {group.links.map((link) => (
                 <li key={link.label}>
-                  <a
-                    href={link.href}
-                    className={footerLink}
-                    {...(link.external
-                      ? { target: "_blank", rel: "noreferrer noopener" }
-                      : {})}
-                  >
-                    {link.label}
-                  </a>
+                  {link.external ? (
+                    <a
+                      href={link.href}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      className={footerLink}
+                    >
+                      {link.label}
+                    </a>
+                  ) : (
+                    <Link href={link.href} className={footerLink}>
+                      {link.label}
+                    </Link>
+                  )}
                 </li>
               ))}
             </ul>

@@ -25,10 +25,18 @@ const instrumentSerif = Instrument_Serif({
   variable: "--font-instrument-serif",
 });
 
+/**
+ * Every page sets its own title, so the template here only catches a route
+ * that forgets to. `default` is what a crawler gets for the root layout itself.
+ * Nothing in this description is a claim the site does not make elsewhere.
+ */
 export const metadata: Metadata = {
-  title: "Sluice",
+  title: {
+    default: "Sluice",
+    template: "%s",
+  },
   description:
-    "Zero-knowledge environment variable delivery with instant signed revocation.",
+    "Zero-knowledge environment variable delivery with signed revocation that reaches running processes. Pre-release, Apache-2.0, not third-party audited yet.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
