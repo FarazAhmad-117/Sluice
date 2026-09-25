@@ -9,59 +9,69 @@ import {
 } from "@/components/landing/primitives";
 
 /**
- * Threat model, from Implementation_Plan.md section 2.
+ * The threat model, close to verbatim from `SECURITY.md`.
  *
  * Both lists, side by side, symmetric. The second column is not softened and is
- * not shorter than it is in the plan. A zero-knowledge claim with no named
+ * not shorter than it is in the file. A zero-knowledge claim with no named
  * adversary is marketing, and a security reader who cannot find the limits
  * assumes they were hidden rather than absent.
  *
- * The two panels are deliberately identical in construction -- same padding,
- * same row rhythm, same header shape -- and differ only in the tick or cross
- * and the colour of it. Any asymmetry here would be read as an argument, and
- * the argument this section is making is that both lists are equally real.
+ * The two panels are deliberately identical in construction: same padding, same
+ * row rhythm, same header shape, differing only in the tick or cross and the
+ * colour of it. Any asymmetry here would be read as an argument, and the
+ * argument this section makes is that both lists are equally real.
  *
- * Eyebrow 2 of 2 on the page.
+ * WHAT IS DELIBERATELY NOT IN THE RIGHT-HAND PANEL. Account enumeration, which
+ * `SECURITY.md` lists here, is on this page in the limitations section instead,
+ * because it is a consequence of a signup flow that has no email delivery
+ * behind it yet rather than a property of the design. Stating it in both places
+ * would put two phrasings of the same fact on one page, which is the exact
+ * failure this site's honesty rules exist to prevent.
  */
 
 const DEFENDED = [
-  ["A stolen database dump or backup", "Ciphertext only. No key material is stored alongside it."],
+  ["A database dump or backup theft", "Ciphertext only. No key material in the database."],
   [
-    "A malicious or legally compelled operator",
-    "No decryption key ever reaches the people running Sluice.",
+    "A malicious or legally compelled operator, including the maintainer",
+    "No decryption key ever reaches the server.",
   ],
   ["A compromise of the Convex platform", "The same answer. There is no key there to take."],
   ["A network attacker with TLS stripped", "Payloads are already encrypted end to end."],
-  ["A stolen service token", "Revocable, and scoped to a single environment."],
-  ["A server pushing forged revocations", "Notices are signed by keys the customer holds."],
+  ["A stolen service token", "Instantly revocable, and scoped to one environment."],
+  [
+    "A malicious server pushing fake revocations",
+    "Revocation notices are signed by customer-held keys.",
+  ],
   [
     "An insider at a customer organisation",
-    "Role checks, an audit log, and a separate key per environment.",
+    "Role-based access control, an audit log, and per-environment key separation.",
   ],
 ] as const;
 
 const NOT_DEFENDED = [
   [
     "A compromised client device",
-    "If an admin's laptop is owned, their keys are owned. Sluice cannot tell the admin from malware running in the same window.",
+    "If an admin's laptop is owned, their keys are owned. Sluice cannot tell the difference between the admin and malware running as the admin.",
   ],
   [
     "Malicious JavaScript served to the web dashboard",
-    "The unsolved problem of browser-based end-to-end encryption. A compromised server can serve a build that exfiltrates the master unlock key. CSP, subresource integrity, reproducible builds and a transparency log narrow the window and make tampering detectable afterwards. They do not eliminate the attack.",
+    "This is the unsolved problem of browser-based end-to-end encryption. A compromised server can serve a dashboard build that exfiltrates the master unlock key. Strict CSP, subresource integrity, reproducible builds and a code transparency log reduce the window and make tampering detectable after the fact. They do not eliminate the attack. The planned answer is to make the CLI the trust anchor, and to document that security-critical operations belong there rather than in a browser.",
   ],
   [
     "A workload that has already decrypted a value",
-    "Once a process has a secret it can log it, leak it or send it anywhere. Sluice controls delivery, not use.",
+    "Once a process decrypts a secret, that process can leak it, log it, or send it anywhere. Sluice controls delivery, not use.",
   ],
   [
     "A customer choosing a weak password",
-    "The key hierarchy is rooted in a password-derived key, so a weak password is a weak root. A minimum length and SSO-backed wrapping are both planned, and neither saves a password that is guessable.",
+    "The key hierarchy is rooted in a password-derived key, so a weak password is a weak root. Nothing enforces a minimum today. A strength gate and SSO-backed key wrapping are both planned, and neither saves a password that is guessable: the salt is derived from a public user id, so the password is the only entropy in the key.",
+  ],
+  [
+    "A measured timing difference on login",
+    "A login for a known address is consistently 0.08 to 0.15 ms slower than one for an unknown address, about 5 to 8 percent, because the known path materialises a user document while the unknown path resolves an empty index range. The error payload is byte identical in both cases. It sits far below network jitter, so it is not extractable from a single sample, and it is extractable with enough of them. Measured rather than assumed.",
   ],
 ] as const;
 
-const TICK = (
-  <path d="M5 12l5 5 9-10" />
-);
+const TICK = <path d="M5 12l5 5 9-10" />;
 const CROSS = <path d="M6 6l12 12M18 6 6 18" />;
 
 function Panel({
@@ -134,10 +144,8 @@ function Panel({
               {tone === "defended" ? TICK : CROSS}
             </svg>
             <div>
-              <dt className="text-[14.5px] font-medium text-text-primary">{adversary}</dt>
-              <dd className="mt-1 text-[13.5px] leading-relaxed text-text-muted">
-                {detail}
-              </dd>
+              <dt className="text-[16px] font-medium text-text-primary">{adversary}</dt>
+              <dd className="mt-1 text-[16px] leading-relaxed text-text-muted">{detail}</dd>
             </div>
           </div>
         ))}
@@ -149,15 +157,6 @@ function Panel({
 export function ThreatModel() {
   return (
     <Section id="threat-model" labelledBy="threat-model-heading" className="overflow-hidden">
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-0"
-        style={{
-          background:
-            "radial-gradient(ellipse 60% 40% at 20% 0%, rgb(59 130 246 / 0.10), transparent 70%)",
-        }}
-      />
-
       <Container className="relative">
         <Reveal>
           <Eyebrow>Threat model</Eyebrow>
@@ -181,18 +180,18 @@ export function ThreatModel() {
             >
               SECURITY.md
             </a>
-            . The second one is not a to-do list &mdash; it is the cost of the
-            design.
+            , which is the source of truth for this page. The second list is not
+            a roadmap. It is the cost of the design.
           </p>
         </Reveal>
 
-        <div className="mt-16 grid gap-4 lg:grid-cols-2">
+        <div className="mt-14 grid gap-4 lg:grid-cols-2">
           <Reveal>
             <Panel
               id="threat-defended"
               tone="defended"
               title="Defended against"
-              note="Describes the architecture, not shipped software. Only the crypto core exists today."
+              note="Describes the architecture as built. Nothing here has been reviewed by a third party."
               rows={DEFENDED}
             />
           </Reveal>
@@ -208,11 +207,11 @@ export function ThreatModel() {
         </div>
 
         <Reveal delay={80}>
-          <p className="mt-8 max-w-180 text-[14.5px] leading-relaxed text-text-muted">
+          <p className="mt-8 max-w-180 text-[16px] leading-relaxed text-text-muted">
             The design has a standing cost too. Server-side secret scanning,
             server-side rotation of third-party credentials and push sync to
             other platforms cannot be built on a server that holds no key.
-            Anything needing plaintext runs on the customer&apos;s own machine.
+            Anything needing plaintext runs on your own machine.
           </p>
         </Reveal>
       </Container>
