@@ -1,7 +1,7 @@
 import { sha256 } from "@noble/hashes/sha256";
 import type { Argon2Backend, Argon2Params } from "./argon2";
 import { assertArgon2Output, assertConformantArgon2, nobleArgon2 } from "./argon2";
-import { concat, utf8 } from "./bytes";
+import { concat, randomBytes, utf8 } from "./bytes";
 import { INSPECT_CUSTOM } from "./internal";
 
 /**
@@ -19,10 +19,10 @@ import { INSPECT_CUSTOM } from "./internal";
  * guesses in parallel, because each parallel guess needs its own 64 MiB.
  *
  * Raising them later is also not free: the MUK is a pure function of
- * (password, userId, parameters), so any change here produces a DIFFERENT key
- * and every existing wrapped private key becomes unopenable. A future change
- * must be a versioned second derivation with a migration, never an edit to
- * these numbers.
+ * (password, account salt, parameters), so any change here produces a DIFFERENT
+ * key and every existing wrapped private key becomes unopenable. A future
+ * change must be a versioned second derivation with a migration, never an edit
+ * to these numbers.
  *
  * FROZEN, not merely `as const`. `as const` is a compile-time assertion and
  * erases to nothing; `ARGON2_PARAMS.m = 8` is a legal JavaScript statement that
@@ -36,49 +36,68 @@ export const ARGON2_PARAMS = Object.freeze({ m: 65536, t: 3, p: 4, dkLen: 32 } a
 /**
  * Domain separation label for the MUK salt, following the `sluice/...`
  * convention used by the HKDF `info` strings in `token.ts`, and versioned for
- * the same reason: bumping it to `/v2` would change every user's salt and
- * therefore every user's MUK, so a new derivation gets a new label rather than
- * an edit to this one.
+ * the same reason: any change to how the salt is built changes every user's
+ * MUK, so a new construction gets a new label rather than an edit to an old one.
+ *
+ * `/v1` hashed the account's normalised email address. `/v2` hashes a random
+ * per-account value instead (see {@link mukSalt}). v2 REPLACES v1 outright --
+ * there were no real accounts to migrate -- but it still takes a new label, so
+ * the two constructions can never produce the same salt from the same bytes and
+ * a v1 vector can never pass for a v2 one.
  */
-const SALT_LABEL = "sluice/muk-salt/v1";
+const SALT_LABEL = "sluice/muk-salt/v2";
 
 /**
- * Turns a user id into a fixed-width Argon2id salt.
+ * Width of the per-account salt, in bytes. Random, per account, public. Minted
+ * at signup and never changed.
  *
- * This exists because of a real, verified failure mode, not for tidiness.
- * `@noble/hashes` rejects any salt under 8 bytes outright:
- *
- *     argon2id(pw, utf8.encode("u1"), params)
- *     // Error: salt should be at least 8 bytes and less than 4 GB
- *
- * Using the raw user id as the salt would therefore CRASH SIGNUP for any user
- * whose id happens to be short -- a sequential id, a test fixture, a seed row.
- * The failure would appear at account creation, on the one code path that has
- * no fallback.
- *
- * Padding the id to 8 bytes was rejected: a pad is not injective. `"u1"` padded
- * with zeros is indistinguishable from a literal user id `"u1\0\0\0\0\0\0"`,
- * so two distinct users could share a salt, and a shared salt means two users
- * with the same password derive the same MUK.
- *
- * Requiring a minimum user id length was also rejected. The id is handed to us
- * by whatever issues account identifiers; making the ROOT OF THE KEY HIERARCHY
- * depend on an external system's id format means the day that format changes,
- * or a dev seeds a short id, signup breaks for real people.
- *
- * Hashing gives a constant 32-byte salt for every user, keeps distinct ids
- * distinct (SHA-256 preimage/collision resistance), and as a side effect stops
- * the salt width from leaking how long the user id is. The label prefix is
- * fixed-length ASCII, so `label || userId` is an unambiguous encoding: no user
- * id can shift the boundary or impersonate the label.
- *
- * The user id is deliberately NOT Unicode-normalised, unlike the password.
- * Normalisation is lossy, and two distinct account identifiers must never
- * collapse to the same salt. The id is an opaque machine-issued value that must
- * be used byte-exactly as the server stores it.
+ * 128 bits is the width RFC 9106 recommends for an Argon2 salt, and it is enough
+ * that no two accounts will ever draw the same one by chance.
  */
-function mukSalt(userId: string): Uint8Array {
-  return sha256(concat(utf8.encode(SALT_LABEL), utf8.encode(userId)));
+export const ACCOUNT_SALT_BYTES = 16;
+
+/**
+ * Mints a fresh account salt. Called ONCE, at signup, and the result is stored
+ * server-side next to the account; login fetches it back before deriving.
+ *
+ * The salt is PUBLIC. It is not a secret and needs no protection beyond
+ * integrity: the server hands it to anyone who asks to log in as the account.
+ * Its job is uniqueness, not secrecy -- it makes every account's Argon2id a
+ * different function, so an attacker cannot precompute one table of common
+ * passwords and run it against every stolen bundle at once.
+ *
+ * NEVER CHANGE AN ACCOUNT'S SALT. The MUK is a function of it, so a new salt is
+ * a new key and every private key wrapped under the old one becomes
+ * unopenable. Rotating it is a re-wrap operation, not an update to a column.
+ */
+export function newAccountSalt(): Uint8Array {
+  return randomBytes(ACCOUNT_SALT_BYTES);
+}
+
+/**
+ * Turns an account salt into the Argon2id salt.
+ *
+ * WHY THE SALT IS RANDOM, NOT THE ADDRESS. v1 derived the salt from the
+ * account's email, which had two costs. The salt was fully predictable, so an
+ * attacker could precompute guesses against a known target before ever stealing
+ * anything. And the key was welded to the address: changing an account's email
+ * would have changed its MUK and orphaned every key it holds. A random value
+ * minted at signup has neither problem. It adds real entropy against
+ * precomputation, and the email becomes an ordinary mutable field.
+ *
+ * WHY IT IS STILL HASHED WITH A LABEL, when the input is already sixteen random
+ * bytes. Not for width: the account salt is a fixed 16 bytes and comfortably
+ * clears `@noble/hashes`' 8-byte minimum on its own. The hash is there for
+ * domain separation. The same random bytes could, through a future bug or a
+ * careless reuse, end up as input to some other derivation in this package; the
+ * label guarantees that the MUK salt built from them is unrelated to anything
+ * else built from them. It also keeps the Argon2 salt a fixed 32 bytes whatever
+ * the account salt's width ever becomes, and puts the version into the
+ * construction itself, where the known-answer vector pins it. The label is
+ * fixed-length ASCII, so `label || accountSalt` is an unambiguous encoding.
+ */
+function mukSalt(accountSalt: Uint8Array): Uint8Array {
+  return sha256(concat(utf8.encode(SALT_LABEL), accountSalt));
 }
 
 /** The MUK is exactly the Argon2id output width. Stated once, enforced once. */
@@ -163,7 +182,17 @@ export class MasterUnlockKey {
 }
 
 /**
- * Derives the Master Unlock Key from a password and a user id.
+ * Derives the Master Unlock Key from a password and the account's salt.
+ *
+ * THE SALT COMES FROM THE SERVER, NOT FROM THE USER. It is minted once by
+ * {@link newAccountSalt} at signup and stored beside the account; login fetches
+ * it before deriving. It is public, so fetching it reveals nothing, and because
+ * it is not the email address, an address change leaves the key untouched.
+ *
+ * A SERVER-SUPPLIED SALT IS NOT TRUSTED TO BE WELL-FORMED. It must be exactly
+ * {@link ACCOUNT_SALT_BYTES} bytes, checked before any work. A wrong-width salt
+ * is a bug upstream -- a hex string not decoded, a column truncated -- and it
+ * would otherwise derive a perfectly plausible wrong key.
  *
  * THE MUK NEVER LEAVES THE CLIENT. It is never sent to a server, never written
  * to a log, never persisted, and nothing in this package may serialise it. It
@@ -213,7 +242,7 @@ export interface DeriveMUKOptions {
 
 export async function deriveMUK(
   password: string,
-  userId: string,
+  accountSalt: Uint8Array,
   options?: DeriveMUKOptions,
 ): Promise<MasterUnlockKey> {
   // Both guards run before the derivation, not after. An empty password is
@@ -221,7 +250,13 @@ export async function deriveMUK(
   // make every rejected attempt cost a full multi-second grind on the user's
   // own device.
   if (password.length === 0) throw new Error("password must not be empty");
-  if (userId.length === 0) throw new Error("userId must not be empty");
+  // A runtime check, not just the type, because this signature used to take a
+  // string -- the email -- and a JavaScript caller or a cast still written
+  // against it must fail here rather than derive the key it was meant to stop
+  // deriving.
+  if (!(accountSalt instanceof Uint8Array) || accountSalt.length !== ACCOUNT_SALT_BYTES) {
+    throw new Error(`accountSalt must be ${ACCOUNT_SALT_BYTES} bytes`);
+  }
 
   // NFC, per RFC 8265 (PRECIS OpaqueString), and the choice is permanent.
   // "café" and "café" are the same word to the user and to the
@@ -248,7 +283,7 @@ export async function deriveMUK(
   // every subsequent derivation in the process will read.
   const params: Argon2Params = Object.freeze({ ...ARGON2_PARAMS });
 
-  const out = await backend(utf8.encode(password.normalize("NFC")), mukSalt(userId), params);
+  const out = await backend(utf8.encode(password.normalize("NFC")), mukSalt(accountSalt), params);
 
   // Re-checked at the seam, not merely by the constructor. The constructor
   // says "32 bytes"; this says which component broke, which is the difference

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { argon2id } from "@noble/hashes/argon2";
 import { assertConformantArgon2 } from "../src/argon2";
 import type { Argon2Backend } from "../src/argon2";
-import { toHex, utf8 } from "../src/bytes";
+import { fromHex, toHex, utf8 } from "../src/bytes";
 import { ARGON2_PARAMS, deriveMUK } from "../src/muk";
 
 /**
@@ -29,9 +29,9 @@ import { ARGON2_PARAMS, deriveMUK } from "../src/muk";
  */
 
 /** Same vector as `muk.test.ts`. Restated, not imported, so a change to either file is a failing test rather than a silent edit propagated to both. */
-const KAT_PASSWORD = "correct horse battery staple";
-const KAT_USER_ID = "u1";
-const KAT_MUK = "dfee4c58ca2653a1b5ae9a64cd3743c1cb33b26f2a6a537715f26e84cfd5b588";
+const KAT_PASSWORD = "correct horse battery staple, v2";
+const ACCOUNT_SALT = fromHex("303132333435363738393a3b3c3d3e3f");
+const KAT_MUK = "633977bb9b6fec724f6574028da06c834895735198e653c3f8a95cb28d70436c";
 
 const DERIVE_BUDGET_MS = 600_000;
 
@@ -130,7 +130,7 @@ describe("assertConformantArgon2", () => {
 describe("deriveMUK backend injection", () => {
   it("refuses to derive with a non-conformant backend", async () => {
     const backend: Argon2Backend = (_pw, _salt, p) => new Uint8Array(p.dkLen).fill(7);
-    await expect(deriveMUK(KAT_PASSWORD, KAT_USER_ID, { argon2: backend })).rejects.toThrow(
+    await expect(deriveMUK(KAT_PASSWORD, ACCOUNT_SALT, { argon2: backend })).rejects.toThrow(
       /conformance/i,
     );
   });
@@ -146,7 +146,7 @@ describe("deriveMUK backend injection", () => {
     const { argon2i } = await import("@noble/hashes/argon2");
     const backend: Argon2Backend = (pw, salt, p) =>
       argon2i(pw, salt, { m: p.m, t: p.t, p: p.p, dkLen: p.dkLen });
-    await expect(deriveMUK(KAT_PASSWORD, KAT_USER_ID, { argon2: backend })).rejects.toThrow(
+    await expect(deriveMUK(KAT_PASSWORD, ACCOUNT_SALT, { argon2: backend })).rejects.toThrow(
       /conformance/i,
     );
   });
@@ -157,7 +157,7 @@ describe("deriveMUK backend injection", () => {
       called = true;
       return new Uint8Array(p.dkLen);
     };
-    await expect(deriveMUK("", KAT_USER_ID, { argon2: backend })).rejects.toThrow(/password/i);
+    await expect(deriveMUK("", ACCOUNT_SALT, { argon2: backend })).rejects.toThrow(/password/i);
     expect(called).toBe(false);
   });
 
@@ -175,7 +175,7 @@ describe("deriveMUK backend injection", () => {
     };
     // Conformance runs first and calls the backend with the cheap vectors, so
     // `seen` is overwritten by the real call that follows.
-    await deriveMUK(KAT_PASSWORD, KAT_USER_ID, { argon2: backend });
+    await deriveMUK(KAT_PASSWORD, ACCOUNT_SALT, { argon2: backend });
     expect(seen).toEqual({ m: 65536, t: 3, p: 4, dkLen: 32 });
     expect(Object.isFrozen(seen)).toBe(true);
     expect(() => {
@@ -205,7 +205,7 @@ describe("deriveMUK backend injection", () => {
   it("derives the pinned known-answer vector through the seam", async () => {
     const viaSeam: Argon2Backend = (pw, salt, p) =>
       argon2id(pw, salt, { m: p.m, t: p.t, p: p.p, dkLen: p.dkLen });
-    const key = await deriveMUK(KAT_PASSWORD, KAT_USER_ID, { argon2: viaSeam });
+    const key = await deriveMUK(KAT_PASSWORD, ACCOUNT_SALT, { argon2: viaSeam });
     expect(toHex(key.bytes)).toBe(KAT_MUK);
   }, DERIVE_BUDGET_MS);
 
@@ -220,7 +220,7 @@ describe("deriveMUK backend injection", () => {
       await Promise.resolve();
       return argon2id(pw, salt, { m: p.m, t: p.t, p: p.p, dkLen: p.dkLen });
     };
-    const key = await deriveMUK(KAT_PASSWORD, KAT_USER_ID, { argon2: asyncBackend });
+    const key = await deriveMUK(KAT_PASSWORD, ACCOUNT_SALT, { argon2: asyncBackend });
     expect(toHex(key.bytes)).toBe(KAT_MUK);
   }, DERIVE_BUDGET_MS);
 
@@ -259,8 +259,8 @@ describe("deriveMUK backend injection", () => {
     const NFC = "café latte"; // é as a single precomposed code point
     const NFD = "café latte"; // e + U+0301 COMBINING ACUTE ACCENT
     expect(NFC).not.toBe(NFD);
-    await expect(deriveMUK(NFC, KAT_USER_ID, { argon2: recorder })).rejects.toThrow(/captured/);
-    await expect(deriveMUK(NFD, KAT_USER_ID, { argon2: recorder })).rejects.toThrow(/captured/);
+    await expect(deriveMUK(NFC, ACCOUNT_SALT, { argon2: recorder })).rejects.toThrow(/captured/);
+    await expect(deriveMUK(NFD, ACCOUNT_SALT, { argon2: recorder })).rejects.toThrow(/captured/);
 
     expect(seen).toHaveLength(2);
     expect(seen[0]).toBe(seen[1]);

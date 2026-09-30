@@ -1,6 +1,12 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { toHex } from "../src/bytes";
-import { ARGON2_PARAMS, deriveMUK, MasterUnlockKey } from "../src/muk";
+import { fromHex, toHex } from "../src/bytes";
+import {
+  ACCOUNT_SALT_BYTES,
+  ARGON2_PARAMS,
+  deriveMUK,
+  MasterUnlockKey,
+  newAccountSalt,
+} from "../src/muk";
 
 /**
  * Node's formatter (and therefore `console.log`) looks up exactly this symbol
@@ -33,22 +39,32 @@ function inspectLike(value: object): string {
 const DERIVE_BUDGET_MS = 600_000;
 
 /**
- * Pinned answer for `deriveMUK("correct horse battery staple", "u1")`.
+ * Pinned answer for `deriveMUK(KAT_PASSWORD, ACCOUNT_SALT)`.
  *
- * Computed from the SPEC of the construction -- Argon2id over the NFC-normalised
- * password with a salt of `sha256("sluice/muk-salt/v1" || userId)` at
- * m=65536 t=3 p=4 dkLen=32 -- before `src/muk.ts` existed, using a standalone
- * script, so it is an independent check and not an echo of the implementation.
+ * Computed from the SPEC of the construction, not from `src/muk.ts`: the Argon2
+ * salt is `sha256(utf8("sluice/muk-salt/v2") || accountSalt)`, which for these
+ * sixteen bytes is `d32869c2...6d5950f3`, fed to hash-wasm's Argon2id -- a
+ * different implementation from the `@noble/hashes` default -- at m=65536 t=3
+ * p=4 dkLen=32. Agreement is therefore evidence about the construction, not an
+ * echo of the code under test.
  *
  * This single value pins the parameters, the salt label, the salt construction
  * and the normalisation form all at once. If any of them is ever changed, every
  * existing account's MUK changes with it and every account becomes
  * unrecoverable; this vector is the tripwire that makes that change impossible
- * to land by accident.
+ * to land by accident. If it ever disagrees with the implementation, the
+ * implementation is what moved.
+ *
+ * The salt is a readable run of bytes (0x30..0x3f, ASCII "0".."?") rather than
+ * random ones so the vector can be reproduced by hand from this comment.
  */
-const KAT_PASSWORD = "correct horse battery staple";
-const KAT_USER_ID = "u1";
-const KAT_MUK = "dfee4c58ca2653a1b5ae9a64cd3743c1cb33b26f2a6a537715f26e84cfd5b588";
+const KAT_PASSWORD = "correct horse battery staple, v2";
+const ACCOUNT_SALT = fromHex("303132333435363738393a3b3c3d3e3f");
+// hash-wasm Argon2id over the v2 salt; independent of @noble/hashes.
+const KAT_MUK_V2 = "633977bb9b6fec724f6574028da06c834895735198e653c3f8a95cb28d70436c";
+
+/** A second account, differing from `ACCOUNT_SALT` in its last byte only. */
+const OTHER_ACCOUNT_SALT = fromHex("303132333435363738393a3b3c3d3e40");
 
 /** Same glyphs, different code points. A user can type either one. */
 const CAFE_NFC = "café latte";
@@ -62,7 +78,7 @@ const NON_LATIN_PASSWORD = "пароль-密码-パスワード";
 describe("deriveMUK", () => {
   let kat: MasterUnlockKey;
   let katAgain: MasterUnlockKey;
-  let otherUser: MasterUnlockKey;
+  let otherAccount: MasterUnlockKey;
   let otherPassword: MasterUnlockKey;
   let nfc: MasterUnlockKey;
   let nfd: MasterUnlockKey;
@@ -72,27 +88,17 @@ describe("deriveMUK", () => {
   let nonLatin: MasterUnlockKey;
 
   beforeAll(async () => {
-    kat = await deriveMUK(KAT_PASSWORD, KAT_USER_ID);
-    katAgain = await deriveMUK(KAT_PASSWORD, KAT_USER_ID);
-    otherUser = await deriveMUK(KAT_PASSWORD, "usr_0123456789abcdef");
-    otherPassword = await deriveMUK("correct horse battery stapl", KAT_USER_ID);
-    nfc = await deriveMUK(CAFE_NFC, KAT_USER_ID);
-    nfd = await deriveMUK(CAFE_NFD, KAT_USER_ID);
-    long = await deriveMUK(LONG_PASSWORD, KAT_USER_ID);
-    spaced = await deriveMUK(SPACED_PASSWORD, KAT_USER_ID);
-    emoji = await deriveMUK(EMOJI_PASSWORD, KAT_USER_ID);
-    nonLatin = await deriveMUK(NON_LATIN_PASSWORD, KAT_USER_ID);
+    kat = await deriveMUK(KAT_PASSWORD, ACCOUNT_SALT);
+    katAgain = await deriveMUK(KAT_PASSWORD, ACCOUNT_SALT);
+    otherAccount = await deriveMUK(KAT_PASSWORD, OTHER_ACCOUNT_SALT);
+    otherPassword = await deriveMUK(KAT_PASSWORD.slice(0, -1), ACCOUNT_SALT);
+    nfc = await deriveMUK(CAFE_NFC, ACCOUNT_SALT);
+    nfd = await deriveMUK(CAFE_NFD, ACCOUNT_SALT);
+    long = await deriveMUK(LONG_PASSWORD, ACCOUNT_SALT);
+    spaced = await deriveMUK(SPACED_PASSWORD, ACCOUNT_SALT);
+    emoji = await deriveMUK(EMOJI_PASSWORD, ACCOUNT_SALT);
+    nonLatin = await deriveMUK(NON_LATIN_PASSWORD, ACCOUNT_SALT);
   }, DERIVE_BUDGET_MS);
-
-  /**
-   * The vector is UNCHANGED from before `MasterUnlockKey` existed. It reads
-   * through the new accessor, which is the point: wrapping the return value must
-   * not perturb a single derived byte. A change here means the derivation
-   * itself moved, which orphans every account that has ever signed up.
-   */
-  it("matches the pinned known-answer vector", () => {
-    expect(toHex(kat.bytes)).toBe(KAT_MUK);
-  });
 
   /**
    * The wrapper is the whole point of the type. A bare `Uint8Array` return
@@ -110,28 +116,21 @@ describe("deriveMUK", () => {
     expect(kat.bytes).toBeInstanceOf(Uint8Array);
   });
 
-  it("is deterministic for the same password and user id", () => {
+  it("is deterministic for the same password and account salt", () => {
     expect(toHex(katAgain.bytes)).toBe(toHex(kat.bytes));
   });
 
-  it("differs for a different user id with the same password", () => {
-    expect(toHex(otherUser.bytes)).not.toBe(toHex(kat.bytes));
+  /**
+   * The property the per-account salt is FOR. Two accounts that chose the same
+   * password must still derive different keys, or one precomputed table of
+   * common passwords would open both.
+   */
+  it("differs for a different account salt with the same password", () => {
+    expect(toHex(otherAccount.bytes)).not.toBe(toHex(kat.bytes));
   });
 
   it("differs for a password one character shorter", () => {
     expect(toHex(otherPassword.bytes)).not.toBe(toHex(kat.bytes));
-  });
-
-  /**
-   * The regression test for the salt. Argon2id itself refuses any salt under
-   * eight bytes, so passing the user id straight through as the salt would make
-   * `deriveMUK` throw for a user id like `"u1"` -- signup would crash for a real
-   * account. Hashing the id to a fixed 32-byte salt is what makes short ids
-   * work at all, and `kat` above is derived from exactly such an id.
-   */
-  it("accepts a user id far shorter than Argon2id's 8-byte salt minimum", () => {
-    expect(KAT_USER_ID.length).toBeLessThan(8);
-    expect(kat.bytes.length).toBe(32);
   });
 
   /**
@@ -160,9 +159,9 @@ describe("deriveMUK", () => {
    */
   it("does not expose a derived key through JSON.stringify", () => {
     const json = JSON.stringify({ event: "signup", muk: kat });
-    expect(json).not.toContain(KAT_MUK);
+    expect(json).not.toContain(KAT_MUK_V2);
     expect(json).not.toContain(`"0":${kat.bytes[0] as number}`);
-    expect(inspectLike(kat)).not.toContain(KAT_MUK);
+    expect(inspectLike(kat)).not.toContain(KAT_MUK_V2);
   });
 });
 
@@ -239,13 +238,49 @@ describe("MasterUnlockKey", () => {
   });
 });
 
-describe("deriveMUK input validation", () => {
-  it("rejects an empty password", async () => {
-    await expect(deriveMUK("", "u1")).rejects.toThrow(/password/i);
+/**
+ * Its own derivation rather than a read of `kat` above, so the vector stands
+ * alone: a reader who wants to know what the frozen construction produces finds
+ * the input, the output and the assertion in one place.
+ */
+describe("deriveMUK v2", () => {
+  it("matches the independent vector", async () => {
+    const muk = await deriveMUK("correct horse battery staple, v2", ACCOUNT_SALT);
+    expect(toHex(muk.bytes)).toBe(KAT_MUK_V2);
+  }, 60_000);
+
+  it("rejects a salt of the wrong width before doing any work", async () => {
+    await expect(deriveMUK("pw", new Uint8Array(15))).rejects.toThrow(
+      `accountSalt must be ${ACCOUNT_SALT_BYTES} bytes`,
+    );
   });
 
-  it("rejects an empty user id", async () => {
-    await expect(deriveMUK("correct horse battery staple", "")).rejects.toThrow(/user ?id/i);
+  /**
+   * The old signature took a string, and every caller written against it still
+   * passes one. A JavaScript caller, or a TypeScript one behind a cast, must
+   * fail loudly rather than have its email flow on into the salt construction,
+   * where at best it throws somewhere obscure and at worst derives a key bound
+   * to the address -- exactly what this version removes.
+   */
+  it("rejects a string where bytes belong", async () => {
+    await expect(deriveMUK("pw", "user@example.com" as unknown as Uint8Array)).rejects.toThrow();
+  });
+});
+
+describe("newAccountSalt", () => {
+  it("is 16 random bytes", () => {
+    expect(newAccountSalt()).toHaveLength(16);
+    expect(toHex(newAccountSalt())).not.toBe(toHex(newAccountSalt()));
+  });
+});
+
+describe("deriveMUK input validation", () => {
+  it("rejects an empty password", async () => {
+    await expect(deriveMUK("", ACCOUNT_SALT)).rejects.toThrow(/password/i);
+  });
+
+  it("rejects an empty account salt", async () => {
+    await expect(deriveMUK(KAT_PASSWORD, new Uint8Array(0))).rejects.toThrow(/accountSalt/);
   });
 
   /**
@@ -255,7 +290,7 @@ describe("deriveMUK input validation", () => {
    */
   it("rejects invalid input without paying for a derivation", async () => {
     const started = Date.now();
-    await expect(deriveMUK("", "")).rejects.toThrow();
+    await expect(deriveMUK("", new Uint8Array(0))).rejects.toThrow();
     expect(Date.now() - started).toBeLessThan(1000);
   });
 });
