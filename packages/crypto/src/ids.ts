@@ -22,38 +22,65 @@ import { randomBytes, toHex } from "./bytes";
  * thing. A Convex document id fails too, which is what stops one sneaking back
  * into a binding.
  *
- * 128 random bits, lowercase hex. Uniqueness is enforced again by the server's
- * `by_uid` index; the entropy makes a collision a bug rather than an event.
+ * WHAT THE SERVER MAY ASSUME: NOTHING BEYOND THE SHAPE. 128 random bits,
+ * lowercase hex -- but a uid arrives from a client, and the server must treat
+ * it as attacker-chosen. The entropy only makes ACCIDENTAL collisions
+ * negligible; it does nothing against a client that copies somebody else's
+ * uid on purpose. Uniqueness is the server's job, enforced per deployment by
+ * the `by_uid` index. Any future path that moves or imports an org between
+ * cells must reject a uid already present in the target and must never upsert
+ * by uid, or a forged uid would let one org's rows land on another's.
+ * Ciphertext stays safe regardless: a copied uid is a label, not a key, and
+ * confers no ability to open anything bound to it.
  */
 export type IdKind = "org" | "usr" | "env";
 
 const ID_BYTES = 16;
 
 /**
- * One pattern per kind, anchored at both ends. Lowercase only, because these
- * strings go into associated data byte for byte: `env_…A…` and `env_…a…` name
- * the same random value and would seal to different AAD, so exactly one
- * spelling is accepted. `$` without the `m` flag matches only at end of input
- * in JavaScript, so a trailing newline is rejected too (the test pins that).
+ * One pattern per kind, anchored at both ends, with the length derived from
+ * ID_BYTES so minting and validation cannot disagree about it. Lowercase only,
+ * because these strings go into associated data byte for byte: `env_…A…` and
+ * `env_…a…` name the same random value and would seal to different AAD, so
+ * exactly one spelling is accepted. No flags: `$` without `m` matches only at
+ * end of input in JavaScript, so a trailing newline is rejected (the test pins
+ * that).
  */
+function pattern(kind: IdKind): RegExp {
+  return new RegExp(`^${kind}_[0-9a-f]{${ID_BYTES * 2}}$`);
+}
+
 const PATTERNS: Readonly<Record<IdKind, RegExp>> = Object.freeze({
-  org: /^org_[0-9a-f]{32}$/,
-  usr: /^usr_[0-9a-f]{32}$/,
-  env: /^env_[0-9a-f]{32}$/,
+  org: pattern("org"),
+  usr: pattern("usr"),
+  env: pattern("env"),
 });
 
+/**
+ * Routed through `assertId` so this function can never hand out an id the
+ * validator would refuse -- including for a kind that slipped past the type
+ * system at runtime.
+ */
 export function newId(kind: IdKind): string {
-  return `${kind}_${toHex(randomBytes(ID_BYTES))}`;
+  return assertId(kind, "id", `${kind}_${toHex(randomBytes(ID_BYTES))}`);
 }
 
 /**
- * Checks shape and kind. The value is never echoed: an id is not a secret, but
- * this guard runs on the path into associated data, and the rest of this
+ * Checks kind, then shape. The value is never echoed: an id is not a secret,
+ * but this guard runs on the path into associated data, and the rest of this
  * package refuses to print its inputs on principle.
+ *
+ * The kind check is a runtime check because the type is erased: a caller in
+ * plain JavaScript, or one casting through `unknown`, can pass anything, and
+ * an own-property test also keeps `"toString"` or `"__proto__"` from
+ * resolving to something on Object.prototype.
  */
 export function assertId(kind: IdKind, field: string, value: string): string {
+  if (!Object.prototype.hasOwnProperty.call(PATTERNS, kind)) {
+    throw new Error("kind must be org, usr or env");
+  }
   if (typeof value !== "string" || !PATTERNS[kind].test(value)) {
-    throw new Error(`${field} must be an ${kind} id`);
+    throw new Error(`${field} must be a well-formed ${kind} id`);
   }
   return value;
 }
