@@ -70,12 +70,21 @@ import * as api from "../src/index";
  * `WrappedKeyFormatError` and `EmailFormatError` are classes so that callers
  * can `instanceof` them to decide how to report a failure.
  *
+ * `newId`, `assertId`, `newAccountSalt` and `ACCOUNT_SALT_BYTES` ARE here,
+ * because a client mints every permanent id and the account salt before the
+ * mutation that stores them, and the server validates the same shapes on the
+ * way in. `ACCOUNT_SALT_BYTES` is the one `*_BYTES` constant exported: it is
+ * the width of a value that crosses the wire, which a client checks before
+ * spending an Argon2 run on a salt the server returned. `IdKind` is a type and
+ * so, like `PDKGranteeType`, invisible here.
+ *
  * `mukSalt`, `handshakeMessage`, `encode`, `assertValidNotice`, `importKey` and
  * the `*_INFO` / `*_PATTERN` / `*_BYTES` / `*_LABEL` constants stay private.
  * They are encoding and validation internals; anything that needs them is a
  * function that is itself exported.
  */
 const PUBLIC_SURFACE = [
+  "ACCOUNT_SALT_BYTES",
   "ARGON2_PARAMS",
   "EmailFormatError",
   "MasterUnlockKey",
@@ -83,6 +92,7 @@ const PUBLIC_SURFACE = [
   "VERSION",
   "WrappedKeyFormatError",
   "assertConformantArgon2",
+  "assertId",
   "constantTimeEqual",
   "decodeWrappedKey",
   "deriveAuthVerifier",
@@ -91,6 +101,8 @@ const PUBLIC_SURFACE = [
   "encodeWrappedKey",
   "fromHex",
   "mintToken",
+  "newAccountSalt",
+  "newId",
   "normaliseEmail",
   "parseToken",
   "pdkAssociatedData",

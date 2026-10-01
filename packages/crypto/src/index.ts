@@ -43,6 +43,28 @@ export { ARGON2_PARAMS, deriveMUK, MasterUnlockKey } from "./muk";
 export type { DeriveMUKOptions } from "./muk";
 
 /**
+ * The per-account salt `deriveMUK` takes. `newAccountSalt` is called once, at
+ * signup, by whichever client creates the account; `ACCOUNT_SALT_BYTES` is
+ * exported so a client can check the width of a salt the server hands back
+ * BEFORE spending an Argon2 run on it, and so the server's validator and the
+ * client's minting share one number. It is the one `*_BYTES` constant on this
+ * surface, because unlike the others it describes a value that crosses the
+ * wire rather than an internal of a construction.
+ */
+export { ACCOUNT_SALT_BYTES, newAccountSalt } from "./muk";
+
+/**
+ * Permanent, client-minted identifiers for orgs, users and environments.
+ * Exported because the client must mint them BEFORE the creation mutation --
+ * the keys it wraps for that mutation are bound to them -- and because the
+ * server must validate the same shape on the way in. `assertId` is the only
+ * validator; the per-kind patterns stay private for the reason the protocol
+ * prefixes do.
+ */
+export { assertId, newId } from "./ids";
+export type { IdKind } from "./ids";
+
+/**
  * The Argon2 injection seam. `assertConformantArgon2` is the ONE runtime name
  * added for it, and `nobleArgon2` -- the default backend -- is deliberately NOT
  * exported alongside it.

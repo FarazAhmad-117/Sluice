@@ -98,7 +98,8 @@ export function newAccountSalt(): Uint8Array {
  * address gets a decoy). A targeted attacker who can query the server gets the
  * real salt and can precompute against that one account before any breach. The
  * salt is not secret entropy. THE PASSWORD REMAINS THE ONLY SECRET INPUT, and
- * the Argon2id cost in {@link ARGON2_PARAMS} is the only thing slowing a guess.
+ * the Argon2id cost in {@link ARGON2_PARAMS} is the only thing slowing an
+ * offline guess.
  *
  * WHY IT IS STILL HASHED WITH A LABEL, when the input is already sixteen random
  * bytes. Not for width: the account salt is a fixed 16 bytes and comfortably
