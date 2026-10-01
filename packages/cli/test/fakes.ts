@@ -282,11 +282,11 @@ export async function tokenFixture(): Promise<Fixture> {
     pdk,
     pdkAssociatedData({
       environmentUid: ENVIRONMENT_UID,
+      pdkVersion: 1,
       granteeType: "token",
       granteeId: tokenIdHash({ tokenId: minted.tokenId }),
     }),
   );
-  const aad = secretAssociatedData({ environmentUid: ENVIRONMENT_UID });
 
   return {
     identity,
@@ -296,10 +296,16 @@ export async function tokenFixture(): Promise<Fixture> {
       const rows: RawSecretRow[] = [];
       let index = 0;
       for (const [name, value] of Object.entries(secrets)) {
-        const sealedName = await seal(pdk, utf8.encode(name), aad);
-        const sealedValue = await seal(pdk, utf8.encode(value), aad);
+        // Sealed exactly as a client seals them: the name and the value each
+        // under their own field, both bound to the secret's permanent id and
+        // its version.
+        const secretUid = "sec_" + index.toString(16).padStart(32, "0");
+        const bind = (field: "name" | "value") =>
+          secretAssociatedData({ environmentUid: ENVIRONMENT_UID, secretUid, version: 1, field });
+        const sealedName = await seal(pdk, utf8.encode(name), bind("name"));
+        const sealedValue = await seal(pdk, utf8.encode(value), bind("value"));
         rows.push({
-          secretId: `sec${index}`,
+          secretUid,
           lineageId: `lin${index}`,
           version: 1,
           pdkVersion: 1,

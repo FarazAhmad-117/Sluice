@@ -659,6 +659,47 @@ describe("Shell: availability, section 4.3", () => {
     expect(h.logger.has("bundle-unreadable")).toBe(true);
   });
 
+  it("shuts down on a valid notice carried by a bundle with a malformed row", async () => {
+    // The row's secret id and version feed associated data that THROWS on a
+    // malformed input. Neither that, nor a row that is not even an object,
+    // may stand between a signed notice and the exit.
+    const withRows = await fixture.bundleWith({ A: "b", C: "d" }, 2);
+    for (const badRow of [
+      { ...withRows.secrets[0]!, secretUid: "sec_not-a-real-id" },
+      { ...withRows.secrets[0]!, version: 0 },
+      null,
+    ]) {
+      const h = await booted({ drainMs: 0 });
+      h.source.emit({
+        ...withRows,
+        secrets: [badRow as (typeof withRows.secrets)[number], withRows.secrets[1]!],
+        revocationNotice: signedNotice(org, fixture.identity, { epoch: 3 }),
+      });
+      await flush(() => h.shell.busy);
+      expect(h.exits).toEqual([1]);
+      const unreadable = h.logger.lines.filter((line) => line.code === "bundle-unreadable");
+      expect(unreadable.length).toBeGreaterThan(0);
+      for (const line of unreadable) expect(line.message.startsWith("row-open:")).toBe(true);
+    }
+  });
+
+  it("does not exit on a bundle with a malformed row, and keeps the last good set", async () => {
+    const h = await booted();
+    const bootSet = h.core.lastKnownGood?.secrets;
+    const replacement = await fixture.bundleWith({ A: "b" }, 2);
+    h.source.emit({
+      ...replacement,
+      secrets: [{ ...replacement.secrets[0]!, secretUid: "sec_bad" }],
+    });
+    await flush(() => h.shell.busy);
+    await h.tick(MAX_CLOCK_STEP_MS * 3);
+    expect(h.exits).toEqual([]);
+    expect(h.core.lastKnownGood?.secrets).toEqual(bootSet);
+    const unreadable = h.logger.lines.filter((line) => line.code === "bundle-unreadable");
+    expect(unreadable).toHaveLength(1);
+    expect(unreadable[0]!.message.startsWith("row-open:")).toBe(true);
+  });
+
   it("still delivers a notice carried on a bundle whose environmentUid is malformed", async () => {
     const h = await booted({ drainMs: 0 });
     h.source.emit({
