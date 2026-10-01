@@ -11,6 +11,7 @@ import { SESSION_LIFETIME_MS, hashSessionToken } from "./lib/session";
 import {
   getSecret as getSecretRow,
   insertSecret as insertSecretRow,
+  patchSecret,
 } from "./repo/secrets";
 import { listAuditEventsByActor } from "./repo/audit";
 import {
@@ -765,7 +766,7 @@ describe("the ciphertext-only surface", () => {
 
     await expect(
       t.mutation(api.secrets.createSecret, secretArgs(alice, a.production)),
-    ).rejects.toThrow("This environment's organisation link is inconsistent. Nothing was written.");
+    ).rejects.toThrow("This record's organisation link is inconsistent. Nothing was written.");
 
     expect(
       await t.query(api.secrets.listSecrets, {
@@ -773,6 +774,41 @@ describe("the ciphertext-only surface", () => {
         environmentId: a.production,
       }),
     ).toEqual([]);
+  });
+
+  // `updateSecret` files the new version under the OLD ROW's `orgId`, which
+  // the walk (secret -> environment -> project -> org) never reads.
+  it("refuses an update when the secret's own org link disagrees with the walk", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, a, b } = await world(t);
+    const first = await t.mutation(
+      api.secrets.createSecret,
+      secretArgs(alice, a.production),
+    );
+    await t.run(async (ctx) =>
+      patchSecret(ctx, first.secretId, { orgId: b.orgId }),
+    );
+
+    await expect(
+      t.mutation(api.secrets.updateSecret, {
+        sessionToken: alice.sessionToken,
+        secretId: first.secretId,
+        nameCiphertext: "cc".repeat(24),
+        nameNonce: "555555555555555555555555",
+        valueCiphertext: "dd".repeat(40),
+        valueNonce: "666666666666666666666666",
+      }),
+    ).rejects.toThrow("This record's organisation link is inconsistent. Nothing was written.");
+
+    // No new version, and the old one is still current.
+    const live = await t.query(api.secrets.listSecrets, {
+      sessionToken: alice.sessionToken,
+      environmentId: a.production,
+    });
+    expect(live.map((row) => row.secretId)).toEqual([first.secretId]);
+    expect(live[0]?.version).toBe(1);
+    const row = await t.run(async (ctx) => getSecretRow(ctx, first.secretId));
+    expect(row?.supersededAt).toBeUndefined();
   });
 
   it("takes pdkVersion from the environment, not from the caller", async () => {

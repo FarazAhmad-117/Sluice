@@ -13,6 +13,7 @@ import {
   getServiceTokenByIdHash,
   listRevocationsByTokenIdHash,
   listRevocationsByTokenId,
+  patchServiceToken,
 } from "./repo/tokens";
 import {
   getPDKGrant,
@@ -251,17 +252,6 @@ describe("a token's wrapped project data key", () => {
     expect(grant?.nonce).toBe("0102030405060708090a0b0c");
   });
 
-  /**
-   * The grantee id for a token is its `tokenIdHash` and NOT its `serviceTokens`
-   * document id, for two reasons that both have to hold.
-   *
-   * The bundle knows an authenticated token only by its hash, so the hash is
-   * what the lookup has. And the CLIENT has to compute the same identifier to
-   * build the associated data it wraps under, before the document exists: it
-   * mints the token, so it can compute the hash and cannot know the id.
-   */
-  // Off the environment row the authorisation walk loaded, on both rows the
-  // mutation writes, and not an argument a caller could set.
   // The same invariant `createSecret` enforces: the copied org must be the
   // walked org, or nothing is written.
   it("refuses to register a token when the environment's org link is corrupt", async () => {
@@ -284,7 +274,7 @@ describe("a token's wrapped project data key", () => {
         wrappedPDK: "cc".repeat(48),
         pdkNonce: "0102030405060708090a0b0c",
       }),
-    ).rejects.toThrow("This environment's organisation link is inconsistent. Nothing was written.");
+    ).rejects.toThrow("This record's organisation link is inconsistent. Nothing was written.");
 
     const grants = await t.run(async (ctx) =>
       listPDKGrantsByEnvironment(ctx, environmentId),
@@ -292,6 +282,8 @@ describe("a token's wrapped project data key", () => {
     expect(grants.map((g) => g.granteeType)).toEqual(["user"]);
   });
 
+  // Off the environment row the authorisation walk loaded, on both rows the
+  // mutation writes, and not an argument a caller could set.
   it("records the environment's org on the token row and on its grant", async () => {
     const t = convexTest(schema, modules);
     const alice = await seedUser(t, "alice@example.test");
@@ -319,6 +311,15 @@ describe("a token's wrapped project data key", () => {
     expect(Object.keys(args.value)).not.toContain("orgId");
   });
 
+  /**
+   * The grantee id for a token is its `tokenIdHash` and NOT its `serviceTokens`
+   * document id, for two reasons that both have to hold.
+   *
+   * The bundle knows an authenticated token only by its hash, so the hash is
+   * what the lookup has. And the CLIENT has to compute the same identifier to
+   * build the associated data it wraps under, before the document exists: it
+   * mints the token, so it can compute the hash and cannot know the id.
+   */
   it("is keyed by tokenIdHash, the one identifier both ends can compute", async () => {
     const t = convexTest(schema, modules);
     const alice = await seedUser(t, "alice@example.test");
@@ -552,6 +553,37 @@ describe("revokeServiceToken", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.orgId).toBe(orgId);
     expect(rows[0]?.environmentId).toBe(environmentId);
+  });
+
+  // The revocation row is filed under `token.orgId`, which the walk (from
+  // `token.environmentId`) never reads. A correctly signed notice still
+  // refuses, and the token is left exactly as it was.
+  it("refuses to revoke when the token's own org link disagrees with the walk", async () => {
+    const t = convexTest(schema, modules);
+    const alice = await seedUser(t, "alice@example.test");
+    const mallory = await seedUser(t, "mallory@example.test");
+    const { keys, environmentId } = await tenant(t, alice, "acme");
+    const other = await tenant(t, mallory, "other");
+    const { minted, serviceTokenId } = await issue(t, alice, environmentId);
+    await t.run(async (ctx) =>
+      patchServiceToken(ctx, serviceTokenId, { orgId: other.orgId }),
+    );
+
+    const payload = notice(minted.upload.tokenId);
+    await expect(
+      t.mutation(api.tokens.revokeServiceToken, {
+        sessionToken: alice.sessionToken,
+        ...payload,
+        signature: toHex(signRevocation(keys.authSeed, payload)),
+      }),
+    ).rejects.toThrow("This record's organisation link is inconsistent. Nothing was written.");
+
+    const rows = await t.run(async (ctx) =>
+      listRevocationsByTokenIdHash(ctx, tokenIdHash({ tokenId: minted.tokenId })),
+    );
+    expect(rows).toEqual([]);
+    const row = await t.run(async (ctx) => getServiceToken(ctx, serviceTokenId));
+    expect(row?.status).toBe("active");
   });
 
   it("refuses a notice this organisation did not sign", async () => {

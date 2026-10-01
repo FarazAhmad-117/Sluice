@@ -231,19 +231,19 @@ export async function requireEnvironment(
  * -- by a bad migration, a buggy import, a hand edit -- the row would be
  * written under an org the caller was never authorised for, with no error.
  *
- * So every write that copies `orgId` off the environment checks it first and
- * refuses loudly. The message is fixed and names no id: it is reachable only
- * by a member of the walked org, but it is still about a row they cannot see
- * into.
+ * The same holds for every other denormalised `orgId`: `secrets.orgId` and
+ * `serviceTokens.orgId` are copies too, and the walk never reads them either
+ * (it starts from the row's `environmentId`). So every write that copies a
+ * denormalised orgId off any loaded row checks it against the walked org
+ * first, before anything is written, and refuses loudly. The message is fixed
+ * and names no id or table: it is reachable only by a member of the walked
+ * org, but it is still about a row they cannot see into.
  */
 export const ORG_LINK_CORRUPT =
-  "This environment's organisation link is inconsistent. Nothing was written.";
+  "This record's organisation link is inconsistent. Nothing was written.";
 
-export function assertEnvironmentInOrg(
-  environment: Doc<"environments">,
-  org: Doc<"orgs">,
-): void {
-  if (environment.orgId !== org._id) throw new ConvexError(ORG_LINK_CORRUPT);
+export function assertOrgLink(copied: Id<"orgs">, org: Doc<"orgs">): void {
+  if (copied !== org._id) throw new ConvexError(ORG_LINK_CORRUPT);
 }
 
 export async function requireSecret(

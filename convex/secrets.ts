@@ -7,7 +7,7 @@ import { recordUserEvent } from "./lib/audit";
 import {
   sessionArg,
   NOT_PERMITTED,
-  assertEnvironmentInOrg,
+  assertOrgLink,
   requireEnvironment,
   requireSecret,
 } from "./lib/authz";
@@ -301,7 +301,7 @@ export const createSecret = mutation({
     );
     // The copy of the org on the environment is about to be written onto the
     // new row, so it must be the org the walk authorised. See `authz.ts`.
-    assertEnvironmentInOrg(environment, org);
+    assertOrgLink(environment.orgId, org);
     // Before any validation and before the lineage is minted, so a caller with
     // no key cannot consume a lineage id or learn anything from the order in
     // which their arguments were rejected.
@@ -360,6 +360,12 @@ export const updateSecret = mutation({
       args.sessionToken,
       args.secretId,
     );
+    // The new version is filed under `secret.orgId`, and the walk reached the
+    // org through `secret.environmentId`, never through that column. Both
+    // denormalised copies on the path must name the org membership was checked
+    // against, before anything is read further or written. See `authz.ts`.
+    assertOrgLink(secret.orgId, org);
+    assertOrgLink(environment.orgId, org);
     // On the environment the row ALREADY belongs to, read off the row, never
     // from an argument. A grant on some other environment is not a key for
     // this one, and `updateSecret` takes no environment id precisely so that

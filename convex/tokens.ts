@@ -10,7 +10,7 @@ import { recordUserEvent } from "./lib/audit";
 import {
   sessionArg,
   NOT_PERMITTED,
-  assertEnvironmentInOrg,
+  assertOrgLink,
   requireEnvironment,
   requireSession,
 } from "./lib/authz";
@@ -160,7 +160,7 @@ export const createServiceToken = mutation({
 
     // `environment.orgId` is about to be copied onto the token and its grant,
     // so it must be the org the walk authorised. See `authz.ts`.
-    assertEnvironmentInOrg(environment, org);
+    assertOrgLink(environment.orgId, org);
 
     // Before any validation and before the token id is hashed, so a caller with
     // no key cannot learn anything from the order in which their arguments were
@@ -290,6 +290,11 @@ export const revokeServiceToken = mutation({
       args.sessionToken,
       token.environmentId,
     );
+    // The revocation row is filed under `token.orgId`, a copy the walk above
+    // never read: it walked from `token.environmentId`. Checked before the
+    // signature and before any write. `token.environmentId` needs no check of
+    // its own, because it is the very id the walk started from.
+    assertOrgLink(token.orgId, org);
 
     // The notice as the SDK will see it, verified against the same public key
     // the customer pinned in their own configuration. `reason` is signed, so
