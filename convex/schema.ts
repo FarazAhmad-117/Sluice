@@ -169,12 +169,17 @@ export default defineSchema({
   // had a row when this was decided, so the merge cost nothing exactly once.
   //
   // `granteeId` IS A STRING BECAUSE THE TWO GRANTEE NAMESPACES ARE NOT THE SAME
-  // KIND OF THING. For a user it is the `users` document id. For a token it is
-  // the `tokenIdHash`, NOT the `serviceTokens` document id, because the bundle
-  // knows an authenticated token only by its hash, and because the client has
-  // to compute the same identifier to build the associated data it wraps under
-  // before any document exists. `granteeType` is what keeps the two namespaces
-  // from colliding in one index.
+  // KIND OF THING, AND NEITHER IS A CONVEX DOCUMENT ID. For a user it is the
+  // permanent `usr_` uid from `users.uid`. For a token it is the
+  // `tokenIdHash`, NOT the `serviceTokens` document id, because the bundle
+  // knows an authenticated token only by its hash. In both cases the value is
+  // the one the client names in the associated data it wraps under, spelled
+  // exactly as stored here, so the server's lookup key and the client's
+  // binding are one string. A document id would be wrong twice over: it is
+  // not what the binding names, and inside a `v.string()` a migration to
+  // another cell would carry it across unremapped, pointing at nothing.
+  // `granteeType` is what keeps the two namespaces from colliding in one
+  // index.
   pdkGrants: defineTable({
     environmentId: v.id("environments"),
     // The owning org, copied from a row the authorisation walk already

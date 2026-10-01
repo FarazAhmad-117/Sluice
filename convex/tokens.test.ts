@@ -99,6 +99,7 @@ async function tenant(t: Harness, actor: Actor, slug: string) {
   });
   const environmentId = await t.mutation(api.environments.createEnvironment, {
     sessionToken: actor.sessionToken,
+    environmentUid: newId("env"),
     projectId,
     name: "production",
     ...WRAP,

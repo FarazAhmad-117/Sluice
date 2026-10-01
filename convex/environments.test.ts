@@ -11,6 +11,7 @@ import { SESSION_LIFETIME_MS, hashSessionToken } from "./lib/session";
 import { listAuditEventsByActor } from "./repo/audit";
 import { insertOrgMember } from "./repo/orgs";
 import {
+  getEnvironment as getEnvironmentRow,
   getPDKGrant,
   listPDKGrantsByEnvironment,
 } from "./repo/environments";
@@ -115,6 +116,7 @@ async function twoTenants(t: Harness) {
   });
   const environmentB = await t.mutation(api.environments.createEnvironment, {
     sessionToken: mallory.sessionToken,
+    environmentUid: newId("env"),
     projectId: projectB,
     name: "production",
     ...wrap,
@@ -137,6 +139,7 @@ describe("environments authorisation", () => {
     await expect(
       t.mutation(api.environments.createEnvironment, {
         sessionToken: alice.sessionToken,
+        environmentUid: newId("env"),
         projectId: projectB,
         name: "staging",
         ...wrap,
@@ -175,6 +178,7 @@ describe("environments authorisation", () => {
     await expect(
       t.mutation(api.environments.createEnvironment, {
         sessionToken: alice.sessionToken,
+        environmentUid: newId("env"),
         projectId: projectB,
         name: "staging",
         ...wrap,
@@ -198,10 +202,12 @@ describe("createEnvironment", () => {
     const t = convexTest(schema, modules);
     const { alice, projectA } = await twoTenants(t);
 
+    const environmentUid = newId("env");
     const environmentId = await t.mutation(
       api.environments.createEnvironment,
       {
         sessionToken: alice.sessionToken,
+        environmentUid,
         projectId: projectA,
         name: "production",
         ...wrap,
@@ -215,6 +221,7 @@ describe("createEnvironment", () => {
       }),
     ).toEqual({
       environmentId,
+      uid: environmentUid,
       projectId: projectA,
       name: "production",
       pdkVersion: 1,
@@ -238,12 +245,99 @@ describe("createEnvironment", () => {
     ) as { value: Record<string, unknown> };
 
     expect(Object.keys(args.value).sort()).toEqual([
+      "environmentUid",
       "name",
       "pdkNonce",
       "projectId",
       "sessionToken",
       "wrappedPDK",
     ]);
+  });
+
+  // The uid is what every secret and every grant in this environment binds to
+  // on the client, so a malformed one is refused before anything is written.
+  describe("rejects an environmentUid that is not a well-formed env id", () => {
+    const message = "environmentUid must be a well-formed env id";
+    const cases: Array<[string, () => string]> = [
+      ["empty", () => ""],
+      ["an org id", () => newId("org")],
+      ["a user id", () => newId("usr")],
+      ["uppercase hex", () => "env_" + "ABCDEF0123456789".repeat(2)],
+      ["too long", () => newId("env") + "0"],
+      ["trailing newline", () => newId("env") + "\n"],
+    ];
+
+    for (const [name, value] of cases) {
+      it(name, async () => {
+        const t = convexTest(schema, modules);
+        const { alice, projectA } = await twoTenants(t);
+        await expect(
+          t.mutation(api.environments.createEnvironment, {
+            sessionToken: alice.sessionToken,
+            environmentUid: value(),
+            projectId: projectA,
+            name: "production",
+            ...wrap,
+          }),
+        ).rejects.toThrow(message);
+        expect(
+          await t.query(api.environments.listEnvironments, {
+            sessionToken: alice.sessionToken,
+            projectId: projectA,
+          }),
+        ).toEqual([]);
+      });
+    }
+  });
+
+  // Client-chosen, so a client can reuse an existing uid on purpose, here
+  // another tenant's. Refused, in the same mutation as the insert, and the
+  // refusal is the same whichever org owns the existing row.
+  it("rejects a duplicate environmentUid, even across orgs", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, mallory, projectA, environmentB } = await twoTenants(t);
+    const theirs = await t.query(api.environments.getEnvironment, {
+      sessionToken: mallory.sessionToken,
+      environmentId: environmentB,
+    });
+
+    await expect(
+      t.mutation(api.environments.createEnvironment, {
+        sessionToken: alice.sessionToken,
+        environmentUid: theirs.uid,
+        projectId: projectA,
+        name: "production",
+        ...wrap,
+      }),
+    ).rejects.toThrow("An environment with that id already exists.");
+    expect(
+      await t.query(api.environments.listEnvironments, {
+        sessionToken: alice.sessionToken,
+        projectId: projectA,
+      }),
+    ).toEqual([]);
+  });
+
+  // Copied from the org the authorisation walk resolved, never from a caller:
+  // there is no orgId argument to take it from.
+  it("records the owning org on the environment and on its first grant", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, orgA, projectA } = await twoTenants(t);
+
+    const environmentId = await t.mutation(api.environments.createEnvironment, {
+      sessionToken: alice.sessionToken,
+      environmentUid: newId("env"),
+      projectId: projectA,
+      name: "production",
+      ...wrap,
+    });
+
+    const row = await t.run(async (ctx) => getEnvironmentRow(ctx, environmentId));
+    expect(row?.orgId).toBe(orgA);
+    const grants = await t.run(async (ctx) =>
+      listPDKGrantsByEnvironment(ctx, environmentId),
+    );
+    expect(grants.map((g) => g.orgId)).toEqual([orgA]);
   });
 
   it("rejects a duplicate name within one project", async () => {
@@ -255,10 +349,18 @@ describe("createEnvironment", () => {
       name: "production",
       ...wrap,
     };
-    await t.mutation(api.environments.createEnvironment, args);
+    await t.mutation(api.environments.createEnvironment, {
+      ...args,
+      environmentUid: newId("env"),
+    });
 
+    // A fresh uid on the second call, so the only thing that collides is the
+    // name and this keeps pinning the name check rather than the uid check.
     await expect(
-      t.mutation(api.environments.createEnvironment, args),
+      t.mutation(api.environments.createEnvironment, {
+        ...args,
+        environmentUid: newId("env"),
+      }),
     ).rejects.toThrow("An environment with that name already exists in this project.");
   });
 
@@ -268,6 +370,7 @@ describe("createEnvironment", () => {
 
     await t.mutation(api.environments.createEnvironment, {
       sessionToken: alice.sessionToken,
+      environmentUid: newId("env"),
       projectId: projectA,
       name: "production",
       ...wrap,
@@ -302,6 +405,7 @@ describe("createEnvironment", () => {
       await expect(
         t.mutation(api.environments.createEnvironment, {
           sessionToken: alice.sessionToken,
+          environmentUid: newId("env"),
           projectId: projectA,
           name,
           ...wrap,
@@ -330,18 +434,23 @@ describe("the creator's project data key grant", () => {
 
     const environmentId = await t.mutation(api.environments.createEnvironment, {
       sessionToken: alice.sessionToken,
+      environmentUid: newId("env"),
       projectId: projectA,
       name: "production",
       ...wrap,
     });
 
     const grant = await t.run(async (ctx) =>
-      getPDKGrant(ctx, environmentId, "user", alice.userId),
+      getPDKGrant(ctx, environmentId, "user", alice.uid),
     );
     expect(grant?.wrappedPDK).toBe(WRAPPED_PDK);
     expect(grant?.nonce).toBe(PDK_NONCE);
     expect(grant?.granteeType).toBe("user");
-    expect(grant?.granteeId).toBe(alice.userId);
+    // The permanent `usr_` uid, not the Convex document id. It is what the
+    // client's associated data names, and a string column holding a document
+    // id would not be remapped when the org moves cells.
+    expect(grant?.granteeId).toBe(alice.uid);
+    expect(grant?.granteeId).not.toBe(alice.userId);
   });
 
   /**
@@ -355,6 +464,7 @@ describe("the creator's project data key grant", () => {
 
     const environmentId = await t.mutation(api.environments.createEnvironment, {
       sessionToken: alice.sessionToken,
+      environmentUid: newId("env"),
       projectId: projectA,
       name: "production",
       ...wrap,
@@ -365,7 +475,7 @@ describe("the creator's project data key grant", () => {
       environmentId,
     });
     const grant = await t.run(async (ctx) =>
-      getPDKGrant(ctx, environmentId, "user", alice.userId),
+      getPDKGrant(ctx, environmentId, "user", alice.uid),
     );
     expect(grant?.pdkVersion).toBe(environment.pdkVersion);
   });
@@ -377,6 +487,7 @@ describe("the creator's project data key grant", () => {
 
     const environmentId = await t.mutation(api.environments.createEnvironment, {
       sessionToken: alice.sessionToken,
+      environmentUid: newId("env"),
       projectId: projectA,
       name: "production",
       ...wrap,
@@ -386,8 +497,8 @@ describe("the creator's project data key grant", () => {
       listPDKGrantsByEnvironment(ctx, environmentId),
     );
     expect(grants).toHaveLength(1);
-    expect(grants[0]?.granteeId).toBe(alice.userId);
-    expect(grants[0]?.granteeId).not.toBe(mallory.userId);
+    expect(grants[0]?.granteeId).toBe(alice.uid);
+    expect(grants[0]?.granteeId).not.toBe(mallory.uid);
   });
 
   /**
@@ -402,6 +513,7 @@ describe("the creator's project data key grant", () => {
     await expect(
       t.mutation(api.environments.createEnvironment, {
         sessionToken: alice.sessionToken,
+        environmentUid: newId("env"),
         projectId: projectB,
         name: "staging",
         ...wrap,
@@ -417,7 +529,7 @@ describe("the creator's project data key grant", () => {
     const grants = await t.run(async (ctx) =>
       listPDKGrantsByEnvironment(ctx, environmentB),
     );
-    expect(grants.map((g) => g.granteeId)).toEqual([mallory.userId]);
+    expect(grants.map((g) => g.granteeId)).toEqual([mallory.uid]);
   });
 
   /**
@@ -475,6 +587,7 @@ describe("listEnvironments", () => {
     for (const name of ["production", "staging"]) {
       await t.mutation(api.environments.createEnvironment, {
         sessionToken: alice.sessionToken,
+        environmentUid: newId("env"),
         projectId: projectA,
         name,
         ...wrap,
@@ -486,6 +599,25 @@ describe("listEnvironments", () => {
       projectId: projectA,
     });
     expect(list.map((e) => e.name).sort()).toEqual(["production", "staging"]);
+  });
+
+  it("returns each environment's permanent id", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, projectA } = await twoTenants(t);
+    const environmentUid = newId("env");
+    await t.mutation(api.environments.createEnvironment, {
+      sessionToken: alice.sessionToken,
+      environmentUid,
+      projectId: projectA,
+      name: "production",
+      ...wrap,
+    });
+
+    const list = await t.query(api.environments.listEnvironments, {
+      sessionToken: alice.sessionToken,
+      projectId: projectA,
+    });
+    expect(list.map((e) => e.uid)).toEqual([environmentUid]);
   });
 });
 
@@ -511,6 +643,7 @@ describe("getMyPdkGrant", () => {
 
     const environmentId = await t.mutation(api.environments.createEnvironment, {
       sessionToken: alice.sessionToken,
+      environmentUid: newId("env"),
       projectId: projectA,
       name: "production",
       ...wrap,
@@ -563,6 +696,7 @@ describe("getMyPdkGrant", () => {
 
     const environmentId = await t.mutation(api.environments.createEnvironment, {
       sessionToken: alice.sessionToken,
+      environmentUid: newId("env"),
       projectId: projectA,
       name: "production",
       ...wrap,
@@ -623,6 +757,7 @@ describe("getMyPdkGrant", () => {
 
     const environmentA = await t.mutation(api.environments.createEnvironment, {
       sessionToken: alice.sessionToken,
+      environmentUid: newId("env"),
       projectId: projectA,
       name: "production",
       wrappedPDK: "ab".repeat(48),
@@ -654,6 +789,7 @@ describe("the audit log", () => {
       api.environments.createEnvironment,
       {
         sessionToken: alice.sessionToken,
+        environmentUid: newId("env"),
         projectId: projectA,
         name: "production",
         ...wrap,

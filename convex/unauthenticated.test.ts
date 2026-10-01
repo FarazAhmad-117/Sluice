@@ -204,6 +204,7 @@ async function world(t: Harness): Promise<World> {
   });
   const environmentId = await t.mutation(api.environments.createEnvironment, {
     sessionToken: alice.sessionToken,
+    environmentUid: newId("env"),
     projectId,
     name: "production",
     ...WRAP,

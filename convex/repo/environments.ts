@@ -36,6 +36,21 @@ export async function getEnvironmentByName(
     .unique();
 }
 
+/**
+ * `.unique()` for the reason every uid lookup uses it: two environments
+ * sharing a permanent id is a broken table, not a tie to break. Keeping the
+ * uid unique is `createEnvironment`'s job, and this is its read.
+ */
+export async function getEnvironmentByUid(
+  ctx: QueryCtx,
+  uid: string,
+): Promise<Doc<"environments"> | null> {
+  return await ctx.db
+    .query("environments")
+    .withIndex("by_uid", (q) => q.eq("uid", uid))
+    .unique();
+}
+
 export async function insertEnvironment(
   ctx: MutationCtx,
   doc: WithoutSystemFields<Doc<"environments">>,
@@ -78,8 +93,9 @@ export async function listPDKGrantsByEnvironment(
  * current, which is exactly the two-homes failure `pdkGrants` was consolidated
  * to remove. Throwing makes it visible; picking one hides it until a re-key.
  *
- * `granteeId` is the `users` document id for a user and the `tokenIdHash` for a
- * token. See the note on the table.
+ * `granteeId` is the user's permanent `usr_` uid for a user and the
+ * `tokenIdHash` for a token, never a Convex document id. See the note on the
+ * table.
  */
 export async function getPDKGrant(
   ctx: QueryCtx,

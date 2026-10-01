@@ -155,6 +155,7 @@ async function world(t: Harness) {
   });
   const environmentId = await t.mutation(api.environments.createEnvironment, {
     sessionToken: admin.sessionToken,
+    environmentUid: newId("env"),
     projectId,
     name: "production",
     ...WRAP,
