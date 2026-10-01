@@ -78,7 +78,7 @@ export function parseDotenv(text: string): DotenvResult {
   const errors: { line: number; message: string }[] = [];
   const byName = new Map<string, number>();
 
-  const lines = text.replace(/^﻿/, "").split(/\r?\n/);
+  const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/);
   for (const [index, rawLine] of lines.entries()) {
     const line = index + 1;
     let body = rawLine.trim();

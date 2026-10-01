@@ -109,7 +109,7 @@ describe("parseDotenv", () => {
   });
 
   it("ignores a byte order mark and returns nothing for empty input", () => {
-    expect(parseDotenv("﻿A=1").entries).toEqual([{ name: "A", value: "1", line: 1 }]);
+    expect(parseDotenv("\uFEFFA=1").entries).toEqual([{ name: "A", value: "1", line: 1 }]);
     expect(parseDotenv("")).toEqual({ entries: [], errors: [] });
   });
 });
