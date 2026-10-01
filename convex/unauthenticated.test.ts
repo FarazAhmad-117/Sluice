@@ -317,6 +317,20 @@ const CALLS: Record<
     name: "Billing",
     slug: "billing",
   }),
+  "projects.createProjectWithEnvironments": (w, sessionToken) => ({
+    sessionToken,
+    orgId: w.orgId,
+    name: "Payments",
+    // Unused by the world fixture and by `projects.createProject` above.
+    slug: "payments",
+    environments: [
+      {
+        environmentUid: newId("env"),
+        name: "development",
+        ...WRAP,
+      },
+    ],
+  }),
   "projects.getProject": (w, sessionToken) => ({
     sessionToken,
     projectId: w.projectId,
@@ -452,10 +466,10 @@ const FUNCTIONS = exportedFunctions();
 
 describe("the enumeration this file is built on", () => {
   it("finds every public function in the hierarchy", () => {
-    // Twenty-one, written as a number as well as a list, so that an
+    // Twenty-two, written as a number as well as a list, so that an
     // enumeration which silently starts returning nothing cannot make every
     // assertion below pass vacuously.
-    expect(FUNCTIONS.length).toBe(21);
+    expect(FUNCTIONS.length).toBe(22);
     expect(FUNCTIONS).toEqual([
       "environments.createEnvironment",
       "environments.getEnvironment",
@@ -466,6 +480,7 @@ describe("the enumeration this file is built on", () => {
       "orgs.getOrg",
       "orgs.listMyOrgs",
       "projects.createProject",
+      "projects.createProjectWithEnvironments",
       "projects.getProject",
       "projects.listProjects",
       "secrets.createSecret",

@@ -49,3 +49,20 @@ export const SHARED_NEEDS_SHARED_ROW =
  * Minting a fresh id and submitting again is the remedy.
  */
 export const DUPLICATE_SHARE_UID = "That shared secret id is already in use.";
+
+/**
+ * `projects.createProjectWithEnvironments`'s refusal when none of the
+ * environments is named `development`. The dashboard always creates one, and
+ * relies on it existing as the place a new project opens to.
+ */
+export const PROJECT_NEEDS_DEVELOPMENT =
+  "Every project starts with a development environment.";
+
+/**
+ * `projects.createProjectWithEnvironments`'s ceiling. Each environment costs
+ * its own key, grant and index reads in one transaction, and a starting set
+ * larger than this is a malformed call rather than a real project. More can
+ * be added one at a time afterwards with `createEnvironment`.
+ */
+export const TOO_MANY_ENVIRONMENTS =
+  "A project can start with at most 10 environments.";
