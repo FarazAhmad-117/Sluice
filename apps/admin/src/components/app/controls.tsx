@@ -1,4 +1,8 @@
 import type { ReactNode } from "react";
+import { focusRing } from "@/components/ui/styles";
+
+// Moved to `components/ui/styles.ts`; re-exported until the old shell is removed.
+export { focusRing, inputControl } from "@/components/ui/styles";
 
 /**
  * SHARED CONTROLS FOR THE ADMIN PANEL.
@@ -8,22 +12,8 @@ import type { ReactNode } from "react";
  * a colour. Every value is a token utility from `app.css`, so the whole surface
  * follows `data-theme` without a single conditional.
  *
- * THE FOCUS RING IS DECLARED HERE NOW, AND THAT IS A REAL COST WORTH NAMING.
- * It used to be imported from the landing page's primitives, on the argument
- * that a product with two focus rings has one of them wrong. That argument is
- * still correct and the import is no longer available: this application and the
- * marketing site are separate builds with separate dependency graphs, and
- * reaching across would mean one of them importing the other's source tree.
- *
- * What holds the two in agreement instead is the token layer. `app.css` and
- * `apps/web/src/app/globals.css` declare the same custom properties with the
- * same values, and both rings are written against `outline-brand`. If you
- * change the ring here, change it there. There is no build step that will tell
- * you.
- *
- * `outline` rather than `ring`, so it sits outside the element and never
- * participates in layout, which keeps the "hover and focus must not shift
- * anything" rule true by construction.
+ * The focus ring and the input shell now live in `components/ui/styles.ts`,
+ * with the note on why the ring must match the landing page's.
  *
  * THE TYPE SIZE RULE. Body text is `text-base`, which is 16px, everywhere.
  * `text-sm` and `text-xs` appear only on chrome that is not body text: column
@@ -31,9 +21,6 @@ import type { ReactNode } from "react";
  * from tight vertical rhythm and hairlines, never from shrinking the text
  * people actually have to read.
  */
-export const focusRing =
-  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
-
 /**
  * Filled control. `bg-brand-solid` with `text-text-on-brand-solid`, never
  * `bg-brand`: white on `--brand` measures 3.81:1 and fails AA, which is the
@@ -50,12 +37,6 @@ export const quietButton = `inline-flex cursor-pointer items-center justify-cent
 
 /** Inline text link. Underline is always on, so hover changes colour only. */
 export const textLink = `cursor-pointer rounded-input text-brand underline underline-offset-4 transition-colors hover:text-brand-hover ${focusRing}`;
-
-/**
- * Text input. 16px on every breakpoint, which is also what stops iOS Safari
- * zooming the viewport the moment the field takes focus.
- */
-export const inputControl = `w-full rounded-input border border-hairline bg-surface-base px-3 py-3 text-base text-text-primary transition-colors placeholder:text-text-muted hover:border-brand/60 ${focusRing}`;
 
 export function Field({
   label,
