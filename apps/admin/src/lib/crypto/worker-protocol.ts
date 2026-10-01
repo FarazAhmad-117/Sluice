@@ -5,14 +5,27 @@
  * the user's password in cleartext and the other is the root of their entire
  * key hierarchy.
  *
- * TOWARDS THE WORKER: the password string and the user id. The password has to
- * cross -- `deriveMUK` owns NFC normalisation and salt construction, and
+ * TOWARDS THE WORKER: the password string and the account salt. The password
+ * has to cross -- `deriveMUK` owns NFC normalisation and salt construction, and
  * splitting those across threads is how two code paths end up normalising
  * differently and deriving two different keys for one user. Structured clone
  * makes a second copy of the string in the worker's heap; the worker is
  * terminated after every derivation, which is the only reliable way to get rid
  * of it, and of the 64 MiB of Argon2 working memory whose final blocks ARE the
  * MUK in recoverable form.
+ *
+ * THE SALT CROSSES AS LOWERCASE HEX, and it is the worker that turns it back
+ * into bytes and `deriveMUK` that checks its width. It is public -- the server
+ * returns it to anyone who asks to log in as the account -- so it needs no
+ * care beyond arriving intact. A string rather than a `Uint8Array` because it
+ * is the form the salt already has on the wire and in the persisted session,
+ * and because a transferable buffer is one `transfer` list away from being
+ * detached out from under the caller that still needs it. The width is NOT
+ * validated only on the main thread: the worker must refuse a crafted or
+ * corrupted message on its own, and `deriveMUK` is the one place that rule is
+ * written. A server decoy for an unknown address is sixteen bytes too, so it
+ * passes the same check and is derived under like any real salt; nothing on
+ * this boundary can tell the two apart, and nothing should.
  *
  * BACK FROM THE WORKER: 32 raw bytes, transferred rather than copied, so the
  * worker's view is detached at the moment it is sent. Not a `MasterUnlockKey`:
@@ -33,7 +46,12 @@ export interface DeriveRequest {
   readonly kind: "derive";
   readonly id: number;
   readonly password: string;
-  readonly userId: string;
+  /**
+   * The account salt, `toHex` of `ACCOUNT_SALT_BYTES` (16) bytes: 32 lowercase
+   * hex characters. Public. Decoded by the worker; width enforced by
+   * `deriveMUK`.
+   */
+  readonly accountSalt: string;
 }
 
 /** Memory feasibility check. Carries no secret, so it is safe to log in full. */

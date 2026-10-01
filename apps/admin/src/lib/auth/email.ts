@@ -8,16 +8,16 @@ import { EmailFormatError, normaliseEmail as normalise } from "@sluice/crypto";
  * written out twice, here and on the server, and kept in step by a comment;
  * that duplicate is gone, so the two sides can no longer drift.
  *
- * WHY AGREEMENT MATTERS HERE, as of today. The normalised address is the
- * `userId` argument handed to `deriveMasterUnlockKey`, so it is hashed into the
- * Argon2id SALT. Two spellings of one address would produce two different
- * salts, therefore two different master unlock keys, therefore a user who
- * cannot open their own wrapped private key. That is still the current state:
- * until the account-salt task lands and the salt becomes a random per-account
- * value, CHANGING AN ACCOUNT'S EMAIL WOULD CHANGE ITS MASTER UNLOCK KEY AND
- * ORPHAN EVERY WRAPPED BLOB. The backend has no email change endpoint. After
- * that task the address is only the lookup key for `auth.login`, and this
- * paragraph should be rewritten to say so.
+ * WHY AGREEMENT MATTERS HERE. The normalised address is the LOOKUP KEY, and
+ * nothing more: `auth.getLoginSalt` and `auth.login` find the account by it.
+ * It is no longer an input to the master unlock key. The key is salted with a
+ * random per-account value minted at signup, so CHANGING AN ACCOUNT'S EMAIL
+ * WOULD NOT CHANGE ITS MASTER UNLOCK KEY and would orphan nothing; the backend
+ * still has no email change endpoint, but that is now a missing feature rather
+ * than a cryptographic impossibility. What disagreement between client and
+ * server would cost today is lookup: two spellings of one address would be two
+ * accounts at signup, or a login that finds the decoy salt instead of the real
+ * one and fails with the generic message every wrong password gets.
  *
  * THE ONE THING THIS FILE ADDS IS COPY. The package's messages are written for
  * the server, where they arrive in a `ConvexError` and name the `email` field.

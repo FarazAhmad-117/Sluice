@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { toHex } from "@sluice/crypto";
+import { fromHex, toHex } from "@sluice/crypto";
 import {
   DerivationBusyError,
   deriveMasterUnlockKey,
@@ -31,9 +31,10 @@ import {
  *    out.
  */
 
-const KAT_PASSWORD = "correct horse battery staple";
-const KAT_USER_ID = "u1";
-const KAT_MUK = "dfee4c58ca2653a1b5ae9a64cd3743c1cb33b26f2a6a537715f26e84cfd5b588";
+/** The v2 vector, restated from `packages/crypto/test/muk.test.ts`. */
+const KAT_PASSWORD = "correct horse battery staple, v2";
+const KAT_ACCOUNT_SALT = fromHex("303132333435363738393a3b3c3d3e3f");
+const KAT_MUK = "633977bb9b6fec724f6574028da06c834895735198e653c3f8a95cb28d70436c";
 const BUDGET_MS = 600_000;
 
 it("has no Worker global, which is the condition under test", () => {
@@ -61,7 +62,7 @@ describe("probeDerivationCapability", () => {
 describe("deriveMasterUnlockKey without a worker", () => {
   it("falls back to main-thread WASM, reports it, and derives the identical key", async () => {
     const reported: string[] = [];
-    const result = await deriveMasterUnlockKey(KAT_PASSWORD, KAT_USER_ID, {
+    const result = await deriveMasterUnlockKey(KAT_PASSWORD, KAT_ACCOUNT_SALT, {
       onDegraded: (d) => reported.push(`${d.from}->${d.to}`),
     });
 
@@ -81,7 +82,7 @@ describe("deriveMasterUnlockKey without a worker", () => {
    */
   it("refuses rather than blocking the main thread when the fallback is declined", async () => {
     await expect(
-      deriveMasterUnlockKey(KAT_PASSWORD, KAT_USER_ID, { allowMainThreadFallback: false }),
+      deriveMasterUnlockKey(KAT_PASSWORD, KAT_ACCOUNT_SALT, { allowMainThreadFallback: false }),
     ).rejects.toThrow(/worker/i);
   }, BUDGET_MS);
 });
@@ -93,8 +94,8 @@ describe("single-flight", () => {
    * second identical call must join the first, not start a second.
    */
   it("gives a duplicate request the same promise rather than a second derivation", async () => {
-    const first = deriveMasterUnlockKey(KAT_PASSWORD, KAT_USER_ID);
-    const second = deriveMasterUnlockKey(KAT_PASSWORD, KAT_USER_ID);
+    const first = deriveMasterUnlockKey(KAT_PASSWORD, KAT_ACCOUNT_SALT);
+    const second = deriveMasterUnlockKey(KAT_PASSWORD, KAT_ACCOUNT_SALT);
     expect(second).toBe(first);
     expect(isDeriving()).toBe(true);
 
@@ -110,15 +111,44 @@ describe("single-flight", () => {
    * for queued work.
    */
   it("refuses a concurrent request with different inputs", async () => {
-    const running = deriveMasterUnlockKey(KAT_PASSWORD, KAT_USER_ID);
-    expect(() => deriveMasterUnlockKey("a different password", KAT_USER_ID)).toThrow(
+    const running = deriveMasterUnlockKey(KAT_PASSWORD, KAT_ACCOUNT_SALT);
+    expect(() => deriveMasterUnlockKey("a different password", KAT_ACCOUNT_SALT)).toThrow(
       DerivationBusyError,
     );
-    expect(() => deriveMasterUnlockKey(KAT_PASSWORD, "a-different-user")).toThrow(
-      DerivationBusyError,
-    );
+    // A different salt differing only in its last byte, so a slot compared on
+    // a prefix, or on the length alone, would wrongly treat it as a duplicate.
+    expect(() =>
+      deriveMasterUnlockKey(KAT_PASSWORD, fromHex("303132333435363738393a3b3c3d3e40")),
+    ).toThrow(DerivationBusyError);
     await running;
   }, BUDGET_MS);
+
+  /**
+   * The slot compares salt BYTES, not array identity. Login decodes the salt
+   * from hex on every attempt, so a double-clicked login button produces two
+   * distinct `Uint8Array`s holding the same sixteen bytes; comparing them by
+   * reference would turn the second click into `DerivationBusyError` on a form
+   * the user filled in correctly.
+   */
+  it("treats an equal salt in a different array as the same request", async () => {
+    const first = deriveMasterUnlockKey(KAT_PASSWORD, KAT_ACCOUNT_SALT);
+    const second = deriveMasterUnlockKey(KAT_PASSWORD, KAT_ACCOUNT_SALT.slice());
+    expect(second).toBe(first);
+    await first;
+  }, BUDGET_MS);
+
+  /**
+   * A malformed salt is refused BEFORE the slot is taken and before any route
+   * is tried. Otherwise a fifteen-byte salt would fail in the worker, then on
+   * main-thread WASM, then on noble, and report two "degradations" for what is
+   * an input error and not a property of the device.
+   */
+  it("refuses a salt of the wrong width without taking the slot", () => {
+    expect(() => deriveMasterUnlockKey(KAT_PASSWORD, new Uint8Array(15))).toThrow(
+      /accountSalt must be 16 bytes/,
+    );
+    expect(isDeriving()).toBe(false);
+  });
 
   /**
    * The slot must be released on FAILURE too. If a rejected derivation left it
@@ -128,10 +158,10 @@ describe("single-flight", () => {
    */
   it("releases the slot after a rejected derivation", async () => {
     await expect(
-      deriveMasterUnlockKey(KAT_PASSWORD, KAT_USER_ID, { allowMainThreadFallback: false }),
+      deriveMasterUnlockKey(KAT_PASSWORD, KAT_ACCOUNT_SALT, { allowMainThreadFallback: false }),
     ).rejects.toThrow();
     expect(isDeriving()).toBe(false);
-    const result = await deriveMasterUnlockKey(KAT_PASSWORD, KAT_USER_ID);
+    const result = await deriveMasterUnlockKey(KAT_PASSWORD, KAT_ACCOUNT_SALT);
     expect(toHex(result.key.bytes)).toBe(KAT_MUK);
   }, BUDGET_MS);
 });
