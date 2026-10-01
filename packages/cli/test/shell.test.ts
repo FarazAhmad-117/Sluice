@@ -4,7 +4,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { MAX_CLOCK_STEP_MS, NO_PERSISTED_FLOOR, SluiceCore } from "@sluice/sdk";
 import { toHex } from "@sluice/crypto";
 import type { RawBundle } from "../src/bundle";
-import { Shell } from "../src/shell";
+import { fatalHandler, FATAL_EXIT_CODE } from "../src/run";
+import { Shell, ShellFatalError } from "../src/shell";
 import {
   ENVIRONMENT_UID,
   FakeChild,
@@ -42,6 +43,8 @@ interface HarnessOptions {
   readonly killGraceMs?: number;
   readonly bootTimeoutMs?: number;
   readonly baseEnv?: Record<string, string | undefined>;
+  /** Wire `onFatal` to a real `fatalHandler`, exactly as `run.ts` does. */
+  readonly fatal?: boolean;
 }
 
 /**
@@ -94,6 +97,9 @@ function harness(fixture: Fixture, org: Org, options: HarnessOptions = {}): Harn
     bootTimeoutMs: options.bootTimeoutMs ?? 30_000,
     baseEnv: options.baseEnv ?? { PATH: "/usr/bin", SLUICE_TOKEN: fixture.rawToken },
     jitter: () => 0,
+    ...(options.fatal === true
+      ? { onFatal: fatalHandler(child, logger, (code: number) => exits.push(code)) }
+      : {}),
     ...(options.onRevoke === undefined
       ? {}
       : {
@@ -833,6 +839,122 @@ describe("Shell: availability, section 4.3", () => {
     });
     await flush(() => h.shell.busy);
     expect(h.exits).toEqual([1]);
+  });
+});
+
+describe("Shell: the shutdown logic itself failing fails CLOSED", () => {
+  /** Makes `core.handle` throw for one event type and behave for the rest. */
+  function breakCore(h: Harness, type: string): void {
+    const original = h.core.handle.bind(h.core);
+    (h.core as { handle: SluiceCore["handle"] }).handle = (event) => {
+      if (event.type === type) throw new Error(`core broke on ${type}\u001b[2J`);
+      return original(event);
+    };
+  }
+
+  it("SIGKILLs the child and exits 70 when the core throws on a genuine revocation", async () => {
+    const h = await booted({ drainMs: 0, fatal: true });
+    breakCore(h, "revocation");
+    expect(() =>
+      h.source.emit({
+        ...withNoSecrets(),
+        revocationNotice: signedNotice(org, fixture.identity, { epoch: 3 }),
+      }),
+    ).not.toThrow();
+    await flush(() => h.shell.busy);
+    expect(h.child.signals).toEqual(["SIGKILL"]);
+    expect(h.child.running).toBe(false);
+    expect(h.exits).toEqual([FATAL_EXIT_CODE]);
+    expect(h.logger.has("supervisor-fatal")).toBe(true);
+    // Not swallowed by the transport guard, which is for shape bugs only.
+    expect(h.logger.has("bundle-handler-failed")).toBe(false);
+    expect(h.logger.text).not.toContain("\u001b");
+
+    // Stopped: nothing later reaches the broken core or exits twice.
+    await h.tick(MAX_CLOCK_STEP_MS * 3);
+    expect(h.exits).toEqual([FATAL_EXIT_CODE]);
+    expect(h.child.signals).toEqual(["SIGKILL"]);
+  });
+
+  it("has the identical outcome when the same failure arrives on a timer tick", async () => {
+    const h = await booted({ drainMs: 0, fatal: true });
+    breakCore(h, "tick");
+    await h.tick(MAX_CLOCK_STEP_MS);
+    expect(h.child.signals).toEqual(["SIGKILL"]);
+    expect(h.child.running).toBe(false);
+    expect(h.exits).toEqual([FATAL_EXIT_CODE]);
+    expect(h.logger.has("supervisor-fatal")).toBe(true);
+  });
+
+  it("fails closed when applying the exit decision itself throws", async () => {
+    // The host side rather than the core: the SIGTERM of `#stopChild` throws.
+    const h = await booted({ drainMs: 0, fatal: true });
+    const signal = h.child.signal.bind(h.child);
+    h.child.signal = (name) => {
+      if (name === "SIGTERM") {
+        h.child.signals.push(name);
+        throw new Error("SIGTERM failed");
+      }
+      signal(name);
+    };
+    h.source.emit({
+      ...withNoSecrets(),
+      revocationNotice: signedNotice(org, fixture.identity, { epoch: 3 }),
+    });
+    await flush(() => h.shell.busy);
+    expect(h.child.signals).toEqual(["SIGTERM", "SIGKILL"]);
+    expect(h.child.running).toBe(false);
+    expect(h.exits).toEqual([FATAL_EXIT_CODE]);
+  });
+
+  it("still does nothing at all on a FORGED notice beside secrets: null", async () => {
+    const h = await booted({ drainMs: 0, fatal: true });
+    h.source.emit({
+      ...withNoSecrets(),
+      secrets: null as unknown as RawBundle["secrets"],
+      revocationNotice: signedNotice(orgKeyPair(), fixture.identity, { epoch: 3 }),
+    });
+    await flush(() => h.shell.busy);
+    await h.tick(MAX_CLOCK_STEP_MS * 3);
+    expect(h.child.signals).toEqual([]);
+    expect(h.exits).toEqual([]);
+    expect(h.child.running).toBe(true);
+  });
+
+  it("with no onFatal, rethrows past the transport guard instead of being swallowed", async () => {
+    const h = await booted({ drainMs: 0 });
+    breakCore(h, "revocation");
+    let thrown: unknown;
+    try {
+      h.source.emit({
+        ...withNoSecrets(),
+        revocationNotice: signedNotice(org, fixture.identity, { epoch: 3 }),
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(ShellFatalError);
+    expect(h.logger.has("bundle-handler-failed")).toBe(false);
+  });
+
+  function withNoSecrets(): RawBundle {
+    return { environmentUid: ENVIRONMENT_UID, epoch: 2, secrets: [] };
+  }
+});
+
+describe("Shell: wiring onFatal changes nothing on the ordinary path", () => {
+  it("still exits 1 with SIGTERM on a genuine revocation, never 70", async () => {
+    const h = await booted({ drainMs: 0, fatal: true });
+    h.source.emit({
+      environmentUid: "k17dn9q2x4m8p3v6b0zc5t7wgh",
+      epoch: 1,
+      secrets: [],
+      revocationNotice: signedNotice(org, fixture.identity, { epoch: 3 }),
+    });
+    await flush(() => h.shell.busy);
+    expect(h.child.signals).toEqual(["SIGTERM"]);
+    expect(h.exits).toEqual([1]);
+    expect(h.logger.has("supervisor-fatal")).toBe(false);
   });
 });
 

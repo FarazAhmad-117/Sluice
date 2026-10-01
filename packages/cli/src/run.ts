@@ -57,6 +57,29 @@ export const FATAL_EXIT_CODE = 70;
  *
  * NOT A SLUICE DECISION. The core is not consulted and the epoch floor is not
  * touched: this is the supervisor failing, not a revocation.
+ *
+ * TWO ROUTES IN, ONE INSTANCE. `run` hands this same function to the shell as
+ * its `onFatal`, which `#pump` calls when the shutdown logic itself throws,
+ * and to the process-level `uncaughtException` / `unhandledRejection` hook.
+ * One instance, so its once-only guard is shared and a failure reported down
+ * both routes still kills and exits once.
+ *
+ * THE RESIDUAL, AND WHY IT IS ON THE RIGHT SIDE. A compromised Convex
+ * deployment, or a TLS man in the middle, can send websocket frames that are
+ * not valid JSON or not a valid protocol message, and the Convex client's
+ * `JSON.parse` in `ws.onmessage` throws outside any guard of ours. That now
+ * reaches this handler and kills the workload, exit 70, where before it would
+ * have crashed the supervisor and orphaned the child. A database writer
+ * cannot do this: they only shape the result of a valid query, which arrives
+ * as well-formed JSON and is handled by the guarded path. Section 4.3 says an
+ * outage never kills a workload, and this is not a regression of that rule:
+ * malformed frames are not an outage, they are a party in control of the
+ * transport actively attacking it, and before this change the same frames
+ * already killed the supervisor. The only choice was what happens to the
+ * child, and an orphan holding every secret that no revocation can reach is
+ * strictly worse than a stopped workload. An attacker in that position can
+ * also simply drop the socket, which 4.3 does protect, so nothing that the
+ * rule exists to preserve is given up.
  */
 export function fatalHandler(
   child: Pick<ChildProcessSupervisor, "running" | "signal">,
@@ -173,7 +196,9 @@ export function run(
 
   // Hooked the moment a child exists to protect and before anything that can
   // spawn it, so there is no window in which a crash leaves it orphaned.
-  dependencies.onFatal?.(fatalHandler(child, logger, dependencies.exit));
+  // ONE instance for both routes; see `fatalHandler`.
+  const fatal = fatalHandler(child, logger, dependencies.exit);
+  dependencies.onFatal?.(fatal);
 
   const core = new SluiceCore({
     orgRevocationPublicKey: config.orgRevocationPublicKey,
@@ -206,6 +231,7 @@ export function run(
     killGraceMs: config.killGraceMs,
     bootTimeoutMs: config.bootTimeoutMs,
     baseEnv: dependencies.env,
+    onFatal: fatal,
   });
 
   /**

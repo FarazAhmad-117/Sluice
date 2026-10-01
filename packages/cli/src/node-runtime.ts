@@ -3,6 +3,7 @@ import { ConvexClient } from "convex/browser";
 import { makeFunctionReference } from "convex/server";
 import { sanitiseForLog } from "@sluice/sdk";
 import type { RawBundle } from "./bundle";
+import { ShellFatalError } from "./shell";
 import type {
   BundleSource,
   ChildProcessSupervisor,
@@ -221,11 +222,16 @@ export function guardSubscriptionHandlers(
       // A logger that throws must not undo the guard it is reporting from.
     }
   };
+  // A `ShellFatalError` is the shell's shutdown logic failing with no
+  // `onFatal` to report to. It is let through, not logged: it exists to reach
+  // the process-level hook, and swallowing it here would make a fatal failure
+  // fail open.
   return {
     onResult(raw: RawBundle): void {
       try {
         handlers.onResult(raw);
       } catch (error) {
+        if (error instanceof ShellFatalError) throw error;
         failed(error);
       }
     },
@@ -233,6 +239,7 @@ export function guardSubscriptionHandlers(
       try {
         handlers.onError(message);
       } catch (error) {
+        if (error instanceof ShellFatalError) throw error;
         failed(error);
       }
     },

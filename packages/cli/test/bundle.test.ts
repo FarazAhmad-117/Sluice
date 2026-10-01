@@ -426,6 +426,17 @@ describe("decryptSecrets", () => {
     expect((rowError as Error).message).toContain(`The secret ${withoutLineage.secretUid}`);
   });
 
+  it("falls back to the secretUid when the lineageId is null or malformed", async () => {
+    const { identity, raw } = await fixture({ "not a name": "x" });
+    for (const lineageId of [null, "", "has spaces", "\u001b[2J"]) {
+      const row = { ...raw.secrets[0]!, lineageId } as unknown as RawSecretRow;
+      const error = await decryptSecrets(identity, { ...raw, secrets: [row] }).catch(
+        (e: unknown) => e,
+      );
+      expect((error as Error).message).toContain(`The secret ${row.secretUid}`);
+    }
+  });
+
   it("names a row by its lineageId when it has one", async () => {
     const { identity, raw } = await fixture({ "not a name": "x" });
     const error = await decryptSecrets(identity, raw).catch((e: unknown) => e);

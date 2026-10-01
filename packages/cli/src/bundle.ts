@@ -549,7 +549,11 @@ function unreadableRow(row: unknown): BundleDecryptError {
 function rowLabel(row: unknown): string {
   if (typeof row !== "object" || row === null) return safeId(undefined);
   const { lineageId, secretUid } = row as { lineageId?: unknown; secretUid?: unknown };
-  return lineageId !== undefined ? safeId(lineageId) : safeId(secretUid);
+  // A `lineageId` that is absent, `null` or malformed falls back to the
+  // `secretUid` rather than to the placeholder, so the operator still gets an
+  // id they can look up whenever the row carries one usable id.
+  const label = safeId(lineageId);
+  return label !== "unknown" ? label : safeId(secretUid);
 }
 
 /**
