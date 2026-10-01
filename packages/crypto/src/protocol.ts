@@ -55,7 +55,9 @@ import { assertId } from "./ids";
  * `dev` and will not open as `prod`. It does NOT stop a malicious server lying
  * about which uid a NAME maps to: told that "prod" is `env_…` of some other
  * environment whose grant the caller also holds, a client will faithfully open
- * that environment's secrets and believe they are prod's. Closing that needs the
+ * that environment's secrets and believe they are prod's -- and, worse, will
+ * SEAL every secret it writes to "prod" into that other environment, where
+ * everyone holding a grant there can read it. Closing that needs the
  * client to pin name -> uid itself rather than trusting the server's answer each
  * time. That is follow-up work; the planned single-string service token is
  * minted client-side and can carry the environment uid, which pins it for the
@@ -388,11 +390,13 @@ export function pdkAssociatedData(params: {
  * THE DOMAIN IS WHAT KEEPS THIS BLOB APART FROM EVERYTHING ELSE UNDER THE SAME
  * KEY, and that matters more here than domain separation usually does. Three
  * kinds of blob are sealed directly under one master unlock key: this one, a
- * `pdkGrants.wrappedPDK` (`sluice/pdk/…`), and the account's own two private
- * keys (`sluice/user-key/…`, in `identity.ts`). The label is the first and most
- * general thing keeping any one of them from being written into another's
- * column and opened as the wrong kind of key -- a project data key opened as a
- * signing seed, or this seed opened as the account's X25519 key. In v2 the
+ * user's `pdkGrants.wrappedPDK` (`sluice/pdk/…`; a token's grant is sealed
+ * under a key derived from the token, not the MUK), and the account's own two
+ * private keys (`sluice/user-key/…`, in `identity.ts`). The label is the first
+ * and most general thing keeping any one of them from being written into
+ * another's column and opened as the wrong kind of key -- a project data key
+ * opened as a signing seed, or this seed opened as the account's X25519 key.
+ * In v2 the
  * kind-prefixed ids after the label differ too, but that is a second line, not
  * a substitute. Secrets (`sluice/secret/…`) are the fourth AEAD domain; they
  * sit under a project data key rather than the MUK, but a key that is

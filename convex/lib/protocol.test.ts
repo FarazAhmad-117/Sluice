@@ -54,9 +54,17 @@ function walk(dir: string, out: string[] = []): string[] {
 /**
  * ANY HAND-WRITTEN LABEL OWNED BY `@sluice/crypto`, AT ANY VERSION.
  *
- * The secret, project data key, revocation key, user key and token id labels
- * are defined once, in the crypto package, and reached only through its
- * functions. Version-agnostic on purpose: a hand-copy written today would spell
+ * Every domain label in `packages/crypto/src` -- the four associated data
+ * rules (secret, project data key, revocation key, user key), the token id
+ * hash, the signed revocation notice, the token's auth and unwrap derivations,
+ * the auth verifier, the MUK salt and the Argon2 conformance vector -- is
+ * defined once, in the crypto package, and reached only through its functions.
+ * The revocation notice matters most: a drifted hand copy here would verify
+ * notices the SDK never signed, or reject ones it did, and either way a
+ * revoked token keeps working. A test below reads the crypto source and fails
+ * if it grows a label this pattern does not cover.
+ *
+ * Version-agnostic on purpose:a hand-copy written today would spell
  * the current version, a stale copy still carries an old one, and a stale copy
  * is worse than a fresh one because it now disagrees with the client. A future
  * version is banned before it exists.
@@ -65,12 +73,38 @@ function walk(dir: string, out: string[] = []): string[] {
  * pattern, does not itself match it and fail its own scan -- the same reason
  * `repo/repo.test.ts` words its own prose carefully: the check is a grep over
  * source text and cannot tell a definition from a mention. Labels the crypto
- * package does not own (`handshake-nonce`, `bundle`, `session`) are Convex's
- * own and are deliberately not in the list.
+ * package does not own (`handshake-nonce`, `bundle`, `session`, and the
+ * verifier's `auth/decoy`) are Convex's own and are deliberately not matched:
+ * the pattern requires `/v<digit>` straight after the domain, so `auth/decoy`
+ * is not read as `auth`.
  */
 const OWNED_LABEL = new RegExp(
-  "sluice" + "/(secret|pdk|revocation-key|user-key|token-id)/v" + "\\d",
+  "sluice" +
+    "/(secret|pdk|revocation-key|revocation|user-key|token-id|auth|unwrap|auth-verifier|muk-salt|argon2-conformance)/v" +
+    "\\d",
 );
+
+/**
+ * The same domains, written out separately so the self-test below is not
+ * merely the pattern checked against itself: dropping a name from either list
+ * fails a test.
+ */
+const OWNED_DOMAINS = [
+  "secret",
+  "pdk",
+  "revocation-key",
+  "revocation",
+  "user-key",
+  "token-id",
+  "auth",
+  "unwrap",
+  "auth-verifier",
+  "muk-salt",
+  "argon2-conformance",
+];
+
+/** The crypto package's source, where every owned label is defined. */
+const CRYPTO_SRC = fileURLToPath(new URL("../../packages/crypto/src", import.meta.url));
 
 /** The permanent id `packages/crypto/test/protocol.test.ts` pins its vector on. */
 const ENV = "env_000102030405060708090a0b0c0d0e0f";
@@ -101,14 +135,37 @@ describe("the secret associated data rule", () => {
    * reason the pattern is.
    */
   it("matches every owned label at any version and nothing Convex owns", () => {
-    for (const domain of ["secret", "pdk", "revocation-key", "user-key", "token-id"]) {
+    for (const domain of OWNED_DOMAINS) {
       for (const version of ["1", "2", "9"]) {
-        expect(OWNED_LABEL.test(`"${"sluice"}/${domain}/v${version}|"`)).toBe(true);
+        const spelled = `"${"sluice"}/${domain}/v${version}|"`;
+        expect(`${spelled} ${String(OWNED_LABEL.test(spelled))}`).toBe(`${spelled} true`);
       }
     }
-    for (const notOurs of ["handshake-nonce", "bundle", "session"]) {
-      expect(OWNED_LABEL.test(`${"sluice"}/${notOurs}/v1`)).toBe(false);
+    // `auth/decoy` is `convex/lib/verifier.ts`'s own label and must stay
+    // allowed even though it starts with an owned domain.
+    for (const notOurs of ["handshake-nonce", "bundle", "session", "auth/decoy"]) {
+      expect(`${notOurs} ${String(OWNED_LABEL.test(`${"sluice"}/${notOurs}/v1`))}`).toBe(
+        `${notOurs} false`,
+      );
     }
+  });
+
+  /**
+   * The ban has to keep up with the crypto package. Every label defined there
+   * is read back from its source and must be one the pattern bans, so a new
+   * label added to `@sluice/crypto` without extending this file fails here
+   * rather than going unguarded.
+   */
+  it("covers every label the crypto package actually defines", () => {
+    const label = new RegExp("sluice" + "/([a-z0-9-]+)/v" + "\\d", "g");
+    const defined = new Set<string>();
+    for (const file of walk(CRYPTO_SRC)) {
+      for (const match of readFileSync(file, "utf8").matchAll(label)) {
+        defined.add(match[1] as string);
+      }
+    }
+    expect(defined.size).toBeGreaterThan(0);
+    expect([...defined].filter((domain) => !OWNED_DOMAINS.includes(domain)).sort()).toEqual([]);
   });
 
   it("refuses a non-string environment uid instead of encoding it", () => {

@@ -23,9 +23,29 @@ const SRC = fileURLToPath(new URL("../src", import.meta.url));
  */
 const OWNED_LABEL = new RegExp(
   "sluice" +
-    "/(secret|pdk|revocation-key|user-key|token-id|revocation|auth|unwrap)/v" +
+    "/(secret|pdk|revocation-key|revocation|user-key|token-id|auth|unwrap|auth-verifier|muk-salt|argon2-conformance)/v" +
     "\\d",
 );
+
+/**
+ * The same domains, written out separately so the self-test is not merely the
+ * pattern checked against itself: dropping a name from either list fails it.
+ * `convex/lib/protocol.test.ts` cross-checks this set against every label the
+ * crypto source actually defines.
+ */
+const OWNED_DOMAINS = [
+  "secret",
+  "pdk",
+  "revocation-key",
+  "revocation",
+  "user-key",
+  "token-id",
+  "auth",
+  "unwrap",
+  "auth-verifier",
+  "muk-salt",
+  "argon2-conformance",
+];
 
 function sources(): { name: string; text: string }[] {
   return readdirSync(SRC)
@@ -96,9 +116,10 @@ describe("the source of this package", () => {
   });
 
   it("bans the labels it means to, at any version", () => {
-    for (const domain of ["secret", "pdk", "revocation-key", "user-key", "token-id"]) {
+    for (const domain of OWNED_DOMAINS) {
       for (const version of ["1", "2", "9"]) {
-        expect(OWNED_LABEL.test(`${"sluice"}/${domain}/v${version}|`)).toBe(true);
+        const spelled = `${"sluice"}/${domain}/v${version}|`;
+        expect(`${spelled} ${String(OWNED_LABEL.test(spelled))}`).toBe(`${spelled} true`);
       }
     }
   });

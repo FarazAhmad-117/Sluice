@@ -446,7 +446,8 @@ describe("revocationKeyAssociatedData v2", () => {
 /**
  * FOUR AEAD DOMAINS, AND THREE OF THEM SHARE ONE KEY.
  *
- * Not hypothetical: a `pdkGrants.wrappedPDK`, a
+ * Not hypothetical: a user's `pdkGrants.wrappedPDK` (a token's grant is sealed
+ * under a key derived from the token instead), a
  * `revocationGrants.wrappedRevocationKey` and the account's two wrapped private
  * keys (`sluice/user-key/…`, `identity.ts`) are all sealed under the SAME master
  * unlock key, so their associated data is what stops one being written into
