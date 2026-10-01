@@ -6,12 +6,17 @@ import { assertId } from "./ids";
  * THE RULES BOTH ENDS OF THE WIRE MUST AGREE ON, BYTE FOR BYTE.
  *
  * Nothing else belongs in this file. These are not helpers and not utilities:
- * they are the four constructions where the backend and the SDK computing
- * slightly different bytes produces a silent, unrecoverable failure rather than
- * an error anybody can act on. They live in `@sluice/crypto` because it is the
- * ONE module both sides already depend on, and because the alternative -- a
- * literal in `convex/` and a hand-copied literal in `packages/sdk` -- is two
- * things that can drift apart by one character.
+ * they are the four constructions where the parties that compute them -- the
+ * backend, the dashboard and the workload client (the CLI, later the Rust
+ * CLI) -- computing slightly different bytes produces a silent, unrecoverable
+ * failure rather than an error anybody can act on. The SDK core computes none
+ * of them; it verifies revocation notices and nothing else. They live in
+ * `@sluice/crypto` because it is the ONE module every TypeScript party already
+ * depends on, and because the alternative -- a literal in `convex/` and
+ * hand-copied literals in `apps/admin` and `packages/cli` -- is several things
+ * that can drift apart by one character. A future client in another language
+ * cannot import this module at all, which is what the pinned vectors in
+ * `test/protocol.test.ts` are for.
  *
  * WHAT DRIFT COSTS, CONCRETELY, so nobody edits any constant casually.
  *

@@ -10,7 +10,9 @@ import { CONFIG_EXIT_CODE, run } from "./run";
  * is three lines on top of it.
  */
 
-export const VERSION = "sluice-cli/v1";
+// v2 since the bundle contract and the associated data it opens under moved
+// to v2. A v1 CLI cannot read a v2 bundle, so `--version` must tell them apart.
+export const VERSION = "sluice-cli/v2";
 
 export const HELP = `sluice, the secrets manager with a kill switch that works.
 

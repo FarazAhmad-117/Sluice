@@ -58,7 +58,6 @@ async function sealRow(
   );
   return {
     secretUid: uid,
-    lineageId: `lin${options.index}`,
     version,
     pdkVersion: 1,
     nameCiphertext: toHex(sealedName.ciphertext),
@@ -184,26 +183,6 @@ describe("decryptSecrets", () => {
     expect((error as BundleDecryptError).code).toBe("malformed");
     expect((error as Error).message).toContain("older than this CLI");
     expect((error as Error).message).toContain("deploy the backend and the CLI together");
-    expect((error as Error).message).not.toContain(convexId);
-  });
-
-  it("names an older backend when its rows carry only the v1 secretId", async () => {
-    // A backend between the two changes: `environmentUid` already, but rows
-    // still keyed by the Convex document id. Those rows cannot be bound, and
-    // `row-open` would read like tampering; the message names the real cause.
-    const { identity, raw } = await fixture();
-    const convexId = "j57a8x9w2v3b4n5m6k7l8p9q0r";
-    const rows = raw.secrets.map((row) => {
-      const { secretUid: _dropped, ...rest } = row;
-      return { ...rest, secretId: convexId };
-    });
-    const error = await decryptSecrets(identity, {
-      ...raw,
-      secrets: rows as unknown as RawSecretRow[],
-    }).catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(BundleDecryptError);
-    expect((error as BundleDecryptError).code).toBe("malformed");
-    expect((error as Error).message).toContain("older than this CLI");
     expect((error as Error).message).not.toContain(convexId);
   });
 
@@ -409,38 +388,51 @@ describe("decryptSecrets", () => {
     }
   });
 
-  it("names a row by its secretUid when the backend sends no lineageId", async () => {
+  it("names a row by its secretUid", async () => {
     const { identity, raw } = await fixture({ "not a name": "x" });
-    const { lineageId: _dropped, ...withoutLineage } = raw.secrets[0]!;
-    const error = await decryptSecrets(identity, { ...raw, secrets: [withoutLineage] }).catch(
-      (e: unknown) => e,
-    );
+    const row = raw.secrets[0]!;
+    const error = await decryptSecrets(identity, raw).catch((e: unknown) => e);
     expect((error as BundleDecryptError).code).toBe("bad-name");
-    expect((error as Error).message).toContain(`The secret ${withoutLineage.secretUid}`);
+    expect((error as Error).message).toContain(`The secret ${row.secretUid}`);
 
-    const unopenable = { ...withoutLineage, valueNonce: "00" };
+    const unopenable = { ...row, valueNonce: "00" };
     const rowError = await decryptSecrets(identity, { ...raw, secrets: [unopenable] }).catch(
       (e: unknown) => e,
     );
     expect((rowError as BundleDecryptError).code).toBe("row-open");
-    expect((rowError as Error).message).toContain(`The secret ${withoutLineage.secretUid}`);
+    expect((rowError as Error).message).toContain(`The secret ${row.secretUid}`);
   });
 
-  it("falls back to the secretUid when the lineageId is null or malformed", async () => {
+  /**
+   * Whoever shapes the bundle must not choose the label an operator reads. A
+   * display id the server adds beside the row is ignored outright, however
+   * well formed: the only label is the `secretUid`, which the row's
+   * ciphertext is bound to.
+   */
+  it("ignores any other label the server puts on a row", async () => {
     const { identity, raw } = await fixture({ "not a name": "x" });
-    for (const lineageId of [null, "", "has spaces", "\u001b[2J"]) {
-      const row = { ...raw.secrets[0]!, lineageId } as unknown as RawSecretRow;
+    const decoy = "sec_ffffffffffffffffffffffffffffffff";
+    for (const extra of [{ lineageId: "lin0" }, { lineageId: decoy }, { label: decoy }]) {
+      const row = { ...raw.secrets[0]!, ...extra } as unknown as RawSecretRow;
       const error = await decryptSecrets(identity, { ...raw, secrets: [row] }).catch(
         (e: unknown) => e,
       );
       expect((error as Error).message).toContain(`The secret ${row.secretUid}`);
+      expect((error as Error).message).not.toContain(decoy);
+      expect((error as Error).message).not.toContain("lin0");
     }
   });
 
-  it("names a row by its lineageId when it has one", async () => {
-    const { identity, raw } = await fixture({ "not a name": "x" });
-    const error = await decryptSecrets(identity, raw).catch((e: unknown) => e);
-    expect((error as Error).message).toContain("The secret lin0");
+  it("names a row with a malformed secretUid by a placeholder, never by its bytes", async () => {
+    const { identity, raw } = await fixture({ API_KEY: "x" });
+    for (const secretUid of [null, "", "has spaces", "\u001b[2J"]) {
+      const row = { ...raw.secrets[0]!, secretUid } as unknown as RawSecretRow;
+      const error = await decryptSecrets(identity, { ...raw, secrets: [row] }).catch(
+        (e: unknown) => e,
+      );
+      expect((error as BundleDecryptError).code).toBe("row-open");
+      expect((error as Error).message).toContain("The secret unknown");
+    }
   });
 
   it("refuses a version number relabelled on an otherwise untouched row", async () => {

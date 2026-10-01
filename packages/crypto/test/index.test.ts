@@ -204,7 +204,7 @@ describe("public API surface", () => {
 
   it("re-exports the same function objects the modules define", () => {
     // Guards against a barrel that wraps or shadows rather than re-exports.
-    expect(api.VERSION).toBe("sluice-crypto/v1");
+    expect(api.VERSION).toBe("sluice-crypto/v2");
     expect(api.ARGON2_PARAMS).toEqual({ m: 65536, t: 3, p: 4, dkLen: 32 });
     expect(api.toHex(api.fromHex("00ff"))).toBe("00ff");
   });

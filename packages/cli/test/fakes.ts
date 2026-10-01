@@ -306,7 +306,6 @@ export async function tokenFixture(): Promise<Fixture> {
         const sealedValue = await seal(pdk, utf8.encode(value), bind("value"));
         rows.push({
           secretUid,
-          lineageId: `lin${index}`,
           version: 1,
           pdkVersion: 1,
           nameCiphertext: toHex(sealedName.ciphertext),

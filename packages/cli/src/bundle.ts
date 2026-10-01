@@ -60,17 +60,18 @@ import type { TokenIdentity } from "./config";
  * document id `secretId`, for the same reason `environmentUid` replaced
  * `environmentId`: a document id is re-minted when an org moves cells, and
  * ciphertext bound to it would stop opening on the day of the move. This file
- * never reads a `secretId` value; its mere presence on a row with no
- * `secretUid` is how an older backend is recognised and named.
+ * never reads a `secretId`.
  *
- * `lineageId` is DISPLAY ONLY AND OPTIONAL. It names a row in an error message
- * so an operator can find it in the dashboard, and is bound into nothing. It is
- * optional because the backend may stop sending it now that `secretUid` names a
- * secret permanently; {@link rowLabel} falls back to the `secretUid`.
+ * `secretUid` is also how every message NAMES a row (see {@link rowLabel}),
+ * and it is the only label used. An earlier revision preferred a separate,
+ * unbound display id when the row carried one. That let whoever shapes the
+ * bundle choose the name an operator sees in an error, pointing them at the
+ * wrong secret during an incident, with nothing tying the label to the row's
+ * ciphertext. The `secretUid` is at least the id the row's ciphertext is
+ * bound to: a row that lies about it does not open.
  */
 export interface RawSecretRow {
   readonly secretUid: string;
-  readonly lineageId?: string | undefined;
   readonly version: number;
   readonly pdkVersion: number;
   readonly nameCiphertext: string;
@@ -220,9 +221,9 @@ export function readRevocation(raw: RawBundle | null | undefined): ParsedRevocat
  * Opens every row in the bundle, or opens none of them.
  *
  * NO MESSAGE THIS FUNCTION PRODUCES CONTAINS A NAME, A VALUE, A KEY OR A
- * CIPHERTEXT. An unopenable row is named by {@link rowLabel}: its `lineageId`,
- * or failing that its `secretUid`, both identifiers an operator can paste into
- * the dashboard and neither of which reveals anything about the secret. The AEAD failures deliberately carry no detail
+ * CIPHERTEXT. An unopenable row is named by {@link rowLabel}: its `secretUid`,
+ * an identifier an operator can look up in the dashboard and which reveals
+ * nothing about the secret. The AEAD failures deliberately carry no detail
  * about which input was wrong, matching `@sluice/crypto`: inventing a
  * distinction between a wrong key, a tampered ciphertext and wrong associated
  * data would turn this into a decryption oracle.
@@ -257,24 +258,6 @@ export async function decryptSecrets(
       "malformed",
       "The Sluice bundle did not have the shape this build understands.",
     );
-  }
-
-  // THE SAME VERSION SKEW, ONE LEVEL DOWN. A backend that already sends
-  // `environmentUid` but whose rows still carry only the Convex document id
-  // `secretId`, with no permanent `secretUid`, is a backend from between the
-  // two changes. Its rows cannot be bound and would fail as `row-open`, which
-  // reads like tampering; this names the real cause instead. Nothing from the
-  // old field is echoed.
-  if (
-    raw.secrets.some(
-      (row: unknown) =>
-        typeof row === "object" &&
-        row !== null &&
-        (row as { secretUid?: unknown }).secretUid === undefined &&
-        Object.prototype.hasOwnProperty.call(row, "secretId"),
-    )
-  ) {
-    throw new BundleDecryptError("malformed", OLDER_BACKEND);
   }
 
   // EVERY ASSOCIATED DATA VALUE IS BUILT INSIDE A GUARD.
@@ -541,28 +524,33 @@ function unreadableRow(row: unknown): BundleDecryptError {
 }
 
 /**
- * How every message names a row: its `lineageId` when the row carries one,
- * otherwise its `secretUid`, each through {@link safeId}. Takes `unknown`
- * because it is called on entries that may not be rows at all, and must never
- * throw on one, since it runs while building the error for exactly those.
+ * How every message names a row: its `secretUid` through {@link safeId}, and
+ * nothing else; see {@link RawSecretRow} for why no other field may supply the
+ * label. Takes `unknown` because it is called on entries that may not be rows
+ * at all, and must never throw on one, since it runs while building the error
+ * for exactly those.
  */
 function rowLabel(row: unknown): string {
   if (typeof row !== "object" || row === null) return safeId(undefined);
-  const { lineageId, secretUid } = row as { lineageId?: unknown; secretUid?: unknown };
-  // A `lineageId` that is absent, `null` or malformed falls back to the
-  // `secretUid` rather than to the placeholder, so the operator still gets an
-  // id they can look up whenever the row carries one usable id.
-  const label = safeId(lineageId);
-  return label !== "unknown" ? label : safeId(secretUid);
+  return safeId((row as { secretUid?: unknown }).secretUid);
 }
 
 /**
- * An identifier, or a placeholder.
+ * A well-formed permanent secret id, or a placeholder.
  *
- * The id is a server side identifier and is safe to show, but it arrives from
- * the same untrusted row as everything else, so a value that is not a short
- * opaque string never reaches a terminal.
+ * The id is safe to show, but it arrives from the same untrusted row as
+ * everything else. Only the exact shape `@sluice/crypto` mints (`assertId`'s
+ * `sec_` plus 32 lowercase hex) is printed. Anything else, including a near
+ * miss such as an uppercase spelling, another kind's id or a Convex document
+ * id, is the very value that made the row unreadable, and echoing it would let
+ * the bundle put text of its choosing into the operator's terminal. The
+ * operator gets "unknown" instead, which is true.
  */
 function safeId(value: unknown): string {
-  return typeof value === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(value) ? value : "unknown";
+  if (typeof value !== "string") return "unknown";
+  try {
+    return assertId("sec", "secretUid", value);
+  } catch {
+    return "unknown";
+  }
 }

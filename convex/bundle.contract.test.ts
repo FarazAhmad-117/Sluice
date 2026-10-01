@@ -43,7 +43,7 @@ import {
   wrapProjectDataKey,
 } from "../apps/admin/src/lib/secrets/pdk";
 import type { EnvironmentKey } from "../apps/admin/src/lib/secrets/pdk";
-import { newSecretSlot, sealSecret } from "../apps/admin/src/lib/secrets/seal";
+import { newSecretSlot, nextSecretSlot, sealSecret } from "../apps/admin/src/lib/secrets/seal";
 import { decryptSecrets, readRevocation } from "../packages/cli/src/bundle";
 import { TokenIdentity } from "../packages/cli/src/config";
 import { NO_PERSISTED_FLOOR, SluiceCore } from "../packages/sdk/src/index";
@@ -220,7 +220,7 @@ async function provision(t: ReturnType<typeof convexTest>) {
 
   // ---- A secret, sealed by the dashboard's own sealer. ---------------------
   const slot = newSecretSlot();
-  await t.mutation(api.secrets.createSecret, {
+  const created = await t.mutation(api.secrets.createSecret, {
     sessionToken,
     environmentId,
     secretUid: slot.secretUid,
@@ -267,7 +267,18 @@ async function provision(t: ReturnType<typeof convexTest>) {
   expect(response.status).toBe(200);
   const { token: bundleToken } = (await response.json()) as { token: string };
 
-  return { sessionToken, muk, orgId, orgUid, userUid, minted, bundleToken };
+  return {
+    sessionToken,
+    muk,
+    orgId,
+    orgUid,
+    userUid,
+    minted,
+    bundleToken,
+    environmentId,
+    key,
+    secretId: created.secretId,
+  };
 }
 
 describe("the bundle contract between the backend and the CLI", () => {
@@ -288,6 +299,55 @@ describe("the bundle contract between the backend and the CLI", () => {
     const opened = await decryptSecrets(identity, bundle);
     expect(opened.secrets).toEqual({ [NAME]: VALUE });
     expect(opened.epoch).toBe(bundle.epoch);
+  });
+
+  /**
+   * THE VERSION PATH, END TO END. The version is in the associated data on
+   * both sides of the wire: the dashboard seals version 2 FOR version 2, the
+   * server stores and serves the version it was told, and the CLI rebuilds the
+   * associated data from the version the bundle carries. If any of the three
+   * disagreed (the server re-numbering, the CLI reading another field, the
+   * dashboard sealing for the version it replaces) the update would store
+   * perfectly and the workload would refuse the whole bundle at its next push.
+   */
+  it("serves an update the real CLI opens as the new value, and never the old", async () => {
+    const t = convexTest(schema, modules);
+    const { sessionToken, minted, bundleToken, environmentId, key, secretId } =
+      await provision(t);
+
+    // The row as the dashboard would hold it when the edit form opens: the
+    // listing, not anything `provision` kept locally.
+    const listed = await t.query(api.secrets.listSecrets, { sessionToken, environmentId });
+    const row = listed[0];
+    if (row === undefined) throw new Error("the listing returned no row");
+    const environment = await t.query(api.environments.getEnvironment, {
+      sessionToken,
+      environmentId,
+    });
+
+    const NEW_VALUE = "postgres://app:hunter3@db.internal:5432/production";
+    const next = nextSecretSlot(row);
+    expect(next).toEqual({ secretUid: row.secretUid, version: 2 });
+    const updated = await t.mutation(api.secrets.updateSecret, {
+      sessionToken,
+      secretId,
+      version: next.version,
+      pdkVersion: environment.pdkVersion,
+      ...(await sealSecret(key, { ...next, name: NAME, value: NEW_VALUE })),
+    });
+    expect(updated).toMatchObject({ secretUid: row.secretUid, version: 2 });
+
+    const bundle = await t.query(api.bundle.getBundle, { token: bundleToken });
+    // Exactly one row for the secret, at the new version, and the superseded
+    // ciphertext is not on the wire at all.
+    expect(bundle.secrets.map((served) => `${served.secretUid}@${served.version}`)).toEqual([
+      `${row.secretUid}@2`,
+    ]);
+    expect(JSON.stringify(bundle)).not.toContain(row.valueCiphertext);
+
+    const opened = await decryptSecrets(TokenIdentity.fromToken(minted.token), bundle);
+    expect(opened.secrets).toEqual({ [NAME]: NEW_VALUE });
+    expect(Object.values(opened.secrets)).not.toContain(VALUE);
   });
 
   it("delivers a revocation the real CLI reads and the real core shuts down on", async () => {

@@ -32,7 +32,10 @@
  * `experimental.extensionAlias` does not help because it is webpack-only. Do
  * not put the extensions back without also giving this package a build step.
  */
-export const VERSION = "sluice-crypto/v1";
+// v2 since the associated data rules and the MUK salt construction moved to
+// their v2 forms: a v1 build and a v2 build cannot open each other's ciphertext,
+// so they must not report the same version.
+export const VERSION = "sluice-crypto/v2";
 
 export { constantTimeEqual, fromHex, randomBytes, toHex, utf8 } from "./bytes";
 

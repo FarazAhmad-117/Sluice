@@ -3,6 +3,6 @@ import { VERSION } from "../src/index";
 
 describe("package", () => {
   it("exports a version tag", () => {
-    expect(VERSION).toBe("sluice-crypto/v1");
+    expect(VERSION).toBe("sluice-crypto/v2");
   });
 });
