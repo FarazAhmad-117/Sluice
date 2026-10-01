@@ -54,8 +54,15 @@ export function assertCanonicalHex32(field: string, value: string): string {
  * and neither can decrypt customer data. Losing the pepper invalidates every
  * stored verifier and locks everyone out of login; it does not expose a
  * secret, because a verifier is not a key to anything the server stores.
+ *
+ * EXPORTED FOR ONE OTHER READER, `lib/salt.ts`, which keys the login-salt
+ * decoy under the same pepper. Exported rather than re-read there so the
+ * presence and shape checks below are the only ones: a second reader of
+ * `process.env.AUTH_PEPPER` is a second place for the loud failure to be made
+ * lenient by accident. The decoy uses its own domain string, so sharing the
+ * key does not let one construction's output stand in for the other's.
  */
-function pepper(): Uint8Array {
+export function pepper(): Uint8Array {
   const value = process.env.AUTH_PEPPER;
 
   // Loud, not lenient. A missing pepper that fell back to an unpeppered hash

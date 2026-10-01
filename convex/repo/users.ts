@@ -35,6 +35,23 @@ export async function getUserByEmail(
     .unique();
 }
 
+/**
+ * `.unique()` for the same reason as `getUserByEmail`: two rows sharing a
+ * permanent id is a broken table, and picking one of them silently is worse
+ * than throwing. Uniqueness itself is enforced by the caller (signup), since
+ * the uid is client-chosen and this layer carries no policy beyond the email
+ * brand.
+ */
+export async function getUserByUid(
+  ctx: QueryCtx,
+  uid: string,
+): Promise<Doc<"users"> | null> {
+  return await ctx.db
+    .query("users")
+    .withIndex("by_uid", (q) => q.eq("uid", uid))
+    .unique();
+}
+
 export async function insertUser(
   ctx: MutationCtx,
   doc: UserDocWithNormalisedEmail,

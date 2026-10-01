@@ -29,6 +29,8 @@ const VERIFIER_B =
   "aa11bb22cc33dd44ee55ff6600778899aabbccddeeff00112233445566778899";
 
 const signupArgs = {
+  uid: "usr_" + "ad".repeat(16),
+  accountSalt: "30".repeat(16),
   email: "ada@example.test",
   authVerifier: VERIFIER_A,
   publicKey:
