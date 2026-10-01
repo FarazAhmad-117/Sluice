@@ -3,7 +3,7 @@ import { randomBytes, toHex } from "./bytes";
 /**
  * PERMANENT IDENTIFIERS, MINTED BY THE CLIENT.
  *
- * Every org, user and environment carries one of these alongside its Convex
+ * Every org, user, environment and secret carries one of these alongside its Convex
  * document id, and every encryption binding and external reference uses THIS,
  * never the document id. Two reasons, both load bearing:
  *
@@ -32,8 +32,14 @@ import { randomBytes, toHex } from "./bytes";
  * by uid, or a forged uid would let one org's rows land on another's.
  * Ciphertext stays safe regardless: a copied uid is a label, not a key, and
  * confers no ability to open anything bound to it.
+ *
+ * A SECRET'S ID (`sec_…`) NAMES ITS LINEAGE, NOT ONE ROW. Every version of one
+ * secret shares the same `sec_` id; the version number is what tells them
+ * apart, and `secretAssociatedData` binds both. Minting a fresh `sec_` id per
+ * version would defeat the point: the id is what lets a reader say "this
+ * ciphertext belongs to THIS secret and no other", across edits.
  */
-export type IdKind = "org" | "usr" | "env";
+export type IdKind = "org" | "usr" | "env" | "sec";
 
 const ID_BYTES = 16;
 
@@ -54,6 +60,7 @@ const PATTERNS: Readonly<Record<IdKind, RegExp>> = Object.freeze({
   org: pattern("org"),
   usr: pattern("usr"),
   env: pattern("env"),
+  sec: pattern("sec"),
 });
 
 /**
@@ -77,7 +84,7 @@ export function newId(kind: IdKind): string {
  */
 export function assertId(kind: IdKind, field: string, value: string): string {
   if (!Object.prototype.hasOwnProperty.call(PATTERNS, kind)) {
-    throw new Error("kind must be org, usr or env");
+    throw new Error("kind must be org, usr, env or sec");
   }
   if (typeof value !== "string" || !PATTERNS[kind].test(value)) {
     throw new Error(`${field} must be a well-formed ${kind} id`);

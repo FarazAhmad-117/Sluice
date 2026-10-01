@@ -36,11 +36,15 @@ import { assertId } from "./ids";
  * produces an org whose kill switch cannot be armed, and nothing says so until
  * somebody tries to use it, during the incident it exists for.
  *
- * NO PARAMETER HERE SELECTS A VERSION OR A DOMAIN. Every label is bound inside
- * its function. A version a caller can pass is a version a caller can get
- * wrong, and on the AAD it would additionally be a downgrade a client could
- * perform on itself. A new construction gets a new label and replaces the
- * function's body; it does not get an argument.
+ * NO PARAMETER HERE SELECTS A PROTOCOL VERSION OR A DOMAIN. Every label is
+ * bound inside its function. A protocol version a caller can pass is one a
+ * caller can get wrong, and on the AAD it would additionally be a downgrade a
+ * client could perform on itself. A new construction gets a new label and
+ * replaces the function's body; it does not get an argument. The `version` of
+ * a secret and the `pdkVersion` of a key grant ARE parameters, but they are
+ * DATA VERSIONS -- which edit of a secret, which generation of a key -- not
+ * protocol versions: they choose nothing about how the bytes are built, only
+ * which row the bytes are bound to.
  *
  * NONE OF THESE MAY BE FETCHED FROM A SERVER AT RUNTIME. They are pinned in
  * client code. A server that could choose the associated data could hand a
@@ -63,13 +67,25 @@ import { assertId } from "./ids";
  * minted client-side and can carry the environment uid, which pins it for the
  * SDK at the moment the token is issued.
  *
+ * THE SAME LIMIT APPLIES TO THE VERSIONS, AND IT IS WORTH SPELLING OUT. The
+ * secret's `version` and the grant's `pdkVersion` are bound into the
+ * associated data, so a server cannot RELABEL a ciphertext: an old grant served
+ * under the new key version, or an old value served under the current secret
+ * version, fails to open. That stops SPLICING. It does not stop WHOLESALE
+ * ROLLBACK: a server that serves an entire old row -- the old ciphertext
+ * together with its own old version number -- hands the client associated data
+ * that is correct for that row, and it opens. Detecting that needs the client
+ * to remember the highest version it has seen for each secret and each
+ * environment key and refuse anything lower (a ratchet). That is future work
+ * and is NOT done here.
+ *
  * WHY THE ASSOCIATED DATA IS `/v2` AND THERE IS NO `/v1` PATH BESIDE IT.
  *
  * v1 bound a secret to the Convex document id of its environment, and could not
  * bind a key grant to its environment or a revocation key to its org at all:
  * Convex mints document ids on insert, and every one of those wraps happens in
  * the client BEFORE the creating mutation runs. Both problems had the same root,
- * and `ids.ts` removes it: every org, user and environment now carries a
+ * and `ids.ts` removes it: every org, user, environment and secret now carries a
  * permanent id minted by the client, so the id exists before the wrap, and it
  * travels unchanged when an org moves between cells, where a document id would
  * be re-minted and every ciphertext bound to it would stop opening.
@@ -88,6 +104,13 @@ import { assertId } from "./ids";
  * opaque document ids. It also means an id of the wrong kind -- `usr_…` where
  * `env_…` belongs, or a Convex document id at all -- fails at the call instead
  * of producing well-formed associated data for the wrong thing.
+ *
+ * THE NON-ID INPUTS ARE CLOSED THE SAME WAY. A version is a positive safe
+ * integer rendered as plain decimal digits ({@link assertVersion}); a secret's
+ * field is exactly `"name"` or `"value"`; a grantee type is exactly `"user"` or
+ * `"token"`; a token grantee is exactly 64 lowercase hex characters. None of
+ * those can contain the separator either, and each admits one spelling per
+ * value.
  */
 
 /**
@@ -163,8 +186,8 @@ const TOKEN_ID_BYTES = 16;
  * FOR A PORT (the Rust SDK, or anything else): these shape checks, and the ones
  * in `ids.ts`, are BYTE RULES, not regexes. Exact length; every character in
  * the lowercase hex alphabet `0-9a-f`; for a permanent id, the literal kind
- * prefix (`env_`, `usr_`, `org_`) first. Implement them as byte comparisons. A
- * regex is only safe where `$` means end of input, which is true in JavaScript
+ * prefix (`env_`, `usr_`, `org_`, `sec_`) first. Implement them as byte
+ * comparisons. A regex is only safe where `$` means end of input, which is true in JavaScript
  * and in Rust's `regex` crate but NOT in PCRE or Python, where `$` also matches
  * just before a trailing newline -- so a ported `^[0-9a-f]{64}$` would accept
  * `hash + "\n"` and seal a second, different AAD for the same grantee.
@@ -188,20 +211,75 @@ function assertTokenHash(value: string): string {
 }
 
 /**
+ * THE ONE VERSION RULE, used for a secret's `version` and a grant's
+ * `pdkVersion` alike, so the two can never be encoded differently.
+ *
+ * Accepted: a positive safe integer, `Number.isSafeInteger(v) && v >= 1`.
+ * Rendered: `String(v)`, which for a safe integer is always plain decimal
+ * ASCII digits -- no sign, no leading zeros, no exponent form, no fraction.
+ * `String` only switches to exponent form at 1e21, far above the safe range.
+ *
+ * Each rejection closes a second spelling or an unencodable value. `0` and the
+ * negatives are not versions. `-0` passes `Number.isSafeInteger` and would
+ * render as `"0"`; `>= 1` refuses it. `1.5`, `NaN` and the infinities have no
+ * digits-only rendering. `"1"` is refused rather than parsed: it is the right
+ * digits in the wrong type, which is what a JSON body or a column hands back
+ * when something upstream is already wrong, and any parser lenient enough to
+ * accept it must also decide what `"01"` and `" 1"` mean -- a second spelling
+ * per version, which is what this rule exists to rule out. `2 ** 53` and above are refused because a
+ * double can no longer tell them from their neighbours, so two versions could
+ * share one spelling.
+ *
+ * The value is never echoed, matching every other guard in this package.
+ *
+ * FOR A PORT (the Rust SDK): the range is 1 ..= 2^53 - 1, so a `u64` that
+ * rejects 0 and anything above `(1 << 53) - 1`; render as plain decimal with
+ * no padding (`v.to_string()`). A port that accepted the full `u64` range
+ * would seal under versions this client can never reproduce.
+ */
+function assertVersion(field: string, value: number): string {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error(`${field} must be a positive whole number`);
+  }
+  return String(value);
+}
+
+/**
+ * The two slots a secret's ciphertext can occupy, and there are exactly two.
+ * Same reasoning as {@link GRANTEE_TYPES}: a third value, or a near miss such
+ * as `"Value"`, would be a slot nobody reads rather than an error.
+ */
+export type SecretField = "name" | "value";
+const SECRET_FIELDS: readonly string[] = ["name", "value"];
+
+function assertSecretField(value: SecretField): SecretField {
+  if (typeof value !== "string" || !SECRET_FIELDS.includes(value)) {
+    throw new Error("field must be name or value");
+  }
+  return value;
+}
+
+/**
  * THE ASSOCIATED DATA RULE FOR SECRETS. READ THIS BEFORE WRITING A CLIENT.
  *
  * Every secret ciphertext in Sluice, both the name and the value, is sealed
  * with AES-GCM under associated data of exactly:
  *
- *     utf8("sluice/secret/v2|" + environmentUid)
+ *     utf8("sluice/secret/v2|" + environmentUid + "|" + secretUid + "|"
+ *          + decimal(version) + "|" + field)
  *
  * where `environmentUid` is the permanent `env_` id of the environment the row
- * belongs to (see `ids.ts`), spelled exactly as stored. NOT its Convex document
+ * belongs to (see `ids.ts`), `secretUid` is the secret's permanent `sec_` id
+ * (one per secret, shared by all its versions), `version` is that secret's
+ * version number as {@link assertVersion} renders it, and `field` is `"name"`
+ * for the name ciphertext and `"value"` for the value ciphertext. Ids are
+ * spelled exactly as stored. `environmentUid` is NOT the Convex document
  * id: that is local to one deployment and is re-minted when an org moves cells,
  * and ciphertext bound to it would stop opening on the day of the move with no
  * server able to repair it, because no server holds a key.
  *
- * WHY THE VERSION IS IN HERE AND NOT IN A COLUMN. Associated data is
+ * WHY THE PROTOCOL VERSION (`/v2`) IS IN HERE AND NOT IN A COLUMN -- and the
+ * same argument is why the secret's own version is in here too. Associated data is
  * authenticated: change one byte of it and decryption fails. A column is not.
  * If the algorithm version sat in `secrets.algorithmVersion`, someone with write
  * access to the database could edit it independently of the ciphertext it
@@ -218,6 +296,30 @@ function assertTokenHash(value: string): string {
  * between environments through the API either. Both halves are needed: this one
  * stops the database operator, the other stops the API caller.
  *
+ * WHY THE SECRET, ITS VERSION AND THE FIELD ARE IN HERE. With the environment
+ * alone, every secret in an environment shared ONE associated data, so a
+ * database writer who cannot read anything could still rearrange what the
+ * client reads: swap the values of `DATABASE_URL` and `STRIPE_KEY`, move a name
+ * ciphertext into a value slot, or put a superseded value back into the
+ * current row -- and every one of those would decrypt cleanly and be believed.
+ * Binding `secretUid` stops cross-secret swaps, binding `field` stops
+ * name/value swaps, and binding `version` stops an old value being served
+ * under the current version number. Each of those now fails to open.
+ *
+ * WHAT IT DOES NOT STOP: serving the whole old row, ciphertext and its own old
+ * version number together. That associated data is correct for that row, so
+ * it opens. Only a client-side ratchet on the highest version seen can catch
+ * it, and that is future work -- see the header of this file.
+ *
+ * WHY THIS ENCODING IS INJECTIVE. Every component is either a fixed literal or
+ * a closed, fixed-shape value that cannot contain `|`: the label is a constant;
+ * both ids are `<kind>_` plus 32 lowercase hex; the version is decimal digits
+ * only; the field is one of two literals. With the separator absent from every
+ * component, splitting on `|` recovers the components uniquely, so no two
+ * distinct inputs produce the same bytes. The other constructions in this file
+ * begin with different labels, none a prefix of another (the test suite pins
+ * that), so no input to one can equal an input to another.
+ *
  * THE ARGUMENT IS AN OBJECT, NOT A STRING, AND CERTAINLY NOT A JOINED ONE. A
  * function taking the finished string would let a caller build
  * `"sluice/secret/v2|" + id` themselves, which is the hand-copied literal this
@@ -227,12 +329,29 @@ function assertTokenHash(value: string): string {
  * site passing a document id fails to compile rather than silently binding the
  * wrong thing.
  */
-export function secretAssociatedData(params: { environmentUid: string }): Uint8Array {
+export function secretAssociatedData(params: {
+  environmentUid: string;
+  secretUid: string;
+  version: number;
+  field: SecretField;
+}): Uint8Array {
   const environmentUid = assertId("env", "environmentUid", params.environmentUid);
+  const secretUid = assertId("sec", "secretUid", params.secretUid);
+  const version = assertVersion("version", params.version);
+  const field = assertSecretField(params.field);
 
-  // Unambiguous by construction: the prefix is fixed and `assertId` admits
-  // exactly one fixed-width shape. No two distinct inputs produce one string.
-  return utf8.encode(SECRET_AAD_PREFIX + environmentUid);
+  // Unambiguous by construction, for the reason given above: no component can
+  // contain the separator and each has exactly one spelling per value.
+  return utf8.encode(
+    SECRET_AAD_PREFIX +
+      environmentUid +
+      SEPARATOR +
+      secretUid +
+      SEPARATOR +
+      version +
+      SEPARATOR +
+      field,
+  );
 }
 
 /**
@@ -242,10 +361,12 @@ export function secretAssociatedData(params: { environmentUid: string }): Uint8A
  * Every `pdkGrants.wrappedPDK` in Sluice is sealed with AES-GCM under
  * associated data of exactly:
  *
- *     utf8("sluice/pdk/v2|" + environmentUid + "|" + granteeType + "|" + granteeId)
+ *     utf8("sluice/pdk/v2|" + environmentUid + "|" + decimal(pdkVersion) + "|"
+ *          + granteeType + "|" + granteeId)
  *
  * where `environmentUid` is the permanent `env_` id of the environment whose
- * project data key this is, `granteeType` is `"user"` or `"token"`, and
+ * project data key this is, `pdkVersion` is the generation of that key as
+ * {@link assertVersion} renders it, `granteeType` is `"user"` or `"token"`, and
  * `granteeId` is the user's permanent `usr_` id for a user and the
  * {@link tokenIdHash} for a token, spelled exactly as they are stored on the
  * row.
@@ -286,13 +407,34 @@ export function secretAssociatedData(params: { environmentUid: string }): Uint8A
  * separated twice -- by the type literal, and by a per-type shape check that
  * {@link TOKEN_HASH_PATTERN} documents -- where v1 had only the first.
  *
- * WHY `pdkVersion` IS NOT IN HERE. It is the same call `secrets` makes: the
- * version bound into associated data is the PROTOCOL version, `/v2`, and the
- * key version lives in a column. Binding `pdkVersion` would buy nothing against
- * the only rollback that works anyway -- restoring the whole earlier row, whose
- * associated data was correct for its own version -- while forcing every client
- * to predict the version the server will assign to an environment it has not
- * created yet.
+ * WHY `pdkVersion` IS IN HERE: ROTATION ROLLBACK. An earlier draft of v2 left
+ * it out, reasoning that the only rollback that mattered was restoring a whole
+ * earlier row. That was wrong. When an environment key is rotated -- from
+ * version 1 to 2, say, to lock out a member who was just removed -- the old and
+ * new grants for each REMAINING grantee had identical associated data, because
+ * nothing in it changed. `pdkVersion` is a plain column, so a server could serve
+ * the OLD grant labelled version 2. The client would unwrap the old key,
+ * believe it current, and seal every new secret under a key the removed member
+ * still holds: a silent confidentiality failure on the write path. With the
+ * version bound, the relabelled grant fails to open.
+ *
+ * The client does not have to predict anything to supply it: a new environment
+ * starts at version 1, and a rotation is performed by a client that wraps the
+ * new key under the version it is creating. The server's job is to store the
+ * version the client stated, not to choose one.
+ *
+ * WHAT IT DOES NOT STOP: serving the whole old grant WITH its own old version.
+ * That associated data is correct for that row, so it opens, and the client
+ * learns only that it was given version 1. Refusing a version lower than one
+ * already seen is a client-side ratchet, and that is future work -- see the
+ * header of this file.
+ *
+ * WHY THIS ENCODING IS INJECTIVE: the argument {@link secretAssociatedData}
+ * makes, component for component. The label is a constant, the environment is
+ * a fixed-shape id, the version is decimal digits only, the type is one of two
+ * literals, and the grantee id is a fixed shape chosen by that literal; none
+ * can contain `|`, so the components are recovered uniquely and no two distinct
+ * inputs share bytes.
  *
  * THE ARGUMENT IS AN OBJECT, NOT A JOINED STRING, for the reason above: naming
  * the fields at every call site is what makes a diff that swaps a user id for a
@@ -300,10 +442,12 @@ export function secretAssociatedData(params: { environmentUid: string }): Uint8A
  */
 export function pdkAssociatedData(params: {
   environmentUid: string;
+  pdkVersion: number;
   granteeType: PDKGranteeType;
   granteeId: string;
 }): Uint8Array {
   const environmentUid = assertId("env", "environmentUid", params.environmentUid);
+  const pdkVersion = assertVersion("pdkVersion", params.pdkVersion);
   const { granteeType } = params;
 
   // Checked against the closed set rather than merely for being a string. An
@@ -322,11 +466,19 @@ export function pdkAssociatedData(params: {
       : assertTokenHash(params.granteeId);
 
   // Unambiguous by construction: the prefix is fixed, `environmentUid` is a
-  // fixed-width shape with no separator in it, `granteeType` is one of two
-  // known literals, and `granteeId` is a separator-free shape fixed by that
-  // literal. No two distinct inputs produce one string.
+  // fixed-width shape with no separator in it, `pdkVersion` is digits only,
+  // `granteeType` is one of two known literals, and `granteeId` is a
+  // separator-free shape fixed by that literal. No two distinct inputs produce
+  // one string.
   return utf8.encode(
-    PDK_AAD_PREFIX + environmentUid + SEPARATOR + granteeType + SEPARATOR + granteeId,
+    PDK_AAD_PREFIX +
+      environmentUid +
+      SEPARATOR +
+      pdkVersion +
+      SEPARATOR +
+      granteeType +
+      SEPARATOR +
+      granteeId,
   );
 }
 

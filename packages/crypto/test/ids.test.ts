@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { assertId, newId, type IdKind } from "../src/ids";
 
 describe("newId", () => {
-  it.each(["org", "usr", "env"] as const)("mints a %s id in the one canonical shape", (kind) => {
+  it.each(["org", "usr", "env", "sec"] as const)("mints a %s id in the one canonical shape", (kind) => {
     const id = newId(kind);
     expect(id).toMatch(new RegExp(`^${kind}_[0-9a-f]{32}$`));
     // Minting and validation must agree: whatever newId hands out, assertId
@@ -16,7 +16,7 @@ describe("newId", () => {
   });
 
   it("refuses to mint for an unknown kind", () => {
-    expect(() => newId("foo" as IdKind)).toThrow(/^kind must be org, usr or env$/);
+    expect(() => newId("foo" as IdKind)).toThrow(/^kind must be org, usr, env or sec$/);
   });
 });
 
@@ -40,6 +40,22 @@ describe("assertId", () => {
     } catch (e) {
       expect(String((e as Error).message)).not.toContain("usr_1011");
     }
+  });
+
+  /**
+   * A secret's permanent id goes into the secret associated data next to the
+   * environment's, so the two kinds must not be interchangeable in either
+   * direction.
+   */
+  it("keeps sec ids and env ids apart", () => {
+    const sec = "sec_303132333435363738393a3b3c3d3e3f";
+    expect(assertId("sec", "secretUid", sec)).toBe(sec);
+    expect(() => assertId("sec", "secretUid", "env_000102030405060708090a0b0c0d0e0f")).toThrow(
+      /^secretUid must be a well-formed sec id$/,
+    );
+    expect(() => assertId("env", "environmentUid", sec)).toThrow(
+      /^environmentUid must be a well-formed env id$/,
+    );
   });
 
   /**
@@ -70,7 +86,7 @@ describe("assertId", () => {
 
   it("rejects an unknown kind", () => {
     expect(() => assertId("foo" as IdKind, "x", "foo_" + "0".repeat(32))).toThrow(
-      /^kind must be org, usr or env$/,
+      /^kind must be org, usr, env or sec$/,
     );
   });
 });

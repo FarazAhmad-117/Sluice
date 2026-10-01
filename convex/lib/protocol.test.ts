@@ -64,7 +64,7 @@ function walk(dir: string, out: string[] = []): string[] {
  * revoked token keeps working. A test below reads the crypto source and fails
  * if it grows a label this pattern does not cover.
  *
- * Version-agnostic on purpose:a hand-copy written today would spell
+ * Version-agnostic on purpose: a hand-copy written today would spell
  * the current version, a stale copy still carries an old one, and a stale copy
  * is worse than a fresh one because it now disagrees with the client. A future
  * version is banned before it exists.
@@ -106,18 +106,23 @@ const OWNED_DOMAINS = [
 /** The crypto package's source, where every owned label is defined. */
 const CRYPTO_SRC = fileURLToPath(new URL("../../packages/crypto/src", import.meta.url));
 
-/** The permanent id `packages/crypto/test/protocol.test.ts` pins its vector on. */
+/** The permanent ids `packages/crypto/test/protocol.test.ts` pins its vectors on. */
 const ENV = "env_000102030405060708090a0b0c0d0e0f";
+const SEC = "sec_303132333435363738393a3b3c3d3e3f";
+
+/** A valid secret binding, so each test below varies exactly one field. */
+const BINDING = { environmentUid: ENV, secretUid: SEC, version: 1, field: "value" } as const;
 
 /**
- * The v2 secret associated data for `ENV`, as hex, computed with node:crypto
- * and never with `@sluice/crypto`. The prefix is deliberately not spelled out
- * here, because the scan below would find it in this comment. Identical to
- * `SECRET_AAD` in the crypto package's own test: the two suites pin the same
- * point of the map from opposite sides of the wire.
+ * The v2 secret associated data for the value of version 1 of `SEC` in `ENV`,
+ * as hex, computed with node:crypto and never with `@sluice/crypto`. The prefix
+ * is deliberately not spelled out here, because the scan below would find it
+ * in this comment. Identical to `SECRET_AAD_V1_VALUE` in the crypto package's
+ * own test: the two suites pin the same point of the map from opposite sides
+ * of the wire.
  */
 const SECRET_AAD =
-  "736c756963652f7365637265742f76327c656e765f3030303130323033303430353036303730383039306130623063306430653066";
+  "736c756963652f7365637265742f76327c656e765f30303031303230333034303530363037303830393061306230633064306530667c7365635f33303331333233333334333533363337333833393361336233633364336533667c317c76616c7565";
 
 describe("the secret associated data rule", () => {
   it("is defined nowhere under convex/, and neither is any other crypto-owned label", () => {
@@ -152,9 +157,15 @@ describe("the secret associated data rule", () => {
 
   /**
    * The ban has to keep up with the crypto package. Every label defined there
-   * is read back from its source and must be one the pattern bans, so a new
+   * is read back from its source and the set must EQUAL the owned list: a new
    * label added to `@sluice/crypto` without extending this file fails here
-   * rather than going unguarded.
+   * rather than going unguarded, and a label removed from the crypto package
+   * fails here too rather than lingering in the ban as a name nothing defines.
+   *
+   * Its limits, since it is a regex over source text: it sees only labels of
+   * the form `sluice/<one path segment>/v<digit>`, so a nested-path label (`a/b`
+   * between the prefix and the version), a label assembled by concatenation, or
+   * one with no `/v<digit>` at all would not be read back and would go unchecked.
    */
   it("covers every label the crypto package actually defines", () => {
     const label = new RegExp("sluice" + "/([a-z0-9-]+)/v" + "\\d", "g");
@@ -164,8 +175,7 @@ describe("the secret associated data rule", () => {
         defined.add(match[1] as string);
       }
     }
-    expect(defined.size).toBeGreaterThan(0);
-    expect([...defined].filter((domain) => !OWNED_DOMAINS.includes(domain)).sort()).toEqual([]);
+    expect([...defined].sort()).toEqual([...OWNED_DOMAINS].sort());
   });
 
   it("refuses a non-string environment uid instead of encoding it", () => {
@@ -173,11 +183,23 @@ describe("the secret associated data rule", () => {
     // for the environment 42. An id off a database row or a URL segment is
     // exactly where a number arrives from.
     expect(() =>
-      secretAssociatedData({ environmentUid: 42 as unknown as string }),
+      secretAssociatedData({ ...BINDING, environmentUid: 42 as unknown as string }),
     ).toThrow(/^environmentUid must be a well-formed env id$/);
     expect(() =>
-      secretAssociatedData({ environmentUid: undefined as unknown as string }),
+      secretAssociatedData({ ...BINDING, environmentUid: undefined as unknown as string }),
     ).toThrow(/^environmentUid must be a well-formed env id$/);
+  });
+
+  /**
+   * The same for the secret's own version, which is exactly the kind of value
+   * a database column or a JSON body returns as a string.
+   */
+  it("refuses a version that is not a positive whole number", () => {
+    for (const bad of ["1", 0, 1.5]) {
+      expect(() => secretAssociatedData({ ...BINDING, version: bad as number })).toThrow(
+        /^version must be a positive whole number$/,
+      );
+    }
   });
 
   /**
@@ -188,12 +210,15 @@ describe("the secret associated data rule", () => {
    * cell move.
    */
   it("refuses a Convex document id", () => {
-    expect(() => secretAssociatedData({ environmentUid: "jd7abc123" })).toThrow(
+    expect(() => secretAssociatedData({ ...BINDING, environmentUid: "jd7abc123" })).toThrow(
       /^environmentUid must be a well-formed env id$/,
+    );
+    expect(() => secretAssociatedData({ ...BINDING, secretUid: "jd7abc123" })).toThrow(
+      /^secretUid must be a well-formed sec id$/,
     );
   });
 
-  it("produces the pinned bytes for a real environment uid", () => {
-    expect(toHex(secretAssociatedData({ environmentUid: ENV }))).toBe(SECRET_AAD);
+  it("produces the pinned bytes for a real environment and secret", () => {
+    expect(toHex(secretAssociatedData(BINDING))).toBe(SECRET_AAD);
   });
 });

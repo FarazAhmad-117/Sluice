@@ -130,32 +130,41 @@ describe("tokenIdHash", () => {
 const ENV = "env_000102030405060708090a0b0c0d0e0f";
 const USR = "usr_101112131415161718191a1b1c1d1e1f";
 const ORG = "org_202122232425262728292a2b2c2d2e2f";
+const SEC = "sec_303132333435363738393a3b3c3d3e3f";
 const TOKEN_HASH = "305ab71526b2c39b5c8daf6ec97b91af98247937c858f4fd3ee4cf1e8d97fcd9";
 
 // Computed with node:crypto, never with this package.
-const SECRET_AAD =
-  "736c756963652f7365637265742f76327c656e765f3030303130323033303430353036303730383039306130623063306430653066";
-const PDK_AAD_USER =
-  "736c756963652f70646b2f76327c656e765f30303031303230333034303530363037303830393061306230633064306530667c757365727c7573725f3130313131323133313431353136313731383139316131623163316431653166";
-const PDK_AAD_TOKEN =
-  "736c756963652f70646b2f76327c656e765f30303031303230333034303530363037303830393061306230633064306530667c746f6b656e7c33303561623731353236623263333962356338646166366563393762393161663938323437393337633835386634666433656534636631653864393766636439";
+const SECRET_AAD_V1_VALUE =
+  "736c756963652f7365637265742f76327c656e765f30303031303230333034303530363037303830393061306230633064306530667c7365635f33303331333233333334333533363337333833393361336233633364336533667c317c76616c7565";
+const SECRET_AAD_V1_NAME =
+  "736c756963652f7365637265742f76327c656e765f30303031303230333034303530363037303830393061306230633064306530667c7365635f33303331333233333334333533363337333833393361336233633364336533667c317c6e616d65";
+const SECRET_AAD_V2_VALUE =
+  "736c756963652f7365637265742f76327c656e765f30303031303230333034303530363037303830393061306230633064306530667c7365635f33303331333233333334333533363337333833393361336233633364336533667c327c76616c7565";
+const PDK_AAD_V1_USER =
+  "736c756963652f70646b2f76327c656e765f30303031303230333034303530363037303830393061306230633064306530667c317c757365727c7573725f3130313131323133313431353136313731383139316131623163316431653166";
+const PDK_AAD_V1_TOKEN =
+  "736c756963652f70646b2f76327c656e765f30303031303230333034303530363037303830393061306230633064306530667c317c746f6b656e7c33303561623731353236623263333962356338646166366563393762393161663938323437393337633835386634666433656534636631653864393766636439";
+const PDK_AAD_V2_USER =
+  "736c756963652f70646b2f76327c656e765f30303031303230333034303530363037303830393061306230633064306530667c327c757365727c7573725f3130313131323133313431353136313731383139316131623163316431653166";
 const REVOCATION_AAD =
   "736c756963652f7265766f636174696f6e2d6b65792f76327c6f72675f32303231323232333234323532363237323832393261326232633264326532667c7573725f3130313131323133313431353136313731383139316131623163316431653166";
 
 /**
- * `utf8("sluice/secret/v2|env_000102030405060708090a0b0c0d0e0f")`, written out
- * one byte at a time.
+ * `utf8("sluice/secret/v2|" + ENV + "|" + SEC + "|1|value")`, written out one
+ * byte at a time.
  *
  * Deliberately NOT `utf8.encode(...)` of a string assembled here: this is the
  * one assertion in the file that cannot be satisfied by an implementation that
  * is self-consistently wrong, because every entry is a printable ASCII code
  * point a reader can check by hand. `115` is `s`, `50` is `2`, `124` is `|`,
- * `95` is `_`, `48` is `0`.
+ * `95` is `_`, `48` is `0`, `49` is `1`, and the last five are `v a l u e`.
  */
-const SECRET_AAD_BYTES = [
+const SECRET_AAD_V1_VALUE_BYTES = [
   115, 108, 117, 105, 99, 101, 47, 115, 101, 99, 114, 101, 116, 47, 118, 50, 124, 101, 110, 118,
   95, 48, 48, 48, 49, 48, 50, 48, 51, 48, 52, 48, 53, 48, 54, 48, 55, 48, 56, 48, 57, 48, 97, 48,
-  98, 48, 99, 48, 100, 48, 101, 48, 102,
+  98, 48, 99, 48, 100, 48, 101, 48, 102, 124, 115, 101, 99, 95, 51, 48, 51, 49, 51, 50, 51, 51, 51,
+  52, 51, 53, 51, 54, 51, 55, 51, 56, 51, 57, 51, 97, 51, 98, 51, 99, 51, 100, 51, 101, 51, 102,
+  124, 49, 124, 118, 97, 108, 117, 101,
 ];
 
 /** A Convex document id, the shape v1 bound and v2 must refuse. */
@@ -163,31 +172,98 @@ const CONVEX_DOC_ID = "k17dn9q2x4m8p3v6b0zc5t7wgh";
 
 const NOT_STRINGS = [undefined, null, 42, {}, [ENV]];
 
+/**
+ * Every value the version rule must refuse, and each for its own reason: `0`
+ * and the negatives are not versions; `-0` is `Object.is`-distinct from `0` but
+ * `String(-0)` is `"0"`, so it must not slip through as a second spelling of a
+ * rejected value; `1.5` and the non-finite values have no decimal rendering a
+ * port would agree on; `"1"` is the right digits in the wrong type, exactly what
+ * a JSON body or a database column hands back; `2 ** 53` is the first integer
+ * a double can no longer tell from its neighbour, so two versions would share
+ * one spelling.
+ */
+const BAD_VERSIONS: unknown[] = [
+  0,
+  -1,
+  -0,
+  1.5,
+  Number.NaN,
+  Number.POSITIVE_INFINITY,
+  Number.NEGATIVE_INFINITY,
+  "1",
+  2 ** 53,
+  undefined,
+  null,
+  1n,
+];
+
+const secret = (
+  overrides: Partial<{ environmentUid: string; secretUid: string; version: number; field: string }> = {},
+) =>
+  secretAssociatedData({
+    environmentUid: ENV,
+    secretUid: SEC,
+    version: 1,
+    field: "value",
+    ...overrides,
+  } as Parameters<typeof secretAssociatedData>[0]);
+
 describe("secretAssociatedData v2", () => {
   it("produces the exact wire bytes, built literally rather than by calling the implementation", () => {
-    expect([...secretAssociatedData({ environmentUid: ENV })]).toEqual(SECRET_AAD_BYTES);
+    expect([...secret()]).toEqual(SECRET_AAD_V1_VALUE_BYTES);
   });
 
-  it("matches the independent vector", () => {
-    expect(toHex(secretAssociatedData({ environmentUid: ENV }))).toBe(SECRET_AAD);
+  it("matches the independent vectors", () => {
+    expect(toHex(secret())).toBe(SECRET_AAD_V1_VALUE);
+    expect(toHex(secret({ field: "name" }))).toBe(SECRET_AAD_V1_NAME);
+    expect(toHex(secret({ version: 2 }))).toBe(SECRET_AAD_V2_VALUE);
   });
 
   it("returns bytes, not a string", () => {
-    expect(secretAssociatedData({ environmentUid: ENV })).toBeInstanceOf(Uint8Array);
+    expect(secret()).toBeInstanceOf(Uint8Array);
   });
 
   /**
-   * The version is a property of the protocol, so it is bound inside the
-   * function. There is no parameter a caller could use to pick a different
-   * one, which is what keeps a client from downgrading itself to v1.
+   * The protocol version is a property of the protocol, so it is bound inside
+   * the function. The `version` argument is the SECRET's version, not the
+   * protocol's; there is no parameter a caller could use to pick a different
+   * label, which is what keeps a client from downgrading itself.
    */
-  it("gives the caller no way to choose the version", () => {
+  it("gives the caller no way to choose the protocol label", () => {
     expect(secretAssociatedData.length).toBe(1);
   });
 
   it("differs across environments", () => {
     const other = "env_ffffffffffffffffffffffffffffffff";
-    expect(toHex(secretAssociatedData({ environmentUid: other }))).not.toBe(SECRET_AAD);
+    expect(toHex(secret({ environmentUid: other }))).not.toBe(SECRET_AAD_V1_VALUE);
+  });
+
+  /**
+   * SPLICING, CASE ONE: two secrets in one environment. Before this binding
+   * every secret in an environment shared one associated data, so a database
+   * writer could swap two rows' values and both would open.
+   */
+  it("differs across secrets in the same environment", () => {
+    const other = "sec_ffffffffffffffffffffffffffffffff";
+    expect(toHex(secret({ secretUid: other }))).not.toBe(SECRET_AAD_V1_VALUE);
+  });
+
+  /**
+   * SPLICING, CASE TWO: a secret's own name ciphertext moved into its value
+   * slot, or the reverse.
+   */
+  it("differs between the name and the value of one secret", () => {
+    expect(SECRET_AAD_V1_NAME).not.toBe(SECRET_AAD_V1_VALUE);
+    expect(toHex(secret({ field: "name" }))).not.toBe(toHex(secret({ field: "value" })));
+  });
+
+  /**
+   * SPLICING, CASE THREE: a superseded value put back into the current row
+   * under the current version number.
+   */
+  it("differs between versions of one secret", () => {
+    expect(SECRET_AAD_V2_VALUE).not.toBe(SECRET_AAD_V1_VALUE);
+    expect(toHex(secret({ version: 2 }))).not.toBe(toHex(secret({ version: 1 })));
   });
 
   /**
@@ -196,25 +272,45 @@ describe("secretAssociatedData v2", () => {
    * moved; `assertId` is what keeps one from sneaking back in.
    */
   it("rejects a Convex document id", () => {
-    expect(() => secretAssociatedData({ environmentUid: CONVEX_DOC_ID })).toThrow(
+    expect(() => secret({ environmentUid: CONVEX_DOC_ID })).toThrow(
       /^environmentUid must be a well-formed env id$/,
     );
   });
 
   it("rejects a user id in the environment slot", () => {
-    expect(() => secretAssociatedData({ environmentUid: USR })).toThrow(
+    expect(() => secret({ environmentUid: USR })).toThrow(
       /^environmentUid must be a well-formed env id$/,
     );
   });
 
-  it("rejects a non-string environment uid", () => {
+  it("rejects a secret id in the environment slot", () => {
+    expect(() => secret({ environmentUid: SEC })).toThrow(
+      /^environmentUid must be a well-formed env id$/,
+    );
+  });
+
+  /**
+   * The two slots are both permanent ids, so the kind prefix is what stops a
+   * call site passing them the wrong way round, or passing the environment
+   * twice.
+   */
+  it("rejects anything but a sec id in the secret slot", () => {
+    for (const bad of [ENV, USR, ORG, TOKEN_HASH, CONVEX_DOC_ID, SEC.toUpperCase(), `${SEC}\n`]) {
+      expect(() => secret({ secretUid: bad })).toThrow(/^secretUid must be a well-formed sec id$/);
+    }
+  });
+
+  it("rejects a non-string environment or secret uid", () => {
     // Reachable from a database row or a JSON body; the type is not a runtime
     // guarantee. `String(undefined)` would otherwise bind to the literal
     // "undefined" and look like a perfectly good AAD.
     for (const bad of NOT_STRINGS) {
-      expect(() =>
-        secretAssociatedData({ environmentUid: bad as unknown as string }),
-      ).toThrow(/^environmentUid must be a well-formed env id$/);
+      expect(() => secret({ environmentUid: bad as unknown as string })).toThrow(
+        /^environmentUid must be a well-formed env id$/,
+      );
+      expect(() => secret({ secretUid: bad as unknown as string })).toThrow(
+        /^secretUid must be a well-formed sec id$/,
+      );
     }
   });
 
@@ -223,9 +319,35 @@ describe("secretAssociatedData v2", () => {
    * seal to different bytes, which is two AADs for one environment.
    */
   it("rejects an uppercase spelling of a valid id", () => {
-    expect(() => secretAssociatedData({ environmentUid: ENV.toUpperCase() })).toThrow(
+    expect(() => secret({ environmentUid: ENV.toUpperCase() })).toThrow(
       /^environmentUid must be a well-formed env id$/,
     );
+  });
+
+  it("rejects every value that is not a positive whole number, without echoing it", () => {
+    for (const bad of BAD_VERSIONS) {
+      expect(() => secret({ version: bad as number })).toThrow(
+        /^version must be a positive whole number$/,
+      );
+    }
+  });
+
+  it("accepts the largest safe integer and spells it in plain decimal", () => {
+    const text = new TextDecoder().decode(secret({ version: Number.MAX_SAFE_INTEGER }));
+    expect(text.endsWith("|9007199254740991|value")).toBe(true);
+  });
+
+  /**
+   * The field is a closed pair. A near miss is not folded onto the nearest
+   * member: `"Value"` sealing under `value`'s bytes would mean two spellings
+   * for one slot, and anything else would be a slot no reader looks in.
+   */
+  it("rejects a field that is not exactly name or value", () => {
+    for (const bad of ["Value", "NAME", "", "values", "value ", "key", undefined, null, 0]) {
+      expect(() => secret({ field: bad as unknown as string })).toThrow(
+        /^field must be name or value$/,
+      );
+    }
   });
 
   it("binds the pinned prefix", () => {
@@ -235,40 +357,73 @@ describe("secretAssociatedData v2", () => {
   });
 });
 
+const pdk = (
+  overrides: Partial<{
+    environmentUid: string;
+    pdkVersion: number;
+    granteeType: string;
+    granteeId: string;
+  }> = {},
+) =>
+  pdkAssociatedData({
+    environmentUid: ENV,
+    pdkVersion: 1,
+    granteeType: "user",
+    granteeId: USR,
+    ...overrides,
+  } as Parameters<typeof pdkAssociatedData>[0]);
+
 describe("pdkAssociatedData v2", () => {
-  it("binds environment and user grantee", () => {
-    expect(
-      toHex(pdkAssociatedData({ environmentUid: ENV, granteeType: "user", granteeId: USR })),
-    ).toBe(PDK_AAD_USER);
+  it("binds environment, key version and user grantee", () => {
+    expect(toHex(pdk())).toBe(PDK_AAD_V1_USER);
   });
 
-  it("binds environment and token grantee", () => {
-    expect(
-      toHex(pdkAssociatedData({ environmentUid: ENV, granteeType: "token", granteeId: TOKEN_HASH })),
-    ).toBe(PDK_AAD_TOKEN);
+  it("binds environment, key version and token grantee", () => {
+    expect(toHex(pdk({ granteeType: "token", granteeId: TOKEN_HASH }))).toBe(PDK_AAD_V1_TOKEN);
+  });
+
+  it("matches the independent vector at key version 2", () => {
+    expect(toHex(pdk({ pdkVersion: 2 }))).toBe(PDK_AAD_V2_USER);
   });
 
   /**
-   * NEW IN v2, AND THE POINT OF IT. A grant blob copied into another
-   * environment's row by someone with database write access used to open,
-   * because nothing in its associated data named the environment. Now it does
-   * not.
+   * ROTATION ROLLBACK, AND THE POINT OF BINDING THE VERSION. After a rotation
+   * the old and new grants for one grantee used to carry identical associated
+   * data, so a server could hand back the old grant labelled as the new one and
+   * the client would seal fresh secrets under a key a removed member still
+   * holds. Now the two differ, and the relabelled grant refuses to open.
+   */
+  it("differs across key versions for the same environment and grantee", () => {
+    expect(PDK_AAD_V2_USER).not.toBe(PDK_AAD_V1_USER);
+    expect(toHex(pdk({ pdkVersion: 2 }))).not.toBe(toHex(pdk({ pdkVersion: 1 })));
+  });
+
+  /**
+   * A grant blob copied into another environment's row by someone with
+   * database write access used to open, because nothing in its associated data
+   * named the environment. Now it does not.
    */
   it("differs across environments for the same grantee", () => {
     const other = "env_ffffffffffffffffffffffffffffffff";
-    expect(
-      toHex(pdkAssociatedData({ environmentUid: other, granteeType: "user", granteeId: USR })),
-    ).not.toBe(PDK_AAD_USER);
+    expect(toHex(pdk({ environmentUid: other }))).not.toBe(PDK_AAD_V1_USER);
   });
 
-  it("gives the caller no way to choose the version", () => {
+  it("gives the caller no way to choose the protocol label", () => {
     expect(pdkAssociatedData.length).toBe(1);
   });
 
   it("rejects a Convex document id as the environment", () => {
-    expect(() =>
-      pdkAssociatedData({ environmentUid: CONVEX_DOC_ID, granteeType: "user", granteeId: USR }),
-    ).toThrow(/^environmentUid must be a well-formed env id$/);
+    expect(() => pdk({ environmentUid: CONVEX_DOC_ID })).toThrow(
+      /^environmentUid must be a well-formed env id$/,
+    );
+  });
+
+  it("rejects every key version that is not a positive whole number, without echoing it", () => {
+    for (const bad of BAD_VERSIONS) {
+      expect(() => pdk({ pdkVersion: bad as number })).toThrow(
+        /^pdkVersion must be a positive whole number$/,
+      );
+    }
   });
 
   /**
@@ -277,31 +432,27 @@ describe("pdkAssociatedData v2", () => {
    * apart; v2 refuses a value that is the wrong SHAPE for the type it claims.
    */
   it("rejects a token hash as a user grantee", () => {
-    expect(() =>
-      pdkAssociatedData({ environmentUid: ENV, granteeType: "user", granteeId: TOKEN_HASH }),
-    ).toThrow(/^granteeId must be a well-formed usr id$/);
+    expect(() => pdk({ granteeType: "user", granteeId: TOKEN_HASH })).toThrow(
+      /^granteeId must be a well-formed usr id$/,
+    );
   });
 
   it("rejects a user id as a token grantee", () => {
-    expect(() =>
-      pdkAssociatedData({ environmentUid: ENV, granteeType: "token", granteeId: USR }),
-    ).toThrow(/^granteeId must be a token id hash$/);
+    expect(() => pdk({ granteeType: "token", granteeId: USR })).toThrow(
+      /^granteeId must be a token id hash$/,
+    );
   });
 
   it("rejects a Convex document id as a user grantee", () => {
-    expect(() =>
-      pdkAssociatedData({ environmentUid: ENV, granteeType: "user", granteeId: CONVEX_DOC_ID }),
-    ).toThrow(/^granteeId must be a well-formed usr id$/);
+    expect(() => pdk({ granteeType: "user", granteeId: CONVEX_DOC_ID })).toThrow(
+      /^granteeId must be a well-formed usr id$/,
+    );
   });
 
   it("rejects an uppercase token hash", () => {
-    expect(() =>
-      pdkAssociatedData({
-        environmentUid: ENV,
-        granteeType: "token",
-        granteeId: TOKEN_HASH.toUpperCase(),
-      }),
-    ).toThrow(/^granteeId must be a token id hash$/);
+    expect(() => pdk({ granteeType: "token", granteeId: TOKEN_HASH.toUpperCase() })).toThrow(
+      /^granteeId must be a token id hash$/,
+    );
   });
 
   /**
@@ -321,28 +472,20 @@ describe("pdkAssociatedData v2", () => {
       `A${TOKEN_HASH.slice(1)}`,
       "",
     ]) {
-      expect(() =>
-        pdkAssociatedData({ environmentUid: ENV, granteeType: "token", granteeId: bad }),
-      ).toThrow(/^granteeId must be a token id hash$/);
+      expect(() => pdk({ granteeType: "token", granteeId: bad })).toThrow(
+        /^granteeId must be a token id hash$/,
+      );
     }
   });
 
   it("rejects a non-string grantee id of either type", () => {
     for (const bad of NOT_STRINGS) {
-      expect(() =>
-        pdkAssociatedData({
-          environmentUid: ENV,
-          granteeType: "user",
-          granteeId: bad as unknown as string,
-        }),
-      ).toThrow(/^granteeId must be a well-formed usr id$/);
-      expect(() =>
-        pdkAssociatedData({
-          environmentUid: ENV,
-          granteeType: "token",
-          granteeId: bad as unknown as string,
-        }),
-      ).toThrow(/^granteeId must be a token id hash$/);
+      expect(() => pdk({ granteeType: "user", granteeId: bad as unknown as string })).toThrow(
+        /^granteeId must be a well-formed usr id$/,
+      );
+      expect(() => pdk({ granteeType: "token", granteeId: bad as unknown as string })).toThrow(
+        /^granteeId must be a token id hash$/,
+      );
     }
   });
 
@@ -352,21 +495,13 @@ describe("pdkAssociatedData v2", () => {
    * reconstruct, and it would look like a typo in a diff rather than a failure.
    */
   it("rejects an unknown grantee type", () => {
-    expect(() =>
-      pdkAssociatedData({
-        environmentUid: ENV,
-        granteeType: "tokens" as "token",
-        granteeId: TOKEN_HASH,
-      }),
-    ).toThrow(/^granteeType must be one of user, token$/);
+    expect(() => pdk({ granteeType: "tokens", granteeId: TOKEN_HASH })).toThrow(
+      /^granteeType must be one of user, token$/,
+    );
     for (const bad of ["User", "", "service", undefined, null, 0]) {
-      expect(() =>
-        pdkAssociatedData({
-          environmentUid: ENV,
-          granteeType: bad as unknown as "user",
-          granteeId: USR,
-        }),
-      ).toThrow(/^granteeType must be one of user, token$/);
+      expect(() => pdk({ granteeType: bad as unknown as string })).toThrow(
+        /^granteeType must be one of user, token$/,
+      );
     }
   });
 
@@ -479,8 +614,8 @@ describe("no two constructions share bytes", () => {
 
   it("emits exactly the four expected labels", () => {
     expect([
-      labelOf(secretAssociatedData({ environmentUid: ENV })),
-      labelOf(pdkAssociatedData({ environmentUid: ENV, granteeType: "user", granteeId: USR })),
+      labelOf(secret()),
+      labelOf(pdk()),
       labelOf(revocationKeyAssociatedData({ orgUid: ORG, granteeUid: USR })),
       labelOf(userKeyAssociatedData("x25519")),
     ]).toEqual(EXPECTED_LABELS);
@@ -498,19 +633,46 @@ describe("no two constructions share bytes", () => {
     }
   });
 
+  /**
+   * Every vector ends in a field of known content, so prefix-freedom here is a
+   * real check rather than a length accident: a secret's `name` vector must not
+   * be a prefix of its `value` vector (or the reverse), and version `1` must
+   * not be a prefix of version `12`, which is why a version is followed by a
+   * separator rather than ending the string.
+   */
   it("every v2 vector is distinct and none is a prefix of another", () => {
-    const all = [SECRET_AAD, PDK_AAD_USER, PDK_AAD_TOKEN, REVOCATION_AAD];
+    const all = [
+      SECRET_AAD_V1_VALUE,
+      SECRET_AAD_V1_NAME,
+      SECRET_AAD_V2_VALUE,
+      PDK_AAD_V1_USER,
+      PDK_AAD_V1_TOKEN,
+      PDK_AAD_V2_USER,
+      REVOCATION_AAD,
+    ];
     expect(new Set(all).size).toBe(all.length);
     for (const a of all) for (const b of all) if (a !== b) expect(b.startsWith(a)).toBe(false);
+    expect(toHex(secret({ version: 12 })).startsWith(toHex(secret({ version: 1 })))).toBe(false);
   });
 
   it("the implementation reproduces exactly that set", () => {
     const produced = [
-      toHex(secretAssociatedData({ environmentUid: ENV })),
-      toHex(pdkAssociatedData({ environmentUid: ENV, granteeType: "user", granteeId: USR })),
-      toHex(pdkAssociatedData({ environmentUid: ENV, granteeType: "token", granteeId: TOKEN_HASH })),
+      toHex(secret()),
+      toHex(secret({ field: "name" })),
+      toHex(secret({ version: 2 })),
+      toHex(pdk()),
+      toHex(pdk({ granteeType: "token", granteeId: TOKEN_HASH })),
+      toHex(pdk({ pdkVersion: 2 })),
       toHex(revocationKeyAssociatedData({ orgUid: ORG, granteeUid: USR })),
     ];
-    expect(produced).toEqual([SECRET_AAD, PDK_AAD_USER, PDK_AAD_TOKEN, REVOCATION_AAD]);
+    expect(produced).toEqual([
+      SECRET_AAD_V1_VALUE,
+      SECRET_AAD_V1_NAME,
+      SECRET_AAD_V2_VALUE,
+      PDK_AAD_V1_USER,
+      PDK_AAD_V1_TOKEN,
+      PDK_AAD_V2_USER,
+      REVOCATION_AAD,
+    ]);
   });
 });

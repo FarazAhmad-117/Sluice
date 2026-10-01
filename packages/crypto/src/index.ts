@@ -54,7 +54,8 @@ export type { DeriveMUKOptions } from "./muk";
 export { ACCOUNT_SALT_BYTES, newAccountSalt } from "./muk";
 
 /**
- * Permanent, client-minted identifiers for orgs, users and environments.
+ * Permanent, client-minted identifiers for orgs, users, environments and
+ * secrets.
  * Exported because the client must mint them BEFORE the creation mutation --
  * the keys it wraps for that mutation are bound to them -- and because the
  * server must validate the same shape on the way in. `assertId` is the only
@@ -130,7 +131,7 @@ export {
   secretAssociatedData,
   tokenIdHash,
 } from "./protocol";
-export type { PDKGranteeType } from "./protocol";
+export type { PDKGranteeType, SecretField } from "./protocol";
 
 /**
  * The account identity's wire formats: the auth verifier, the wrapped key blob

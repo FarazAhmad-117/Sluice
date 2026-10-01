@@ -30,8 +30,11 @@ const OWNED_LABEL = new RegExp(
 /**
  * The same domains, written out separately so the self-test is not merely the
  * pattern checked against itself: dropping a name from either list fails it.
- * `convex/lib/protocol.test.ts` cross-checks this set against every label the
- * crypto source actually defines.
+ * NOTHING CHECKS THIS LIST AGAINST THE CRYPTO SOURCE. `convex/lib/protocol.test.ts`
+ * keeps its own copy of the same list and checks THAT copy for exact equality
+ * with every label `packages/crypto/src` defines; this one is not covered by
+ * that check, so a label added to the crypto package must be added here by
+ * hand as well.
  */
 const OWNED_DOMAINS = [
   "secret",
