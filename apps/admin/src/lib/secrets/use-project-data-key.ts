@@ -116,8 +116,17 @@ const LOADING: ProjectDataKeyState = { status: "loading" };
 const INCONSISTENT =
   "The server's answers about this environment did not agree with each other, so its key was not opened. Reload the page.";
 
-/** The grant and the environment are at different key generations. */
-const REKEYING = "This environment is being re-keyed. Try again shortly.";
+/**
+ * The grant and the environment are at different key generations.
+ *
+ * The hook fetches once and does not retry, so the sentence says how to try
+ * again rather than promising that something will. This blocks READS as well
+ * as writes: the old key could probably still open rows not yet re-sealed, but
+ * no re-key exists yet to say which. Whoever builds re-keying should revisit
+ * this, for example by handing out a read-only key for the older generation.
+ */
+const REKEYING =
+  "This environment is being re-keyed. Reload the page in a moment to try again.";
 
 /**
  * `listedEnvironmentUid` is the `uid` of the selected row in the
