@@ -88,7 +88,10 @@ export function newAccountSalt(): Uint8Array {
  * 2. Precomputation needs the server. v1's salt could be computed offline from
  *    a public address, so an attacker holding a mailing list could build
  *    guess tables for every address on it without ever contacting us. v2's
- *    salt must be fetched per account, and the server can rate-limit that.
+ *    salt must be fetched per account, one request each. That fetch is
+ *    rate-limitable in principle; today it is NOT limited, because
+ *    `auth.getLoginSalt` is a query and no write-based limiter can cover a
+ *    query (see convex/auth.ts and SECURITY.md).
  * 3. No table carries over between deployments. Two Sluice installations with
  *    the same user's address no longer share a salt, so work done against one
  *    is worthless against the other.
