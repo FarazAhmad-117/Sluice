@@ -76,8 +76,15 @@ import { assertId } from "./ids";
  * together with its own old version number -- hands the client associated data
  * that is correct for that row, and it opens. Detecting that needs the client
  * to remember the highest version it has seen for each secret and each
- * environment key and refuse anything lower (a ratchet). That is future work
- * and is NOT done here.
+ * environment key and refuse anything lower (a ratchet). Two more gaps are
+ * the same class. EQUIVOCATION: a write the server refused in a race (two
+ * clients sealing the same next version) still left a second ciphertext valid
+ * for the same (secret, version, field), so a server that kept it can show
+ * different clients different values -- a fork that only a ratchet compared
+ * across clients, or a transparency log, can catch. OMISSION AND
+ * RESURRECTION: the server can leave a secret or a grant out, or serve a
+ * deleted secret again, because `deletedAt` and `supersededAt` are
+ * unauthenticated columns. None of this is done here; it is future work.
  *
  * WHY THE ASSOCIATED DATA IS `/v2` AND THERE IS NO `/v1` PATH BESIDE IT.
  *
@@ -187,10 +194,17 @@ const TOKEN_ID_BYTES = 16;
  * in `ids.ts`, are BYTE RULES, not regexes. Exact length; every character in
  * the lowercase hex alphabet `0-9a-f`; for a permanent id, the literal kind
  * prefix (`env_`, `usr_`, `org_`, `sec_`) first. Implement them as byte
- * comparisons. A regex is only safe where `$` means end of input, which is true in JavaScript
- * and in Rust's `regex` crate but NOT in PCRE or Python, where `$` also matches
- * just before a trailing newline -- so a ported `^[0-9a-f]{64}$` would accept
- * `hash + "\n"` and seal a second, different AAD for the same grantee.
+ * comparisons. A regex is only safe where `$` means end of input, which is
+ * true in JavaScript and in Rust's `regex` crate but NOT in PCRE or Python,
+ * where `$` also matches just before a trailing newline -- so a ported
+ * `^[0-9a-f]{64}$` would accept `hash + "\n"` and seal a second, different AAD
+ * for the same grantee.
+ *
+ * The closed literals -- a secret's field (`name`, `value`) and a grantee type
+ * (`user`, `token`) -- are byte rules too: compare the input byte for byte
+ * against each literal, with no case-folding, trimming or Unicode
+ * normalisation. `"Value"` and `"value "` are errors, not spellings of
+ * `value`.
  */
 const TOKEN_HASH_PATTERN = /^[0-9a-f]{64}$/;
 
@@ -226,20 +240,28 @@ function assertTokenHash(value: string): string {
  * digits in the wrong type, which is what a JSON body or a column hands back
  * when something upstream is already wrong, and any parser lenient enough to
  * accept it must also decide what `"01"` and `" 1"` mean -- a second spelling
- * per version, which is what this rule exists to rule out. `2 ** 53` and above are refused because a
- * double can no longer tell them from their neighbours, so two versions could
- * share one spelling.
+ * per version, which is what this rule exists to rule out. `2 ** 53` and above
+ * are refused because a double can no longer tell them from their neighbours,
+ * so two versions could share one spelling.
  *
- * The value is never echoed, matching every other guard in this package.
+ * The value is never echoed, matching every other guard in this package. The
+ * message states the accepted range instead, so a caller can act on it.
  *
  * FOR A PORT (the Rust SDK): the range is 1 ..= 2^53 - 1, so a `u64` that
  * rejects 0 and anything above `(1 << 53) - 1`; render as plain decimal with
  * no padding (`v.to_string()`). A port that accepted the full `u64` range
- * would seal under versions this client can never reproduce.
+ * would seal under versions this client can never reproduce. The version
+ * arrives from Convex as a JSON number (`v.number()` is a float64), so a port
+ * must parse the JSON number text straight to `u64` and treat anything that
+ * is not a plain integer literal in range -- a fraction, an exponent, `1.0` --
+ * as an error (JavaScript cannot tell `1.0` from `1` once parsed; a port that
+ * can should refuse it). It must NEVER parse to `f64` and cast: `as u64`
+ * truncates `1.5` to `1` and saturates out-of-range values, silently turning a bad row
+ * into a well-formed AAD for a different version.
  */
 function assertVersion(field: string, value: number): string {
   if (!Number.isSafeInteger(value) || value < 1) {
-    throw new Error(`${field} must be a positive whole number`);
+    throw new Error(`${field} must be a whole number from 1 to 9007199254740991`);
   }
   return String(value);
 }
@@ -279,9 +301,9 @@ function assertSecretField(value: SecretField): SecretField {
  * server able to repair it, because no server holds a key.
  *
  * WHY THE PROTOCOL VERSION (`/v2`) IS IN HERE AND NOT IN A COLUMN -- and the
- * same argument is why the secret's own version is in here too. Associated data is
- * authenticated: change one byte of it and decryption fails. A column is not.
- * If the algorithm version sat in `secrets.algorithmVersion`, someone with write
+ * same argument is why the secret's own version is in here too. Associated
+ * data is authenticated: change one byte of it and decryption fails. A column
+ * is not. If the algorithm version sat in `secrets.algorithmVersion`, someone with write
  * access to the database could edit it independently of the ciphertext it
  * describes, and roll a row back to a weaker version while the ciphertext stayed
  * intact and still decrypted. Putting it inside the AAD means the version and
@@ -306,10 +328,61 @@ function assertSecretField(value: SecretField): SecretField {
  * name/value swaps, and binding `version` stops an old value being served
  * under the current version number. Each of those now fails to open.
  *
- * WHAT IT DOES NOT STOP: serving the whole old row, ciphertext and its own old
- * version number together. That associated data is correct for that row, so
- * it opens. Only a client-side ratchet on the highest version seen can catch
- * it, and that is future work -- see the header of this file.
+ * WHAT THAT PROPERTY IS, EXACTLY. The client reads `secretUid` and `version`
+ * off the row's own columns, which the server supplies, so a server can still
+ * present any whole row as itself: the row for `STRIPE_KEY`, served in the
+ * place the client expected `DATABASE_URL`, opens. The gain is narrower and
+ * sufficient: a name ciphertext and a value ciphertext open together only if
+ * they came from ONE seal of one (secret, version), so a name can no longer be
+ * paired with somebody else's value. And because the client trusts the name
+ * it DECRYPTS, never a label the server attaches, a complete foreign row is
+ * shown under its own true name. That makes serving one harmless rather than
+ * an uncovered case: the client sees `STRIPE_KEY` and its value, not a value
+ * passed off as `DATABASE_URL`'s.
+ *
+ * THE SERVER MUST CHECK THE VERSION, NOT JUST STORE IT. The client states the
+ * version it sealed under, and the server must verify, in the same
+ * transaction as the write, that it equals the expected value -- 1 when a
+ * secret is created, the current version plus one when it is updated -- and
+ * REFUSE a mismatch. Otherwise a stale or racing client's write is stored
+ * without complaint under a version its associated data does not name, and
+ * that row never opens for anybody. The binding makes a wrong version loud at
+ * read time; only the server's check makes it loud at write time, while the
+ * writer can still retry.
+ *
+ * WHY `pdkVersion` IS NOT IN HERE. The key already binds it: a secret sealed
+ * under generation 1 of the project data key and opened with generation 2
+ * fails its tag, so naming the generation in the associated data as well would
+ * add nothing. AES-GCM is not key-committing -- a ciphertext CAN be crafted to
+ * open under two different keys -- but crafting one needs both keys, and an
+ * insider who holds both generations can already seal any value they like
+ * under either, so it gives nobody a power they lack. FOR THE ROTATION TASK:
+ * if rotation re-seals the current secrets under the new key at the SAME
+ * version number, two rows share one (secret, version), and any lookup that
+ * treats that pair as unique (a `by_secret_version` index, say) stops being
+ * so. Either bump the version on a re-seal or model re-seals separately; do
+ * not reuse the version.
+ *
+ * WHAT IT DOES NOT STOP. Each of these is the same class of attack as
+ * rollback: the associated data is correct for every row the server serves,
+ * and only state the client keeps can tell it was not given the whole truth.
+ *
+ * - Wholesale rollback: serving the whole old row, ciphertext and its own old
+ *   version number together. That associated data is correct for that row, so
+ *   it opens.
+ * - Equivocation (a fork): when two clients race to write the same next
+ *   version and the server refuses one, the refused client still produced a
+ *   ciphertext valid for that same (secret, version, field). A server that
+ *   kept it can show one value to some clients and the other to the rest, and
+ *   both open.
+ * - Omission and resurrection: the server can leave a secret out of what it
+ *   serves, or serve one that was deleted, because `deletedAt` and
+ *   `supersededAt` are plain columns that nothing authenticates.
+ *
+ * Catching these takes a client-side ratchet on the highest version seen
+ * (rollback) and, for forks and omissions, a transparency log or equivalent
+ * that clients cross-check. Both are future work -- see the header of this
+ * file.
  *
  * WHY THIS ENCODING IS INJECTIVE. Every component is either a fixed literal or
  * a closed, fixed-shape value that cannot contain `|`: the label is a constant;
@@ -420,13 +493,25 @@ export function secretAssociatedData(params: {
  *
  * The client does not have to predict anything to supply it: a new environment
  * starts at version 1, and a rotation is performed by a client that wraps the
- * new key under the version it is creating. The server's job is to store the
- * version the client stated, not to choose one.
+ * new key under the version it is creating. The server does not choose the
+ * version, but it must CHECK it: in the same transaction as the write it must
+ * verify that the stated version equals the expected one -- 1 when the
+ * environment is created, the current `pdkVersion` plus one on a rotation,
+ * and the environment's CURRENT `pdkVersion` when a grant is added for a new
+ * grantee -- and REFUSE a mismatch. Otherwise the grant is stored without
+ * complaint under a version its associated data does not name, and it never
+ * opens.
  *
- * WHAT IT DOES NOT STOP: serving the whole old grant WITH its own old version.
- * That associated data is correct for that row, so it opens, and the client
- * learns only that it was given version 1. Refusing a version lower than one
- * already seen is a client-side ratchet, and that is future work -- see the
+ * WHAT IT DOES NOT STOP, the same three gaps {@link secretAssociatedData}
+ * lists. Wholesale rollback: serving the whole old grant WITH its own old
+ * version opens, and the client learns only that it was given version 1.
+ * Equivocation: a rotation refused in a race still produced a grant valid for
+ * that version, and a server that kept it can hand different clients
+ * different keys for one generation. Omission and resurrection: the server can
+ * withhold a grant, or keep serving one that should have been deleted when its
+ * grantee was removed, and nothing in the blob says it was. Refusing
+ * a version lower than one already seen is a client-side ratchet; detecting a
+ * fork needs a transparency log or equivalent. Both are future work -- see the
  * header of this file.
  *
  * WHY THIS ENCODING IS INJECTIVE: the argument {@link secretAssociatedData}
@@ -548,10 +633,9 @@ export function pdkAssociatedData(params: {
  * and most general thing keeping any one of them from being written into
  * another's column and opened as the wrong kind of key -- a project data key
  * opened as a signing seed, or this seed opened as the account's X25519 key.
- * In v2 the
- * kind-prefixed ids after the label differ too, but that is a second line, not
- * a substitute. Secrets (`sluice/secret/…`) are the fourth AEAD domain; they
- * sit under a project data key rather than the MUK, but a key that is
+ * In v2 the kind-prefixed ids after the label differ too, but that is a second
+ * line, not a substitute. Secrets (`sluice/secret/…`) are the fourth AEAD
+ * domain; they sit under a project data key rather than the MUK, but a key that is
  * mislabelled once can sit anywhere, so the test suite asserts all FOUR labels
  * are pairwise non-prefix, and no future field appended to one can make it
  * collide with another.

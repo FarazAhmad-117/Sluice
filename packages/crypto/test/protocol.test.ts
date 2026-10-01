@@ -134,17 +134,17 @@ const SEC = "sec_303132333435363738393a3b3c3d3e3f";
 const TOKEN_HASH = "305ab71526b2c39b5c8daf6ec97b91af98247937c858f4fd3ee4cf1e8d97fcd9";
 
 // Computed with node:crypto, never with this package.
-const SECRET_AAD_V1_VALUE =
+const SECRET_AAD_AT_1_VALUE =
   "736c756963652f7365637265742f76327c656e765f30303031303230333034303530363037303830393061306230633064306530667c7365635f33303331333233333334333533363337333833393361336233633364336533667c317c76616c7565";
-const SECRET_AAD_V1_NAME =
+const SECRET_AAD_AT_1_NAME =
   "736c756963652f7365637265742f76327c656e765f30303031303230333034303530363037303830393061306230633064306530667c7365635f33303331333233333334333533363337333833393361336233633364336533667c317c6e616d65";
-const SECRET_AAD_V2_VALUE =
+const SECRET_AAD_AT_2_VALUE =
   "736c756963652f7365637265742f76327c656e765f30303031303230333034303530363037303830393061306230633064306530667c7365635f33303331333233333334333533363337333833393361336233633364336533667c327c76616c7565";
-const PDK_AAD_V1_USER =
+const PDK_AAD_AT_1_USER =
   "736c756963652f70646b2f76327c656e765f30303031303230333034303530363037303830393061306230633064306530667c317c757365727c7573725f3130313131323133313431353136313731383139316131623163316431653166";
-const PDK_AAD_V1_TOKEN =
+const PDK_AAD_AT_1_TOKEN =
   "736c756963652f70646b2f76327c656e765f30303031303230333034303530363037303830393061306230633064306530667c317c746f6b656e7c33303561623731353236623263333962356338646166366563393762393161663938323437393337633835386634666433656534636631653864393766636439";
-const PDK_AAD_V2_USER =
+const PDK_AAD_AT_2_USER =
   "736c756963652f70646b2f76327c656e765f30303031303230333034303530363037303830393061306230633064306530667c327c757365727c7573725f3130313131323133313431353136313731383139316131623163316431653166";
 const REVOCATION_AAD =
   "736c756963652f7265766f636174696f6e2d6b65792f76327c6f72675f32303231323232333234323532363237323832393261326232633264326532667c7573725f3130313131323133313431353136313731383139316131623163316431653166";
@@ -159,7 +159,7 @@ const REVOCATION_AAD =
  * point a reader can check by hand. `115` is `s`, `50` is `2`, `124` is `|`,
  * `95` is `_`, `48` is `0`, `49` is `1`, and the last five are `v a l u e`.
  */
-const SECRET_AAD_V1_VALUE_BYTES = [
+const SECRET_AAD_AT_1_VALUE_BYTES = [
   115, 108, 117, 105, 99, 101, 47, 115, 101, 99, 114, 101, 116, 47, 118, 50, 124, 101, 110, 118,
   95, 48, 48, 48, 49, 48, 50, 48, 51, 48, 52, 48, 53, 48, 54, 48, 55, 48, 56, 48, 57, 48, 97, 48,
   98, 48, 99, 48, 100, 48, 101, 48, 102, 124, 115, 101, 99, 95, 51, 48, 51, 49, 51, 50, 51, 51, 51,
@@ -210,13 +210,13 @@ const secret = (
 
 describe("secretAssociatedData v2", () => {
   it("produces the exact wire bytes, built literally rather than by calling the implementation", () => {
-    expect([...secret()]).toEqual(SECRET_AAD_V1_VALUE_BYTES);
+    expect([...secret()]).toEqual(SECRET_AAD_AT_1_VALUE_BYTES);
   });
 
   it("matches the independent vectors", () => {
-    expect(toHex(secret())).toBe(SECRET_AAD_V1_VALUE);
-    expect(toHex(secret({ field: "name" }))).toBe(SECRET_AAD_V1_NAME);
-    expect(toHex(secret({ version: 2 }))).toBe(SECRET_AAD_V2_VALUE);
+    expect(toHex(secret())).toBe(SECRET_AAD_AT_1_VALUE);
+    expect(toHex(secret({ field: "name" }))).toBe(SECRET_AAD_AT_1_NAME);
+    expect(toHex(secret({ version: 2 }))).toBe(SECRET_AAD_AT_2_VALUE);
   });
 
   it("returns bytes, not a string", () => {
@@ -235,7 +235,7 @@ describe("secretAssociatedData v2", () => {
 
   it("differs across environments", () => {
     const other = "env_ffffffffffffffffffffffffffffffff";
-    expect(toHex(secret({ environmentUid: other }))).not.toBe(SECRET_AAD_V1_VALUE);
+    expect(toHex(secret({ environmentUid: other }))).not.toBe(SECRET_AAD_AT_1_VALUE);
   });
 
   /**
@@ -245,7 +245,7 @@ describe("secretAssociatedData v2", () => {
    */
   it("differs across secrets in the same environment", () => {
     const other = "sec_ffffffffffffffffffffffffffffffff";
-    expect(toHex(secret({ secretUid: other }))).not.toBe(SECRET_AAD_V1_VALUE);
+    expect(toHex(secret({ secretUid: other }))).not.toBe(SECRET_AAD_AT_1_VALUE);
   });
 
   /**
@@ -253,7 +253,7 @@ describe("secretAssociatedData v2", () => {
    * slot, or the reverse.
    */
   it("differs between the name and the value of one secret", () => {
-    expect(SECRET_AAD_V1_NAME).not.toBe(SECRET_AAD_V1_VALUE);
+    expect(SECRET_AAD_AT_1_NAME).not.toBe(SECRET_AAD_AT_1_VALUE);
     expect(toHex(secret({ field: "name" }))).not.toBe(toHex(secret({ field: "value" })));
   });
 
@@ -262,7 +262,7 @@ describe("secretAssociatedData v2", () => {
    * under the current version number.
    */
   it("differs between versions of one secret", () => {
-    expect(SECRET_AAD_V2_VALUE).not.toBe(SECRET_AAD_V1_VALUE);
+    expect(SECRET_AAD_AT_2_VALUE).not.toBe(SECRET_AAD_AT_1_VALUE);
     expect(toHex(secret({ version: 2 }))).not.toBe(toHex(secret({ version: 1 })));
   });
 
@@ -327,7 +327,7 @@ describe("secretAssociatedData v2", () => {
   it("rejects every value that is not a positive whole number, without echoing it", () => {
     for (const bad of BAD_VERSIONS) {
       expect(() => secret({ version: bad as number })).toThrow(
-        /^version must be a positive whole number$/,
+        /^version must be a whole number from 1 to 9007199254740991$/,
       );
     }
   });
@@ -375,15 +375,15 @@ const pdk = (
 
 describe("pdkAssociatedData v2", () => {
   it("binds environment, key version and user grantee", () => {
-    expect(toHex(pdk())).toBe(PDK_AAD_V1_USER);
+    expect(toHex(pdk())).toBe(PDK_AAD_AT_1_USER);
   });
 
   it("binds environment, key version and token grantee", () => {
-    expect(toHex(pdk({ granteeType: "token", granteeId: TOKEN_HASH }))).toBe(PDK_AAD_V1_TOKEN);
+    expect(toHex(pdk({ granteeType: "token", granteeId: TOKEN_HASH }))).toBe(PDK_AAD_AT_1_TOKEN);
   });
 
   it("matches the independent vector at key version 2", () => {
-    expect(toHex(pdk({ pdkVersion: 2 }))).toBe(PDK_AAD_V2_USER);
+    expect(toHex(pdk({ pdkVersion: 2 }))).toBe(PDK_AAD_AT_2_USER);
   });
 
   /**
@@ -394,7 +394,7 @@ describe("pdkAssociatedData v2", () => {
    * holds. Now the two differ, and the relabelled grant refuses to open.
    */
   it("differs across key versions for the same environment and grantee", () => {
-    expect(PDK_AAD_V2_USER).not.toBe(PDK_AAD_V1_USER);
+    expect(PDK_AAD_AT_2_USER).not.toBe(PDK_AAD_AT_1_USER);
     expect(toHex(pdk({ pdkVersion: 2 }))).not.toBe(toHex(pdk({ pdkVersion: 1 })));
   });
 
@@ -405,7 +405,7 @@ describe("pdkAssociatedData v2", () => {
    */
   it("differs across environments for the same grantee", () => {
     const other = "env_ffffffffffffffffffffffffffffffff";
-    expect(toHex(pdk({ environmentUid: other }))).not.toBe(PDK_AAD_V1_USER);
+    expect(toHex(pdk({ environmentUid: other }))).not.toBe(PDK_AAD_AT_1_USER);
   });
 
   it("gives the caller no way to choose the protocol label", () => {
@@ -421,7 +421,7 @@ describe("pdkAssociatedData v2", () => {
   it("rejects every key version that is not a positive whole number, without echoing it", () => {
     for (const bad of BAD_VERSIONS) {
       expect(() => pdk({ pdkVersion: bad as number })).toThrow(
-        /^pdkVersion must be a positive whole number$/,
+        /^pdkVersion must be a whole number from 1 to 9007199254740991$/,
       );
     }
   });
@@ -626,9 +626,7 @@ describe("no two constructions share bytes", () => {
     expect(new Set(EXPECTED_LABELS).size).toBe(EXPECTED_LABELS.length);
     for (const a of EXPECTED_LABELS) {
       for (const b of EXPECTED_LABELS) {
-        if (a !== b) expect(`${b} starts with ${a}: ${String(b.startsWith(a))}`).toBe(
-          `${b} starts with ${a}: false`,
-        );
+        if (a !== b) expect(b.startsWith(a), `${b} starts with ${a}`).toBe(false);
       }
     }
   });
@@ -642,16 +640,18 @@ describe("no two constructions share bytes", () => {
    */
   it("every v2 vector is distinct and none is a prefix of another", () => {
     const all = [
-      SECRET_AAD_V1_VALUE,
-      SECRET_AAD_V1_NAME,
-      SECRET_AAD_V2_VALUE,
-      PDK_AAD_V1_USER,
-      PDK_AAD_V1_TOKEN,
-      PDK_AAD_V2_USER,
+      SECRET_AAD_AT_1_VALUE,
+      SECRET_AAD_AT_1_NAME,
+      SECRET_AAD_AT_2_VALUE,
+      PDK_AAD_AT_1_USER,
+      PDK_AAD_AT_1_TOKEN,
+      PDK_AAD_AT_2_USER,
       REVOCATION_AAD,
     ];
     expect(new Set(all).size).toBe(all.length);
-    for (const a of all) for (const b of all) if (a !== b) expect(b.startsWith(a)).toBe(false);
+    for (const a of all) {
+      for (const b of all) if (a !== b) expect(b.startsWith(a), `${b} starts with ${a}`).toBe(false);
+    }
     expect(toHex(secret({ version: 12 })).startsWith(toHex(secret({ version: 1 })))).toBe(false);
   });
 
@@ -666,12 +666,12 @@ describe("no two constructions share bytes", () => {
       toHex(revocationKeyAssociatedData({ orgUid: ORG, granteeUid: USR })),
     ];
     expect(produced).toEqual([
-      SECRET_AAD_V1_VALUE,
-      SECRET_AAD_V1_NAME,
-      SECRET_AAD_V2_VALUE,
-      PDK_AAD_V1_USER,
-      PDK_AAD_V1_TOKEN,
-      PDK_AAD_V2_USER,
+      SECRET_AAD_AT_1_VALUE,
+      SECRET_AAD_AT_1_NAME,
+      SECRET_AAD_AT_2_VALUE,
+      PDK_AAD_AT_1_USER,
+      PDK_AAD_AT_1_TOKEN,
+      PDK_AAD_AT_2_USER,
       REVOCATION_AAD,
     ]);
   });

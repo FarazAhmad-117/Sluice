@@ -117,11 +117,11 @@ const BINDING = { environmentUid: ENV, secretUid: SEC, version: 1, field: "value
  * The v2 secret associated data for the value of version 1 of `SEC` in `ENV`,
  * as hex, computed with node:crypto and never with `@sluice/crypto`. The prefix
  * is deliberately not spelled out here, because the scan below would find it
- * in this comment. Identical to `SECRET_AAD_V1_VALUE` in the crypto package's
+ * in this comment. Identical to `SECRET_AAD_AT_1_VALUE` in the crypto package's
  * own test: the two suites pin the same point of the map from opposite sides
  * of the wire.
  */
-const SECRET_AAD =
+const SECRET_AAD_AT_1_VALUE =
   "736c756963652f7365637265742f76327c656e765f30303031303230333034303530363037303830393061306230633064306530667c7365635f33303331333233333334333533363337333833393361336233633364336533667c317c76616c7565";
 
 describe("the secret associated data rule", () => {
@@ -197,7 +197,7 @@ describe("the secret associated data rule", () => {
   it("refuses a version that is not a positive whole number", () => {
     for (const bad of ["1", 0, 1.5]) {
       expect(() => secretAssociatedData({ ...BINDING, version: bad as number })).toThrow(
-        /^version must be a positive whole number$/,
+        /^version must be a whole number from 1 to 9007199254740991$/,
       );
     }
   });
@@ -219,6 +219,6 @@ describe("the secret associated data rule", () => {
   });
 
   it("produces the pinned bytes for a real environment and secret", () => {
-    expect(toHex(secretAssociatedData(BINDING))).toBe(SECRET_AAD);
+    expect(toHex(secretAssociatedData(BINDING))).toBe(SECRET_AAD_AT_1_VALUE);
   });
 });
