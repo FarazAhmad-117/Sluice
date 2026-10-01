@@ -154,6 +154,28 @@ async function booted(options: HarnessOptions = {}): Promise<Harness> {
   return h;
 }
 
+describe("flush, the helper every test here leans on", () => {
+  // If flush could return while the shell was still busy, every assertion
+  // after it would be checking a state from before the bundle, and a failure
+  // would read as a shell bug. These pin that it waits, and that it fails
+  // loudly rather than returning early.
+  it("throws, naming the bound, when the shell never stops being busy", async () => {
+    const started = Date.now();
+    await expect(flush(() => true, 50)).rejects.toThrow("flush: shell still busy after 50 ms");
+    expect(Date.now() - started).toBeGreaterThanOrEqual(50);
+  });
+
+  it("waits past any number of turns for work that finishes in time", async () => {
+    // Busy for far more than the 500 turns the old version gave up after.
+    let turns = 0;
+    await flush(() => {
+      turns += 1;
+      return turns < 2_000;
+    });
+    expect(turns).toBeGreaterThanOrEqual(2_000);
+  });
+});
+
 describe("Shell: the happy path", () => {
   it("handshakes, subscribes, decrypts and spawns the child with the secrets", async () => {
     const h = await booted();
@@ -267,24 +289,36 @@ describe("Shell: obligations two and three, the drain cannot be cancelled", () =
       release = resolve;
     });
     const inner = h.handshaker.handshake.bind(h.handshaker);
+    let entered = 0;
     h.handshaker.handshake = async () => {
+      entered += 1;
       await gate;
       return await inner();
     };
+    // `h.shell.busy` CANNOT be the flush predicate while the gate is shut: the
+    // held handshake is in flight by design, so the shell stays busy until
+    // `release`, and the time-bounded flush would rightly throw. So the waits
+    // below are on what this test actually needs, and each is asserted.
+
     // Start a renewal and leave it hanging.
     h.source.emitError("Bundle refused.");
-    await flush(() => h.shell.busy);
+    await flush();
+    expect(entered).toBe(1);
     const subscriptionsBefore = h.source.subscriptions.length;
 
+    // A notice with no secrets is handled synchronously (there is nothing to
+    // decrypt), so the drain has begun once the handler has been called.
     h.source.emit({
       ...(await fixture.bundleWith({}, 1)),
       revocationNotice: signedNotice(org, fixture.identity),
     });
-    await flush(() => h.shell.busy);
-
-    // Now let the in-flight handshake finish, mid-drain.
-    release!();
     await flush();
+    expect(h.onRevokeCalls).toHaveLength(1);
+
+    // Now let the in-flight handshake finish, mid-drain. From here `busy` is a
+    // valid predicate again, and stronger than a fixed number of turns.
+    release!();
+    await flush(() => h.shell.busy);
     expect(h.source.subscriptions.length).toBe(subscriptionsBefore);
 
     await h.tick(5_000);

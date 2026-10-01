@@ -339,29 +339,68 @@ export function signedNotice(
 }
 
 /**
+ * How long {@link flush} waits for a busy shell before failing the test.
+ *
+ * Measured in WALL TIME, not in event loop turns. See {@link flush} for why.
+ */
+export const FLUSH_BOUND_MS = 5_000;
+
+/**
  * Lets every pending promise settle, including the real ones.
  *
- * `decryptSecrets` runs WebCrypto, which in Node resolves off the thread pool
- * rather than on the microtask queue, so a handful of `await`s is not enough:
- * one bundle is three sequential AEAD opens and each needs its own trip through
- * the event loop. This is generous on purpose. A flush that is too short turns
- * a deterministic virtual clock back into a race, and the failure looks like a
- * shell bug rather than a test bug, which is the worst way to lose an hour.
+ * `decryptSecrets` runs WebCrypto, which in Node resolves off the libuv thread
+ * pool rather than on the microtask queue, so a handful of `await`s is not
+ * enough: one bundle is three sequential AEAD opens and each needs its own trip
+ * through the event loop.
+ *
+ * WHY THE BOUND IS TIME AND NOT TURNS. An earlier version gave up after 500
+ * `setImmediate` turns and then RETURNED, silently, with the shell still busy.
+ * Turns are cheap and fast; thread pool work is neither when the machine is
+ * loaded. Under CPU contention (a parallel test run, a busy CI box) one AES-GCM
+ * open can outlast 500 empty turns of the event loop, flush returned early,
+ * and the next assertion saw the state from BEFORE the bundle. The failure
+ * looked like a shell bug, appeared once in a few hundred runs, and would not
+ * reproduce, which is the worst way to lose an hour.
+ *
+ * So with a predicate this waits until `busy()` is false and has stayed false
+ * for five further turns, however many turns that takes, bounded only by
+ * `boundMs` of wall time. If the bound is hit while the shell is STILL busy it
+ * THROWS, naming the cause, rather than letting a test continue against a
+ * half-applied state. A slow machine now makes a test slower, never wrong;
+ * a genuinely stuck shell makes it fail loudly, here, with a message.
+ *
+ * WITHOUT A PREDICATE it behaves as it always has: a small fixed number of
+ * turns, then return. That form only ever proves ABSENCE (that nothing
+ * further happened), and a loaded machine can only make "nothing happened"
+ * more likely, never less, so load cannot turn such a test red. It has nothing
+ * to wait for, so it has nothing to time out on.
  */
-export async function flush(busy?: () => boolean, times = 500): Promise<void> {
+export async function flush(
+  busy?: () => boolean,
+  boundMs: number = FLUSH_BOUND_MS,
+): Promise<void> {
+  const turn = (): Promise<void> => new Promise<void>((resolve) => setImmediate(resolve));
+
+  if (busy === undefined) {
+    for (let i = 0; i <= 20; i += 1) await turn();
+    return;
+  }
+
+  const deadline = Date.now() + boundMs;
   let quiet = 0;
-  for (let i = 0; i < times; i += 1) {
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    if (busy === undefined) {
-      if (i >= 20) return;
-      continue;
-    }
+  for (;;) {
+    await turn();
     if (busy()) {
       quiet = 0;
+      if (Date.now() >= deadline) {
+        throw new Error(`flush: shell still busy after ${boundMs} ms`);
+      }
       continue;
     }
     // A few extra turns after the last operation settled, so the events it
     // enqueued have been pumped and anything it started has a chance to appear.
+    // Not bounded by the deadline: the shell is idle, and five turns of an idle
+    // event loop always complete.
     quiet += 1;
     if (quiet >= 5) return;
   }
