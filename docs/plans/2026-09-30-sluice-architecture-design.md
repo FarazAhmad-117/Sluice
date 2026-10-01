@@ -114,13 +114,13 @@ duplication between web and dashboard.
 
 | Key | Made from | Lives | Server holds |
 |---|---|---|---|
-| Master unlock key | password, Argon2id | device memory; CLI keychain for 15 min | nothing |
+| Master unlock key | password, Argon2id, salted with a random per-account value | device memory; CLI keychain for 15 min | the salt, which is public |
 | Recovery copy of master key | locked by the recovery kit | server | a blob it cannot open |
-| Environment data key | random, versioned | locked once per member and per token | locked blobs |
-| Secret values | AES-GCM under the environment key, bound to the environment | server | ciphertext |
+| Environment data key | random, versioned | locked once per member and per token, each lock bound to the environment, the key version and the grantee | locked blobs |
+| Secret names and values | AES-GCM under the environment key, bound to the environment, the secret's permanent id, its version and the field (name or value) | server | ciphertext |
 | Service token | random, split by HKDF into auth and unwrap halves | customer's CI or server | public half of auth |
 | Org root key | random, Ed25519 | offline, in the org recovery kit | public key |
-| Org revocation key | random, Ed25519, certified by the root | locked once per admin; used by dashboard and CLI | public key and certificate |
+| Org revocation key | random, Ed25519, certified by the root | locked once per admin, each lock bound to the org and the admin; used by dashboard and CLI | public key and certificate |
 
 ## 5. Flows
 
@@ -344,16 +344,21 @@ A **cell** is one Convex deployment. Every org lives in exactly one cell. A smal
 
 Rules that apply from today, with one cell:
 
-1. **Stable IDs.** Every org, user and environment gets a client-generated
-   permanent ID. Encryption bindings and external references use it, never a
-   Convex document ID. Today the secret binding uses the Convex environment ID
-   and the key-grant binding uses the Convex user ID; both change on migration,
-   and no server could re-encrypt the result. Protocol bindings move to `v2`.
+1. **Stable IDs.** Done 2026-10-01 in Phase 1. Every org, user, environment
+   and secret gets a client-generated permanent ID. Encryption bindings and
+   external references use it, never a Convex document ID. Before Phase 1 the
+   secret binding used the Convex environment ID and the key-grant binding the
+   Convex user ID; both change on migration, and no server could re-encrypt the
+   result. Protocol bindings are now `v2`.
 2. Every org-owned row carries `orgId` directly.
 3. No query spans two orgs, except in the directory.
 4. Nothing long-lived contains a `*.convex.cloud` URL.
 5. The dashboard learns each org's cell from the directory, not from its build.
 6. Each cell enforces per-org quotas.
+7. **Moves never trust a uid.** Any path that moves or imports an org between
+   cells rejects a uid already present in the target cell and never upserts by
+   uid. Uids are minted by clients, so an attacker chooses them, and an upsert
+   would let a crafted export overwrite another org's rows.
 
 | Phase | Setup | Trigger |
 |---|---|---|
@@ -381,7 +386,8 @@ such as tokens the directory signs and cells check against its public key.
    root `package.json`.
 2. Rename `apps/admin` to `apps/dashboard` and `packages/sdk` to
    `packages/sdk-node`; move `Implementation_Plan.md` into `docs/`.
-3. Stable IDs, `orgId` on every org-owned row, protocol bindings `v2`.
+3. Stable IDs, `orgId` on every org-owned row, protocol bindings `v2`. Done
+   2026-10-01 in Phase 1.
 4. `getBundle` serves notices on an authentic expired pass.
 5. Org root key and revocation-key certificates; processes pin the root.
 6. Single-string token format.

@@ -227,7 +227,7 @@ describe("the secret associated data rule", () => {
    * The same for the secret's own version, which is exactly the kind of value
    * a database column or a JSON body returns as a string.
    */
-  it("refuses a version that is not a positive whole number", () => {
+  it("refuses a version that is not a whole number from 1 to 2^53-1", () => {
     for (const bad of ["1", 0, 1.5]) {
       expect(() => secretAssociatedData({ ...BINDING, version: bad as number })).toThrow(
         /^version must be a whole number from 1 to 9007199254740991$/,

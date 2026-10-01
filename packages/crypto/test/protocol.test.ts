@@ -324,7 +324,7 @@ describe("secretAssociatedData v2", () => {
     );
   });
 
-  it("rejects every value that is not a positive whole number, without echoing it", () => {
+  it("rejects every value that is not a whole number from 1 to 2^53-1, without echoing it", () => {
     for (const bad of BAD_VERSIONS) {
       expect(() => secret({ version: bad as number })).toThrow(
         /^version must be a whole number from 1 to 9007199254740991$/,
@@ -418,7 +418,7 @@ describe("pdkAssociatedData v2", () => {
     );
   });
 
-  it("rejects every key version that is not a positive whole number, without echoing it", () => {
+  it("rejects every key version that is not a whole number from 1 to 2^53-1, without echoing it", () => {
     for (const bad of BAD_VERSIONS) {
       expect(() => pdk({ pdkVersion: bad as number })).toThrow(
         /^pdkVersion must be a whole number from 1 to 9007199254740991$/,

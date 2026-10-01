@@ -256,8 +256,8 @@ function assertTokenHash(value: string): string {
  * is not a plain integer literal in range -- a fraction, an exponent, `1.0` --
  * as an error (JavaScript cannot tell `1.0` from `1` once parsed; a port that
  * can should refuse it). It must NEVER parse to `f64` and cast: `as u64`
- * truncates `1.5` to `1` and saturates out-of-range values, silently turning a bad row
- * into a well-formed AAD for a different version.
+ * truncates `1.5` to `1` and saturates out-of-range values, silently turning a
+ * bad row into a well-formed AAD for a different version.
  */
 function assertVersion(field: string, value: number): string {
   if (!Number.isSafeInteger(value) || value < 1) {
@@ -303,10 +303,10 @@ function assertSecretField(value: SecretField): SecretField {
  * WHY THE PROTOCOL VERSION (`/v2`) IS IN HERE AND NOT IN A COLUMN -- and the
  * same argument is why the secret's own version is in here too. Associated
  * data is authenticated: change one byte of it and decryption fails. A column
- * is not. If the algorithm version sat in `secrets.algorithmVersion`, someone with write
- * access to the database could edit it independently of the ciphertext it
- * describes, and roll a row back to a weaker version while the ciphertext stayed
- * intact and still decrypted. Putting it inside the AAD means the version and
+ * is not. If the algorithm version sat in `secrets.algorithmVersion`, someone
+ * with write access to the database could edit it independently of the
+ * ciphertext it describes, and roll a row back to a weaker version while the
+ * ciphertext stayed intact and still decrypted. Putting it inside the AAD means the version and
  * the ciphertext cannot be separated: a row whose version is altered simply
  * stops decrypting, loudly, which is the correct failure.
  *
@@ -635,10 +635,10 @@ export function pdkAssociatedData(params: {
  * opened as a signing seed, or this seed opened as the account's X25519 key.
  * In v2 the kind-prefixed ids after the label differ too, but that is a second
  * line, not a substitute. Secrets (`sluice/secret/…`) are the fourth AEAD
- * domain; they sit under a project data key rather than the MUK, but a key that is
- * mislabelled once can sit anywhere, so the test suite asserts all FOUR labels
- * are pairwise non-prefix, and no future field appended to one can make it
- * collide with another.
+ * domain; they sit under a project data key rather than the MUK, but a key
+ * that is mislabelled once can sit anywhere, so the test suite asserts all FOUR
+ * labels are pairwise non-prefix, and no future field appended to one can make
+ * it collide with another.
  *
  * THE ARGUMENT IS AN OBJECT, and the two fields are ids of DIFFERENT kinds, so
  * a call site that passes them the wrong way round fails at the call rather

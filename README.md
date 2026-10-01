@@ -13,8 +13,9 @@ does so only because it verified a signature made by a customer-held key.
 
 This repository is early. Read this before you do anything with it:
 
-- The crypto core is under construction. The rest of the platform, dashboard,
-  backend and SDK, is not built yet.
+- The protocol is frozen at `v2`. First versions of the crypto core, backend,
+  dashboard, workload SDK core and a TypeScript CLI exist.
+  Recovery, teams, audit and the Rust CLI are not built yet.
 - There has been **no third-party cryptographic review**.
 - There is no release, no published package and no upgrade path.
 - **Do not put production secrets in Sluice yet.** This is not modesty, it is
@@ -29,9 +30,8 @@ Doppler, Infisical, 1Password, HashiCorp Vault and EnvKey all store secrets.
 Storage is not the differentiator.
 
 The four points below describe the design Sluice is being built to. They are
-not a description of shipped software: today only the crypto core exists, and
-the delivery path is unwritten. They are here so you can judge the design
-before anyone asks you to trust it.
+not a claim that the software is ready: it is pre-release and unreviewed.
+They are here so you can judge the design before anyone asks you to trust it.
 
 - **Revocation reaches running processes, not just the next fetch.** The
   delivery channel is a live subscription rather than a poll, so a revoked
@@ -59,7 +59,14 @@ machine.
 
 ## What exists today
 
-One package.
+| Path | What it is |
+| --- | --- |
+| `packages/crypto` | The cryptographic core, described below |
+| `convex/` | The Convex backend: signup and two-call login, orgs, projects, environments, versioned secrets, service token creation and revocation, the handshake and the bundle subscription |
+| `apps/admin` | The dashboard: signup, login, unlock, and creating orgs, projects, environments and secrets, encrypted in the browser. Minting and revoking tokens from the dashboard is not built yet |
+| `packages/sdk` | The workload decision core: when a process installs secrets, keeps them, or shuts down |
+| `packages/cli` | A TypeScript `sluice run`, which injects secrets into a child process and kills it on a signed revocation |
+| `apps/web` | The public website |
 
 **`packages/crypto`** is a standalone TypeScript library with no dependency on
 Convex, Next.js, React or Node built-ins, so it runs unchanged in a browser,
@@ -71,13 +78,21 @@ currently holds:
 | --- | --- |
 | `bytes.ts` | Hex and UTF-8 conversion, concatenation, constant-time comparison, CSPRNG bytes |
 | `aead.ts` | AES-256-GCM seal and unseal with associated data binding |
+| `ids.ts` | Client-minted permanent ids (`org_`, `usr_`, `env_`, `sec_`) that encryption bindings name instead of database ids |
+| `protocol.ts` | The `v2` associated data for secrets, key grants and revocation keys, and the token id hash |
 | `token.ts` | Service token minting, the HKDF auth and unwrap key split, token parsing, handshake signing and verification |
 | `revocation.ts` | Signed revocation notices over a canonical, domain-separated encoding |
-| `muk.ts` | Argon2id master unlock key derivation, wrapped so it cannot be logged |
+| `muk.ts` | Argon2id master unlock key derivation under a random per-account salt, wrapped so it cannot be logged |
+| `argon2.ts` | The Argon2id backend seam, with conformance checks for a faster backend |
+| `identity.ts` | The auth verifier, the wrapped key blob format and the user key associated data |
+| `email.ts` | The one email normalisation rule both ends use as the account lookup key |
 
-**187 tests** across seven test files, run with Vitest. The suite pins exact
-signed bytes rather than checking the module against itself, so a change to a
-domain separator fails a test instead of silently changing the protocol.
+**1,140 tests** across the workspace, run with Vitest: 305 in
+`packages/crypto`, 404 for the backend, 173 in `packages/cli`, 157 in
+`apps/admin`, 93 in `packages/sdk` and 8 in `apps/web`. The crypto suite pins
+exact bytes against vectors computed outside the package rather than checking
+the module against itself, so a change to a domain separator fails a test
+instead of silently changing the protocol.
 
 The package has two dependencies, `@noble/hashes` and `@noble/curves`, both
 chosen because they are audited, dependency-free and short enough that a
@@ -85,11 +100,9 @@ reviewer can read them. It has no dependency on Convex, Next.js, React or Node
 built-ins, and `@types/node` is deliberately absent so that a `node:` import
 fails to compile.
 
-Not built yet: sealed boxes for member key wrapping, the Convex backend and
-schema, the web dashboard, the SDK, the agent and the CLI. Argon2id currently
-runs in pure JavaScript and takes about eight seconds at the parameters in
-use, so a WASM backend inside a Web Worker is required before any of this is
-usable in a browser.
+Not built yet: wrapping a key to another member's public key, so there are no
+teams; recovery; the audit log; and the Rust CLI. The plan is in
+[`docs/plans/2026-09-30-roadmap.md`](./docs/plans/2026-09-30-roadmap.md).
 
 ## Architecture sketch
 
@@ -135,9 +148,12 @@ Node 22 and pnpm 10.
 git clone https://github.com/FarazAhmad-117/Sluice.git
 cd Sluice
 pnpm install
-pnpm -r test
-pnpm -r typecheck
+pnpm test:all
+pnpm typecheck:all
 ```
+
+`pnpm -r` alone skips the root workspace, which is where the backend tests
+live.
 
 `@types/node` is deliberately absent from `packages/crypto`, so a stray `node:`
 import fails typecheck rather than passing review. Test-driven development is
@@ -153,7 +169,8 @@ required for anything in that package. See
   Sluice does not defend against.
 - [`CONTRIBUTING.md`](./CONTRIBUTING.md): DCO sign-off, setup, and the rules
   for the crypto package.
-- [`docs/plans/`](./docs/plans): design direction and the foundation plan.
+- [`docs/plans/`](./docs/plans): the architecture design, the roadmap and
+  each phase's plan.
 
 ## Licence
 

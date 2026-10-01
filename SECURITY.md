@@ -129,6 +129,27 @@ not going to be quietly fixed later.
   means signup succeeding unconditionally and sending the "you already have an
   account" notice by email, which needs email delivery that does not exist
   yet.
+
+  Login is two calls, and the first, `auth.getLoginSalt`, is built not to add
+  a second oracle. It returns the real salt for a known address and, for an
+  unknown one, a decoy of the same width and alphabet: `HMAC-SHA256` under the
+  deployment's `AUTH_PEPPER`, truncated to 16 bytes, the same answer on every
+  call. What it still leaks:
+
+  - **Timing.** The known-address path is measurably slower by one document
+    read, the same 0.08 to 0.15 ms difference recorded below for login. Here
+    it is on a cheaper endpoint: a query, with no verifier to supply and no
+    Argon2 for the caller to run.
+  - **No rate limit.** It is a query, and a query cannot write, so a limiter
+    that counts attempts in a table cannot cover it. Limiting it means making
+    it a mutation or an HTTP action first.
+  - **A subscription is a signup watch.** Convex queries are reactive. A
+    client subscribed to `getLoginSalt(address)` is pushed the real salt the
+    moment that address signs up.
+  - **A pepper rotation separates decoys from real salts.** Rotating
+    `AUTH_PEPPER` changes every decoy and no real salt, so a prober holding
+    answers from before and after the rotation can tell which addresses have
+    accounts.
 - **A measured timing difference on login.** A login for a known address is
   consistently 0.08 to 0.15 ms slower than one for an unknown address, about 5
   to 8 percent, because the known path materialises a user document while the
@@ -153,13 +174,23 @@ not going to be quietly fixed later.
   a secret, that process can leak it, log it, or send it anywhere. Sluice
   controls delivery, not use.
 - **A customer choosing a weak password.** The key hierarchy is rooted in a
-  password-derived key, so a weak password is a weak root. Nothing enforces a
-  minimum today, because there is no signup path yet. A strength gate and
-  SSO-backed key wrapping are both planned, and neither saves a password that
-  is guessable: the salt is derived from a public user id, so the password is
-  the only entropy in the key.
+  password-derived key, so a weak password is a weak root. The dashboard's
+  signup refuses a password shorter than 12 characters or estimated below 60
+  bits, but that check runs in the browser, and the server cannot enforce it
+  because it never sees the password. SSO-backed key wrapping is planned, and
+  neither saves a password that is guessable: the salt is public (see "How the
+  master key is salted" below), so the password is the only secret input to
+  the key.
+- **A malicious server and the salt.** The server supplies the salt every
+  login derives under. A compromised server could hand every account the same
+  salt, then grind one dictionary against every login verifier it receives,
+  amortising the work across all of them instead of paying it per account.
+  This is not new with the random salt: the server always supplied the salt
+  input. The mitigations are future work: a device that remembers each
+  account's salt and refuses a different one, or a client-held secret key in
+  the 1Password style, so the password is never the only input.
 
-If a report depends on one of these four conditions, it is out of scope by
+If a report depends on one of these conditions, it is out of scope by
 design. If you can break one of the defended-against rows, that is exactly
 what this policy exists for.
 
@@ -172,6 +203,70 @@ in deployment environment variables precisely because they are not
 secret-decrypting material. Nothing that could open customer data is stored
 server side. If you find a place where that is not true, that is a critical
 finding and this project wants to hear about it before anyone else does.
+
+### How the master key is salted
+
+The master unlock key is Argon2id of the password, salted with
+`sha256("sluice/muk-salt/v2" || accountSalt)`, where `accountSalt` is 16 random
+bytes the client mints at signup and the server stores. The email is not an
+input, so changing an account's email does not change its master key or orphan
+anything wrapped under it.
+
+The salt is public. `auth.getLoginSalt` returns it to anyone who asks to log in
+as the account, so a targeted attacker can fetch one account's salt and
+precompute against it before any breach. What a per-account salt buys is that
+one table of guesses cannot be run against every account at once, and that no
+table carries over between deployments. The password is the only secret input,
+and the Argon2id cost is the only thing slowing an offline guess.
+
+### What the encryption bindings protect
+
+Every ciphertext is sealed with AES-GCM under associated data naming the slot it
+belongs in, using the permanent ids clients mint, never a Convex document id:
+
+- A secret's name and value: the environment's permanent id, the secret's
+  permanent id, its version, and the field (`name` or `value`).
+- A key grant, the environment key wrapped to a member or a token: the
+  environment, the key version, and the grantee.
+- A wrapped org revocation key: the org and the grantee.
+
+The server checks every version a client states in the same transaction as
+the write and refuses a mismatch, so a stale write fails while the writer can
+still retry.
+
+This stops a server or database writer from splicing ciphertext between slots.
+Each of these now fails to open: moving a value between secrets or between
+environments, moving a name ciphertext into a value slot, putting a superseded
+value into the current row, and serving an old environment key labelled as the
+current one.
+
+It does not stop:
+
+- **Wholesale rollback.** Serving an entire old row or grant together with its
+  own old version opens, because the associated data is correct for that row.
+  Detecting it needs a client-side ratchet on the highest version seen, which
+  is future work.
+- **Equivocation.** When two clients race to write the same next version and
+  the server refuses one, the refused client still produced a valid
+  ciphertext for that version. A server that kept it can show different valid
+  versions to different readers. Detecting it needs a ratchet compared across
+  clients, or a transparency log.
+- **Omission and resurrection.** The server can leave a secret out of what it
+  serves, or serve one that was deleted, because the deletion and supersession
+  columns are not authenticated.
+- **Lying about which environment a name means.** The environment uid a client
+  binds to is supplied by the server, so a server can answer "production" with
+  another environment's uid. The planned fix is the single-string service
+  token, minted on the client, carrying the environment uid so the CLI pins it.
+
+### Deploy the backend and the CLI together
+
+The CLI and the backend speak one protocol version, and there is no
+compatibility layer. A CLI newer than the backend refuses a bundle that still
+carries the old Convex environment id, logs "deploy the backend and the CLI
+together", installs none of that bundle's secrets and keeps any last known good
+set. It still reads and acts on a revocation notice in that bundle, because the
+notice is read before any decryption.
 
 ### What revocation does and does not undo
 
@@ -253,3 +348,37 @@ Sluice, and it constrains self-hosters as much as it constrains this project.
 It does not let anyone decrypt customer secrets, because the material needed
 to do that is never on the server. It does let the holder read everything in
 the previous section, and change what the deployment serves.
+
+## Disclosed and fixed
+
+### 2026-10-01: a malformed bundle could orphan a `sluice run` child
+
+Found in internal review before any release. No deployment held real data.
+
+**What happened.** A bundle carrying a revocation notice beside a `secrets`
+field that was not an array made the `sluice run` supervisor throw inside the
+Convex websocket callback. Nothing caught it, and the supervisor process
+exited. With a forged or replayed notice, which the supervisor correctly
+refuses, the child process kept running with its secrets and could no longer
+be revoked, because the only process that could act on a revocation was gone.
+With a genuine notice, the SIGKILL escalation for a child that ignores SIGTERM
+was lost.
+
+**The fix, in layers.**
+
+- A `secrets` field that is not an array, beside a notice, is treated as no
+  secrets.
+- Exceptions in the subscription handlers are contained at the subscription
+  boundary and logged. The notice is queued and acted on before anything that
+  could throw, so containing them never loses a shutdown.
+- Any internal error in the shutdown logic itself fails closed: the
+  supervisor persists its revocation floor, SIGKILLs the child and exits with
+  code 70.
+- A process-level last-resort handler for uncaught exceptions and unhandled
+  rejections does the same: SIGKILL the child, then exit 70.
+
+**Residual.** Malformed websocket frames, from a compromised deployment or a
+TLS man in the middle, can still make the Convex client throw outside any
+Sluice guard. That now terminates the workload with exit code 70 rather than
+orphaning it. A database writer cannot do this: they only shape the result of a
+valid query, which arrives as well-formed JSON and takes the guarded path.
