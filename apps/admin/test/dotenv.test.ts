@@ -88,6 +88,27 @@ describe("parseDotenv", () => {
     expect(parseDotenv("A=http://x/#frag").entries[0]!.value).toBe("http://x/#frag");
   });
 
+  it("reads a value that is only a comment as empty", () => {
+    expect(parseDotenv("EMPTY= # fill me in").entries[0]!.value).toBe("");
+    expect(parseDotenv("EMPTY=\t# fill me in").entries[0]!.value).toBe("");
+  });
+
+  it("keeps a # straight after the = as the value", () => {
+    // dotenv convention: a comment needs whitespace before it.
+    expect(parseDotenv("A=#x").entries[0]!.value).toBe("#x");
+  });
+
+  it("refuses text after a closing quote without echoing the value", () => {
+    const result = parseDotenv('A="hunter2-secret" hunter2-tail');
+    expect(result.entries).toEqual([]);
+    expect(result.errors.map((error) => error.line)).toEqual([1]);
+    expect(messages('A="hunter2-secret" hunter2-tail')).not.toContain("hunter2");
+  });
+
+  it("names a duplicate without echoing either value", () => {
+    expect(messages("TOKEN=hunter2-first\nTOKEN=hunter2-second")).not.toContain("hunter2");
+  });
+
   it("keeps the later of two duplicates and says so", () => {
     const result = parseDotenv("A=1\nB=2\nA=3");
     expect(result.entries).toEqual([

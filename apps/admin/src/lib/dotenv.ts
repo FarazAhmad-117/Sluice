@@ -45,7 +45,14 @@ const AFTER_QUOTE = "This line has text after its closing quote.";
 const TOO_MANY = `Only the first ${MAX_DOTENV_ENTRIES.toLocaleString("en-US")} entries are imported.`;
 
 /** The value part of one line, decoded, or the reason it could not be. */
-function parseValue(raw: string): { value: string } | { error: string } {
+/**
+ * `untrimmed` is everything after the `=`, untrimmed ON PURPOSE: the space in
+ * `EMPTY= # fill me in` is what makes the `#` a comment, and trimming first
+ * would import "# fill me in" as the value. `A=#x`, with nothing before the
+ * `#`, keeps "#x", as dotenv does.
+ */
+function parseValue(untrimmed: string): { value: string } | { error: string } {
+  const raw = untrimmed.trimStart();
   const quote = raw[0];
   if (quote === '"' || quote === "'") {
     let value = "";
@@ -69,8 +76,8 @@ function parseValue(raw: string): { value: string } | { error: string } {
     if (rest !== "" && !rest.startsWith("#")) return { error: AFTER_QUOTE };
     return { value };
   }
-  const comment = raw.search(/\s#/);
-  return { value: (comment === -1 ? raw : raw.slice(0, comment)).trim() };
+  const comment = untrimmed.search(/\s#/);
+  return { value: (comment === -1 ? untrimmed : untrimmed.slice(0, comment)).trim() };
 }
 
 export function parseDotenv(text: string): DotenvResult {
@@ -95,7 +102,7 @@ export function parseDotenv(text: string): DotenvResult {
       errors.push({ line, message: BAD_NAME });
       continue;
     }
-    const parsed = parseValue(body.slice(equals + 1).trim());
+    const parsed = parseValue(body.slice(equals + 1));
     if ("error" in parsed) {
       errors.push({ line, message: parsed.error });
       continue;
