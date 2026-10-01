@@ -136,10 +136,11 @@ not going to be quietly fixed later.
   deployment's `AUTH_PEPPER`, truncated to 16 bytes, the same answer on every
   call. What it still leaks:
 
-  - **Timing.** The known-address path is measurably slower by one document
-    read, the same 0.08 to 0.15 ms difference recorded below for login. Here
-    it is on a cheaper endpoint: a query, with no verifier to supply and no
-    Argon2 for the caller to run.
+  - **Timing.** The known-address path materialises a user document where
+    the unknown path resolves an empty index range. That is the same cause as
+    the login difference recorded below, which was measured on login, not on
+    this endpoint. Here it sits on a cheaper endpoint: a query, with no
+    verifier to supply and no Argon2 for the caller to run.
   - **No rate limit.** It is a query, and a query cannot write, so a limiter
     that counts attempts in a table cannot cover it. Limiting it means making
     it a mutation or an HTTP action first.
@@ -177,18 +178,30 @@ not going to be quietly fixed later.
   password-derived key, so a weak password is a weak root. The dashboard's
   signup refuses a password shorter than 12 characters or estimated below 60
   bits, but that check runs in the browser, and the server cannot enforce it
-  because it never sees the password. SSO-backed key wrapping is planned, and
-  neither saves a password that is guessable: the salt is public (see "How the
-  master key is salted" below), so the password is the only secret input to
-  the key.
-- **A malicious server and the salt.** The server supplies the salt every
+  because it never sees the password. SSO-backed key wrapping is planned.
+  Neither it nor the strength check saves a password that is guessable: the
+  salt is public (see "How the master key is salted" below), so the password
+  is the only secret input to the key.
+- **A malicious server choosing the salt.** The server supplies the salt every
   login derives under. A compromised server could hand every account the same
   salt, then grind one dictionary against every login verifier it receives,
   amortising the work across all of them instead of paying it per account.
-  This is not new with the random salt: the server always supplied the salt
-  input. The mitigations are future work: a device that remembers each
-  account's salt and refuses a different one, or a client-held secret key in
-  the 1Password style, so the password is never the only input.
+  This is new with the random salt. Before it, the client computed the salt
+  from the address the user typed, so the server could not choose it.
+
+  What the change adds is the amortisation, not the offline attack itself. The
+  server already holds each account's verifier hash and the pepper it is keyed
+  under, so it can grind any one account's password offline, at full Argon2id
+  cost per guess, with or without this. Nor is the attack silent: a user handed
+  the wrong salt derives the wrong key and login fails. The verifier has
+  already been sent by then, so the failure reveals the attack without
+  preventing it.
+
+  The planned mitigation is near-term: each device remembers the salt for
+  every account that has logged in on it and refuses a different one, so a
+  server can attempt this only on a device's first login. A client-held secret
+  key in the 1Password style, so the password is never the only input, is
+  further out.
 
 If a report depends on one of these conditions, it is out of scope by
 design. If you can break one of the defended-against rows, that is exactly
@@ -221,14 +234,21 @@ and the Argon2id cost is the only thing slowing an offline guess.
 
 ### What the encryption bindings protect
 
-Every ciphertext is sealed with AES-GCM under associated data naming the slot it
-belongs in, using the permanent ids clients mint, never a Convex document id:
+Every secret, key grant and wrapped revocation key is sealed with AES-GCM under
+associated data that binds it to its slot by the permanent ids clients mint,
+never a Convex document id:
 
 - A secret's name and value: the environment's permanent id, the secret's
   permanent id, its version, and the field (`name` or `value`).
 - A key grant, the environment key wrapped to a member or a token: the
   environment, the key version, and the grantee.
 - A wrapped org revocation key: the org and the grantee.
+
+The account's own two wrapped private keys are the exception. They are bound
+only to their purpose, `x25519` or `ed25519` (see
+`packages/crypto/src/identity.ts`), which stops the two being swapped, and are
+kept apart from other accounts by being sealed under that account's own master
+key.
 
 The server checks every version a client states in the same transaction as
 the write and refuses a mismatch, so a stale write fails while the writer can
@@ -256,8 +276,21 @@ It does not stop:
   columns are not authenticated.
 - **Lying about which environment a name means.** The environment uid a client
   binds to is supplied by the server, so a server can answer "production" with
-  another environment's uid. The planned fix is the single-string service
-  token, minted on the client, carrying the environment uid so the CLI pins it.
+  another environment's uid, and serve that environment's grant and secrets
+  with it. The dashboard then shows the other environment's secrets as
+  production's, and seals every secret it writes to "production" into the
+  other environment, where that environment's grantees can read it. The
+  planned single-string service token, minted on the client, carries the
+  environment uid and pins it for the CLI only. Pinning the name to uid
+  mapping in the dashboard is separate follow-up work.
+- **Substituting the org revocation public key.** `orgs.revocationPublicKey`
+  is a column, and no ciphertext binds it. A server could replace it with a
+  key of its own, and every revocation-key grant would still open. The check
+  that an unwrapped revocation seed matches the stored public key,
+  `revocationKeyMatches` in `apps/admin/src/lib/orgs/revocation-key.ts`,
+  exists but is not yet called, because no shipped client signs revocations
+  yet. Verify the key you pin in `SLUICE_ORG_REVOCATION_PUBLIC_KEY` out of
+  band, not by reading it back from the server.
 
 ### Deploy the backend and the CLI together
 
@@ -356,9 +389,11 @@ the previous section, and change what the deployment serves.
 Found in internal review before any release. No deployment held real data.
 
 **What happened.** A bundle carrying a revocation notice beside a `secrets`
-field that was not an array made the `sluice run` supervisor throw inside the
-Convex websocket callback. Nothing caught it, and the supervisor process
-exited. With a forged or replayed notice, which the supervisor correctly
+field of `null` made the `sluice run` supervisor throw inside the Convex
+websocket callback: the old check was `raw.secrets === undefined ||
+raw.secrets.length === 0`, and `null.length` throws. Nothing caught the
+exception, and the supervisor process exited. Other non-array values fell
+through to the asynchronous decrypt, which refused them. With a forged or replayed notice, which the supervisor correctly
 refuses, the child process kept running with its secrets and could no longer
 be revoked, because the only process that could act on a revocation was gone.
 With a genuine notice, the SIGKILL escalation for a child that ignores SIGTERM
@@ -372,10 +407,10 @@ was lost.
   boundary and logged. The notice is queued and acted on before anything that
   could throw, so containing them never loses a shutdown.
 - Any internal error in the shutdown logic itself fails closed: the
-  supervisor persists its revocation floor, SIGKILLs the child and exits with
-  code 70.
+  supervisor tries to persist its revocation floor (best effort), then
+  SIGKILLs the child and exits with code 70.
 - A process-level last-resort handler for uncaught exceptions and unhandled
-  rejections does the same: SIGKILL the child, then exit 70.
+  rejections SIGKILLs the child and exits 70. It does not touch the floor.
 
 **Residual.** Malformed websocket frames, from a compromised deployment or a
 TLS man in the middle, can still make the Convex client throw outside any

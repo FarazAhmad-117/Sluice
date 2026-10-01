@@ -65,7 +65,7 @@ machine.
 | `convex/` | The Convex backend: signup and two-call login, orgs, projects, environments, versioned secrets, service token creation and revocation, the handshake and the bundle subscription |
 | `apps/admin` | The dashboard: signup, login, unlock, and creating orgs, projects, environments and secrets, encrypted in the browser. Minting and revoking tokens from the dashboard is not built yet |
 | `packages/sdk` | The workload decision core: when a process installs secrets, keeps them, or shuts down |
-| `packages/cli` | A TypeScript `sluice run`, which injects secrets into a child process and kills it on a signed revocation |
+| `packages/cli` | A TypeScript `sluice run`, which injects secrets into a child process and kills it on a signed revocation. No shipped client can yet mint a service token or sign a revocation (`createServiceToken` and `revokeServiceToken` are called only from tests, and the dashboard does not display the org revocation public key), so today it runs end to end only in the test suite, in `convex/bundle.contract.test.ts` |
 | `apps/web` | The public website |
 
 **`packages/crypto`** is a standalone TypeScript library with no dependency on
@@ -87,8 +87,8 @@ currently holds:
 | `identity.ts` | The auth verifier, the wrapped key blob format and the user key associated data |
 | `email.ts` | The one email normalisation rule both ends use as the account lookup key |
 
-**1,140 tests** across the workspace, run with Vitest: 305 in
-`packages/crypto`, 404 for the backend, 173 in `packages/cli`, 157 in
+**1,142 tests** across the workspace, run with Vitest: 305 in
+`packages/crypto`, 405 for the backend, 173 in `packages/cli`, 158 in
 `apps/admin`, 93 in `packages/sdk` and 8 in `apps/web`. The crypto suite pins
 exact bytes against vectors computed outside the package rather than checking
 the module against itself, so a change to a domain separator fails a test

@@ -947,13 +947,15 @@ Every hit must pass a `*Uid` field. `assertId` already rejects Convex ids at run
 4. Mint a token for the environment; run `sluice run -- node -e "console.log(process.env.YOUR_SECRET_NAME)"` with the token's environment variables set, and see the value arrive.
 5. Revoke the token in the dashboard; the process exits within seconds.
 
-**Step 4:** If all five pass, open a pull request from `phase-1-freeze-protocol` into `foundation`.
+> **Steps 4 and 5 cannot be run by hand today.** No shipped client mints a service token or signs a revocation: `createServiceToken` and `revokeServiceToken` are called only from tests, and the dashboard does not display the org revocation public key the CLI needs. How the manual steps are run is pending a decision (a dev script, a token UI, or skipping them). The automated contract test, `convex/bundle.contract.test.ts`, now covers the real path end to end: the real mutations, the real `/handshake`, the real `getBundle`, a revocation written through the real `revokeServiceToken`, read by the real CLI reader and acted on by the real `SluiceCore`.
+
+**Step 4:** If all steps that can run pass, open a pull request from `phase-1-freeze-protocol` into `foundation`.
 
 ---
 
 ## Outcome
 
-Recorded 2026-10-01, on branch `phase-1-freeze-protocol` (commits `16a3e92` onwards, on top of `foundation`).
+Recorded 2026-10-01, on branch `phase-1-freeze-protocol` (commits `16a3e92` onwards, on top of `foundation`). A snapshot: the test counts below are at commit `7824618`.
 
 **What shipped.** Tasks 1 to 14 as planned, plus the amendment of 2026-10-01:
 
@@ -974,12 +976,13 @@ Recorded 2026-10-01, on branch `phase-1-freeze-protocol` (commits `16a3e92` onwa
 | `packages/sdk` | 93 |
 | `apps/web` | 8 |
 
-**The critical fix found during review.** A bundle carrying a revocation notice beside a non-array `secrets` field made the `sluice run` supervisor throw inside the Convex websocket callback, and the process exited. With a forged or replayed notice, the child kept running with its secrets and could no longer be revoked; with a genuine notice, the SIGKILL escalation was lost. It is fixed in layers (the shape is handled, handler exceptions are contained at the subscription boundary, any failure in the shutdown logic is fatal and SIGKILLs the child with exit code 70, and a process-level last-resort handler does the same), and disclosed in `SECURITY.md`.
+**The critical fix found during review.** A bundle carrying a revocation notice beside a `secrets` field of `null` made the `sluice run` supervisor throw inside the Convex websocket callback, and the process exited. With a forged or replayed notice, the child kept running with its secrets and could no longer be revoked; with a genuine notice, the SIGKILL escalation was lost. It is fixed in layers (the shape is handled, handler exceptions are contained at the subscription boundary, any failure in the shutdown logic is fatal, tries to persist the revocation floor and SIGKILLs the child with exit code 70, and a process-level last-resort handler SIGKILLs the child and exits 70), and disclosed in `SECURITY.md`.
 
 **Left open, and where each one is tracked.** All are in `docs/plans/2026-09-30-roadmap.md` under the phase named.
 
 - Phase 2: the `apps/admin` vitest aliases duplicate `vite.config.ts`.
-- Phase 3: the single-string token carries the environment uid, so the CLI pins name to uid instead of trusting the server's mapping.
-- Phase 6: a client-side version ratchet against wholesale rollback; audit events carry `secretUid` and version once the audit metadata validator exists; key rotation bumps secret versions rather than re-sealing at the same version; a device-remembered salt per account, or a client-held secret key, against shared-salt amortisation by a malicious server.
+- Phase 3: the single-string token carries the environment uid, so the CLI pins name to uid instead of trusting the server's mapping; and, near-term, each device remembers the salt for every account that has logged in on it, so a server can hand out a shared salt only on a device's first login. The random salt is what gave the server that choice: under v1 the client computed the salt from the address.
+- Phase 5: a hard requirement that every client that signs a revocation calls `revocationKeyMatches` before signing.
+- Phase 6: a client-side version ratchet against wholesale rollback; audit events carry `secretUid` and version once the audit metadata validator exists; key rotation bumps secret versions rather than re-sealing at the same version; the dashboard pins the environment name to uid mapping; a client-held secret key in the 1Password style.
 - Phase 7: a render test for the `AuthProvider` if a DOM test library is added.
 - Architecture design, section 13: any path that moves or imports an org between cells rejects a uid already present in the target and never upserts by uid.
