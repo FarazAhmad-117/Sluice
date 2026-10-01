@@ -3,7 +3,22 @@ import { v } from "convex/values";
 
 export default defineSchema({
   users: defineTable({
+    // Permanent id, `usr_` + 32 lowercase hex: see
+    // `packages/crypto/src/ids.ts`.
+    // Minted by the client before the creating mutation, never changed, and
+    // used in every binding that names this row and every external reference
+    // instead of the Convex document id, which is local to this deployment. It
+    // arrives from a client, so it is attacker-chosen: the shape is checked on
+    // the way in and UNIQUENESS IS ENFORCED HERE, through `by_uid`, not
+    // assumed from entropy.
+    uid: v.string(),
     email: v.string(),
+    // The per-account salt `deriveMUK` takes: 16 random bytes, lowercase hex.
+    // Minted by the client at signup and never changed (a new salt is a new
+    // MUK, and every key wrapped under the old one stops opening). PUBLIC by
+    // design: `getLoginSalt` returns it to anyone who asks to log in as this
+    // address. Its job is uniqueness across accounts, not secrecy.
+    accountSalt: v.string(),
     // HMAC of the client-computed Argon2id verifier, under a server pepper.
     // Never the password, never the MUK. See Task 6.
     authVerifierHash: v.string(),
@@ -12,7 +27,9 @@ export default defineSchema({
     wrappedPrivateKey: v.string(),
     wrappedSigningKey: v.string(),
     recoveryBlob: v.optional(v.string()),
-  }).index("by_email", ["email"]),
+  })
+    .index("by_email", ["email"])
+    .index("by_uid", ["uid"]),
 
   // A dashboard session. This table IS the trust boundary: every query and
   // every mutation in the product resolves its caller by finding a row here,
@@ -45,12 +62,23 @@ export default defineSchema({
     .index("by_expiry", ["expiresAt"]),
 
   orgs: defineTable({
+    // Permanent id, `org_` + 32 lowercase hex: see
+    // `packages/crypto/src/ids.ts`.
+    // Minted by the client before the creating mutation, never changed, and
+    // used in every binding that names this row and every external reference
+    // instead of the Convex document id, which is local to this deployment. It
+    // arrives from a client, so it is attacker-chosen: the shape is checked on
+    // the way in and UNIQUENESS IS ENFORCED HERE, through `by_uid`, not
+    // assumed from entropy.
+    uid: v.string(),
     name: v.string(),
     slug: v.string(),
     // Public material, one per org, so it belongs here. The wrapped private
     // half does not: see `revocationGrants`.
     revocationPublicKey: v.string(),
-  }).index("by_slug", ["slug"]),
+  })
+    .index("by_slug", ["slug"])
+    .index("by_uid", ["uid"]),
 
   // The revocation signing key, wrapped once per user who is allowed to sign.
   // This used to be a single `orgs.wrappedRevocationKey`, which made the
@@ -63,6 +91,13 @@ export default defineSchema({
   // revocation, so the grantee is typed as a user id rather than a string.
   revocationGrants: defineTable({
     orgId: v.id("orgs"),
+    // THE JOIN KEY, NOT THE BINDING. This is the `users` document id, typed as
+    // a real reference so a migration between cells remaps it with the row it
+    // points at. What the wrapped key is cryptographically bound to is
+    // different: the client seals it under associated data naming the
+    // grantee's permanent `usr_` uid, which it reads from the `users` row this
+    // column points to. Do not put the uid here, and do not put this id into
+    // the associated data.
     granteeId: v.id("users"),
     wrappedRevocationKey: v.string(),
     nonce: v.string(),
@@ -87,7 +122,21 @@ export default defineSchema({
     .index("by_org_slug", ["orgId", "slug"]),
 
   environments: defineTable({
+    // Permanent id, `env_` + 32 lowercase hex: see
+    // `packages/crypto/src/ids.ts`.
+    // Minted by the client before the creating mutation, never changed, and
+    // used in every binding that names this row and every external reference
+    // instead of the Convex document id, which is local to this deployment. It
+    // arrives from a client, so it is attacker-chosen: the shape is checked on
+    // the way in and UNIQUENESS IS ENFORCED HERE, through `by_uid`, not
+    // assumed from entropy.
+    uid: v.string(),
     projectId: v.id("projects"),
+    // The owning org, copied from a row the authorisation walk already
+    // loaded, never from a caller. It is reachable through `projectId` too, but
+    // an org must be liftable into another cell in ONE indexed read per table,
+    // and a per-org quota needs a direct count rather than a walk.
+    orgId: v.id("orgs"),
     name: v.string(),
     pdkVersion: v.number(),
     epoch: v.number(),
@@ -95,7 +144,9 @@ export default defineSchema({
     // Prefix-queried by projectId alone for the listing. The second field is
     // how the SDK addresses a config, org/project/environment by name, and is
     // also the uniqueness check when an environment is created.
-    .index("by_project_name", ["projectId", "name"]),
+    .index("by_project_name", ["projectId", "name"])
+    .index("by_uid", ["uid"])
+    .index("by_org", ["orgId"]),
 
   // THE ONE HOME FOR A WRAPPED PROJECT DATA KEY. THERE IS NO SECOND ONE.
   //
@@ -121,23 +172,40 @@ export default defineSchema({
   // had a row when this was decided, so the merge cost nothing exactly once.
   //
   // `granteeId` IS A STRING BECAUSE THE TWO GRANTEE NAMESPACES ARE NOT THE SAME
-  // KIND OF THING. For a user it is the `users` document id. For a token it is
-  // the `tokenIdHash`, NOT the `serviceTokens` document id, because the bundle
-  // knows an authenticated token only by its hash, and because the client has
-  // to compute the same identifier to build the associated data it wraps under
-  // before any document exists. `granteeType` is what keeps the two namespaces
-  // from colliding in one index.
+  // KIND OF THING, AND NEITHER IS A CONVEX DOCUMENT ID. For a user it is the
+  // permanent `usr_` uid from `users.uid`. For a token it is the
+  // `tokenIdHash`, NOT the `serviceTokens` document id, because the bundle
+  // knows an authenticated token only by its hash. In both cases the value is
+  // the one the client names in the associated data it wraps under, spelled
+  // exactly as stored here, so the server's lookup key and the client's
+  // binding are one string. A document id would be wrong twice over: it is
+  // not what the binding names, and inside a `v.string()` a migration to
+  // another cell would carry it across unremapped, pointing at nothing.
+  // `granteeType` is what keeps the two namespaces from colliding in one
+  // index.
   pdkGrants: defineTable({
     environmentId: v.id("environments"),
+    // The owning org, copied from a row the authorisation walk already
+    // loaded, never from a caller. It is reachable through `environmentId`
+    // too, but an org must be liftable into another cell in ONE indexed read
+    // per table, and a per-org quota needs a direct count rather than a walk.
+    orgId: v.id("orgs"),
+
     granteeType: v.union(v.literal("user"), v.literal("token")),
     granteeId: v.string(),
     wrappedPDK: v.string(),
     nonce: v.string(),
-    // WHICH project data key version this blob opens, copied off the
-    // environment row at write time and never taken from a caller. Without it
-    // the bundle would have to report `environments.pdkVersion` beside a
-    // wrapped key from this row: two rows describing one key, free to disagree,
-    // which is the very thing the column above was deleted for.
+    // WHICH project data key version this blob opens. The client wraps under
+    // `pdkAssociatedData`, which binds this version, so it STATES the version
+    // it wrapped under, and the writing mutation checks that it equals the
+    // environment's current `pdkVersion` (exactly 1 in `createEnvironment`)
+    // and refuses otherwise, writing nothing. The value stored is then the
+    // environment's, which by that check is also exactly what the bytes name;
+    // a caller can make a write fail but cannot make this column say
+    // anything else. Without the column the bundle would have to report
+    // `environments.pdkVersion` beside a wrapped key from this row: two rows
+    // describing one key, free to disagree, which is the very thing the
+    // column above was deleted for.
     pdkVersion: v.number(),
   })
     // Prefix-queried by `environmentId` alone for "every grant on this
@@ -151,16 +219,36 @@ export default defineSchema({
     ])
     // "Everything this grantee can open", which the index above cannot answer
     // because it is keyed by environment first.
-    .index("by_grantee", ["granteeType", "granteeId"]),
+    .index("by_grantee", ["granteeType", "granteeId"])
+    .index("by_org", ["orgId"]),
 
   secrets: defineTable({
     environmentId: v.id("environments"),
-    // Every version of one logical secret shares a `lineageId`. Without it
-    // versioning is unrepresentable: the name is ciphertext under a random
-    // nonce, so two versions of the same secret are not comparable byte for
-    // byte and nothing else links the rows. You could have history or a usable
-    // listing, not both.
-    lineageId: v.string(),
+    // The owning org, copied from a row the authorisation walk already
+    // loaded, never from a caller. It is reachable through `environmentId`
+    // too, but an org must be liftable into another cell in ONE indexed read
+    // per table, and a per-org quota needs a direct count rather than a walk.
+    orgId: v.id("orgs"),
+
+    // The secret's PERMANENT id, `sec_` + 32 lowercase hex: see
+    // `packages/crypto/src/ids.ts`. Every version of one logical secret shares
+    // it. Without it versioning is unrepresentable: the name is ciphertext
+    // under a random nonce, so two versions of the same secret are not
+    // comparable byte for byte and nothing else links the rows.
+    //
+    // MINTED BY THE CLIENT, NOT BY THIS SERVER, because the client seals both
+    // fields under `secretAssociatedData({ environmentUid, secretUid, version,
+    // field })` and must know the id before the first write. The server never
+    // computes that associated data. Its job is to STORE EXACTLY the
+    // `secretUid` and `version` the client sealed under and hand both back, so
+    // a reader can rebuild the bytes. A row whose stored slot differs from the
+    // slot it was sealed under does not open, which is what turns a
+    // server-side splice (swapping ciphertext between rows, or rolling one
+    // back to an older version) into a loud failure instead of a wrong value.
+    // The id arrives from a client, so it is attacker-chosen: `createSecret`
+    // checks the shape and refuses an id any row already carries, through
+    // `by_secret_version`, in the same mutation as the insert.
+    secretUid: v.string(),
     // Both name and value are ciphertext. The name is encrypted because a
     // plaintext column full of STRIPE_LIVE_SECRET_KEY tells an attacker with
     // database access exactly which ciphertext to prioritise, and tells the
@@ -170,8 +258,13 @@ export default defineSchema({
     valueCiphertext: v.string(),
     valueNonce: v.string(),
     pdkVersion: v.number(),
+    // The version the client sealed THIS row under, bound into its associated
+    // data, stored exactly as sealed. 1 on create; on update exactly the
+    // current row's version plus one, enforced as a compare-and-set in
+    // `updateSecret`, so a write prepared against a version that is no longer
+    // current fails loudly instead of landing.
     version: v.number(),
-    // Set when a newer version of the same lineage replaces this row. Unset
+    // Set when a newer version of the same secret replaces this row. Unset
     // means current. There is deliberately no `isCurrent` boolean: it would
     // restate what this field already says and the two could disagree.
     supersededAt: v.optional(v.number()),
@@ -191,10 +284,17 @@ export default defineSchema({
       "supersededAt",
       "deletedAt",
     ])
-    .index("by_lineage_version", ["lineageId", "version"]),
+    .index("by_secret_version", ["secretUid", "version"])
+    .index("by_org", ["orgId"]),
 
   serviceTokens: defineTable({
     environmentId: v.id("environments"),
+    // The owning org, copied from a row the authorisation walk already
+    // loaded, never from a caller. It is reachable through `environmentId`
+    // too, but an org must be liftable into another cell in ONE indexed read
+    // per table, and a per-org quota needs a direct count rather than a walk.
+    orgId: v.id("orgs"),
+
     // The id is stored hashed so a database reader cannot enumerate valid
     // identifiers. Lookups hash the incoming id and match on this.
     tokenIdHash: v.string(),
@@ -209,7 +309,8 @@ export default defineSchema({
     expiresAt: v.optional(v.number()),
   })
     .index("by_token_id_hash", ["tokenIdHash"])
-    .index("by_environment", ["environmentId"]),
+    .index("by_environment", ["environmentId"])
+    .index("by_org", ["orgId"]),
 
   revocations: defineTable({
     // Both forms of the identifier are stored on purpose. Do not "clean up"
@@ -227,6 +328,13 @@ export default defineSchema({
     // One denormalised column is far cheaper than that.
     tokenId: v.string(),
     tokenIdHash: v.string(),
+    // The environment the revoked token belonged to, and its org. Neither is
+    // signed -- the notice covers the token id and epoch -- they are here so
+    // that every tenant row can be found by org in one indexed read, and so a
+    // revocation stays attributable after its token row is gone. Both are
+    // copied from the token row the mutation loaded, never from a caller.
+    orgId: v.id("orgs"),
+    environmentId: v.id("environments"),
     epoch: v.number(),
     signature: v.string(),
     signedBy: v.id("users"),
@@ -234,7 +342,8 @@ export default defineSchema({
     reason: v.string(),
   })
     .index("by_token_id", ["tokenId"])
-    .index("by_token_id_hash", ["tokenIdHash"]),
+    .index("by_token_id_hash", ["tokenIdHash"])
+    .index("by_org", ["orgId"]),
 
   // Replay protection for the handshake. Ed25519 signatures are deterministic,
   // so the same token id and timestamp always produce the same signature.

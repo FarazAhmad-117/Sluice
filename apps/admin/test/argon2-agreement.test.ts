@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ARGON2_PARAMS, assertConformantArgon2, deriveMUK, toHex } from "@sluice/crypto";
+import { ARGON2_PARAMS, assertConformantArgon2, deriveMUK, fromHex, toHex } from "@sluice/crypto";
 import { probeArgon2Memory, wasmArgon2 } from "../src/lib/crypto/argon2-wasm";
 
 /**
@@ -24,16 +24,26 @@ import { probeArgon2Memory, wasmArgon2 } from "../src/lib/crypto/argon2-wasm";
  */
 
 /**
- * RESTATED, NOT IMPORTED, from `packages/crypto/test/muk.test.ts`.
+ * RESTATED, NOT IMPORTED, from `packages/crypto/test/muk.test.ts`: the v2
+ * vector, salted with a random-shaped per-account value instead of the email.
  *
  * Importing it would mean one edit could move the vector in both places at
  * once, which is the single change that must never be easy. Here the noble
  * assertion below is the cross-check: if this constant and the one in
  * `muk.test.ts` ever disagree, one of the two files fails immediately.
+ *
+ * The salt is the bytes 0x30..0x3f (ASCII "0".."?"), readable so the vector
+ * can be reproduced by hand. The MUK was computed independently with
+ * hash-wasm from the spec of the construction, `sha256("sluice/muk-salt/v2" ||
+ * accountSalt)` as the Argon2id salt, not by running `deriveMUK`.
  */
-const KAT_PASSWORD = "correct horse battery staple";
-const KAT_USER_ID = "u1";
-const KAT_MUK = "dfee4c58ca2653a1b5ae9a64cd3743c1cb33b26f2a6a537715f26e84cfd5b588";
+const KAT_PASSWORD = "correct horse battery staple, v2";
+const KAT_ACCOUNT_SALT_HEX = "303132333435363738393a3b3c3d3e3f";
+const KAT_ACCOUNT_SALT = fromHex(KAT_ACCOUNT_SALT_HEX);
+const KAT_MUK = "633977bb9b6fec724f6574028da06c834895735198e653c3f8a95cb28d70436c";
+
+/** A second account, differing from the KAT salt in its last byte only. */
+const OTHER_ACCOUNT_SALT = fromHex("303132333435363738393a3b3c3d3e40");
 
 const DERIVE_BUDGET_MS = 600_000;
 
@@ -78,8 +88,8 @@ describe("noble and hash-wasm agree", () => {
    * the recorded vector is what rules that out.
    */
   it("produce the pinned known-answer vector, byte for byte", async () => {
-    const viaNoble = await deriveMUK(KAT_PASSWORD, KAT_USER_ID);
-    const viaWasm = await deriveMUK(KAT_PASSWORD, KAT_USER_ID, { argon2: wasmArgon2 });
+    const viaNoble = await deriveMUK(KAT_PASSWORD, KAT_ACCOUNT_SALT);
+    const viaWasm = await deriveMUK(KAT_PASSWORD, KAT_ACCOUNT_SALT, { argon2: wasmArgon2 });
 
     expect(toHex(viaNoble.bytes)).toBe(KAT_MUK);
     expect(toHex(viaWasm.bytes)).toBe(KAT_MUK);
@@ -109,10 +119,10 @@ describe("noble and hash-wasm agree", () => {
     expect(NFC).not.toBe(NFD);
     expect(NFC.normalize("NFC")).toBe(NFD.normalize("NFC"));
 
-    const nobleNFC = await deriveMUK(NFC, KAT_USER_ID);
-    const wasmNFC = await deriveMUK(NFC, KAT_USER_ID, { argon2: wasmArgon2 });
-    const nobleNFD = await deriveMUK(NFD, KAT_USER_ID);
-    const wasmNFD = await deriveMUK(NFD, KAT_USER_ID, { argon2: wasmArgon2 });
+    const nobleNFC = await deriveMUK(NFC, KAT_ACCOUNT_SALT);
+    const wasmNFC = await deriveMUK(NFC, KAT_ACCOUNT_SALT, { argon2: wasmArgon2 });
+    const nobleNFD = await deriveMUK(NFD, KAT_ACCOUNT_SALT);
+    const wasmNFD = await deriveMUK(NFD, KAT_ACCOUNT_SALT, { argon2: wasmArgon2 });
 
     const hexes = [nobleNFC, wasmNFC, nobleNFD, wasmNFD].map((k) => toHex(k.bytes));
     expect(new Set(hexes).size).toBe(1);
@@ -129,21 +139,23 @@ describe("noble and hash-wasm agree", () => {
    */
   it("agree on an astral-plane password", async () => {
     const password = "\u{1F510}\u{1F5DD}\u{FE0F} unlock me";
-    const viaNoble = await deriveMUK(password, KAT_USER_ID);
-    const viaWasm = await deriveMUK(password, KAT_USER_ID, { argon2: wasmArgon2 });
+    const viaNoble = await deriveMUK(password, KAT_ACCOUNT_SALT);
+    const viaWasm = await deriveMUK(password, KAT_ACCOUNT_SALT, { argon2: wasmArgon2 });
     expect(toHex(viaWasm.bytes)).toBe(toHex(viaNoble.bytes));
   }, DERIVE_BUDGET_MS);
 
   /**
-   * A different user id changes the salt, and the salt is built by
-   * `@sluice/crypto` from `sha256("sluice/muk-salt/v1" || userId)`. This checks
-   * the backends agree on a salt they did not choose, and -- via the inequality
-   * -- that the salt is actually reaching the derivation rather than being
-   * dropped by one of them.
+   * A different account salt changes the Argon2id salt, which `@sluice/crypto`
+   * builds as `sha256("sluice/muk-salt/v2" || accountSalt)`. This checks the
+   * backends agree on a salt they did not choose, and -- via the inequality --
+   * that the salt is actually reaching the derivation rather than being dropped
+   * by one of them. The two account salts differ in their LAST byte only, so a
+   * backend or a salt construction that truncated its input would collapse
+   * them into one key and fail here.
    */
   it("agree when the salt changes, and the salt still matters", async () => {
-    const viaNoble = await deriveMUK(KAT_PASSWORD, "usr_0123456789abcdef");
-    const viaWasm = await deriveMUK(KAT_PASSWORD, "usr_0123456789abcdef", { argon2: wasmArgon2 });
+    const viaNoble = await deriveMUK(KAT_PASSWORD, OTHER_ACCOUNT_SALT);
+    const viaWasm = await deriveMUK(KAT_PASSWORD, OTHER_ACCOUNT_SALT, { argon2: wasmArgon2 });
     expect(toHex(viaWasm.bytes)).toBe(toHex(viaNoble.bytes));
     expect(toHex(viaWasm.bytes)).not.toBe(KAT_MUK);
   }, DERIVE_BUDGET_MS);

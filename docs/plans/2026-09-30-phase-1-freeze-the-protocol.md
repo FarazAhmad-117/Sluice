@@ -1,4 +1,4 @@
-# Phase 1: Freeze the Protocol — Implementation Plan
+# Phase 1 Implementation Plan: Freeze the Protocol
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
@@ -22,16 +22,22 @@
 
 ## The vectors
 
+These are the final values, after the amendment below. The tests in `packages/crypto/test/protocol.test.ts`, `packages/crypto/test/muk.test.ts`, `packages/crypto/test/identity.test.ts` and `convex/lib/salt.test.ts` pin them and are authoritative.
+
 ```
 ENV                env_000102030405060708090a0b0c0d0e0f
 USR                usr_101112131415161718191a1b1c1d1e1f
 ORG                org_202122232425262728292a2b2c2d2e2f
+SEC                sec_303132333435363738393a3b3c3d3e3f
 TOKEN_ID_HASH      305ab71526b2c39b5c8daf6ec97b91af98247937c858f4fd3ee4cf1e8d97fcd9   (existing v1 KAT, unchanged)
 
-secret AAD         736c756963652f7365637265742f76327c656e765f3030303130323033303430353036303730383039306130623063306430653066
-pdk AAD, user      736c756963652f70646b2f76327c656e765f30303031303230333034303530363037303830393061306230633064306530667c757365727c7573725f3130313131323133313431353136313731383139316131623163316431653166
-pdk AAD, token     736c756963652f70646b2f76327c656e765f30303031303230333034303530363037303830393061306230633064306530667c746f6b656e7c33303561623731353236623263333962356338646166366563393762393161663938323437393337633835386634666433656534636631653864393766636439
-revocation AAD     736c756963652f7265766f636174696f6e2d6b65792f76327c6f72675f32303231323232333234323532363237323832393261326232633264326532667c7573725f3130313131323133313431353136313731383139316131623163316431653166
+secret AAD, version 1, value  736c756963652f7365637265742f76327c656e765f30303031303230333034303530363037303830393061306230633064306530667c7365635f33303331333233333334333533363337333833393361336233633364336533667c317c76616c7565
+secret AAD, version 1, name   736c756963652f7365637265742f76327c656e765f30303031303230333034303530363037303830393061306230633064306530667c7365635f33303331333233333334333533363337333833393361336233633364336533667c317c6e616d65
+secret AAD, version 2, value  736c756963652f7365637265742f76327c656e765f30303031303230333034303530363037303830393061306230633064306530667c7365635f33303331333233333334333533363337333833393361336233633364336533667c327c76616c7565
+pdk AAD, version 1, user      736c756963652f70646b2f76327c656e765f30303031303230333034303530363037303830393061306230633064306530667c317c757365727c7573725f3130313131323133313431353136313731383139316131623163316431653166
+pdk AAD, version 1, token     736c756963652f70646b2f76327c656e765f30303031303230333034303530363037303830393061306230633064306530667c317c746f6b656e7c33303561623731353236623263333962356338646166366563393762393161663938323437393337633835386634666433656534636631653864393766636439
+pdk AAD, version 2, user      736c756963652f70646b2f76327c656e765f30303031303230333034303530363037303830393061306230633064306530667c327c757365727c7573725f3130313131323133313431353136313731383139316131623163316431653166
+revocation AAD                736c756963652f7265766f636174696f6e2d6b65792f76327c6f72675f32303231323232333234323532363237323832393261326232633264326532667c7573725f3130313131323133313431353136313731383139316131623163316431653166
 
 account salt       303132333435363738393a3b3c3d3e3f                                   (bytes 0x30..0x3f)
 MUK salt v2        d32869c2b87cf09ad74dfeb60122cde4bf220d5c0f39e357b4e157d06d5950f3   sha256("sluice/muk-salt/v2" || account salt)
@@ -42,6 +48,27 @@ user key AAD ed25519  736c756963652f757365722d6b65792f76317c65643235353139
 auth verifier         0abfe45dead6265934bc56753b7cd9f2f782e9f801e7279e4a5451453bcbff61   HMAC-SHA256(key = bytes 0x00..0x1f, "sluice/auth-verifier/v1")
 decoy salt            3cdb14ca8f79ef0ce835b15f0cba7674   HMAC-SHA256(key = 32 bytes of 0xab, "sluice/decoy-salt/v1|nobody@example.com")[0..16]
 ```
+
+Decoded, the three constructions are:
+
+```
+sluice/secret/v2|<environmentUid>|<secretUid>|<version>|<field>      field is "name" or "value"
+sluice/pdk/v2|<environmentUid>|<pdkVersion>|<granteeType>|<granteeId>
+sluice/revocation-key/v2|<orgUid>|<granteeUid>
+```
+
+The MUK salt v2 value is not pinned on its own by any test; it is covered through the MUK v2 vector, and was recomputed with `node:crypto` when this table was finalised.
+
+### Amendment 2026-10-01: versions and slots are bound
+
+The table as first written bound only the environment into a secret and only the environment and grantee into a key grant. Review found two attacks that left open, both by a party with database write access who cannot read anything:
+
+- **Rotation rollback.** When an environment key is rotated, the old and new grants for each remaining grantee had identical associated data, because `pdkVersion` was a plain column. A server could serve the old grant labelled as the new version. The client would unwrap the old key, believe it current, and seal every new secret under a key the removed member still holds.
+- **Secret splicing.** Every secret in an environment shared one associated data, so a writer could swap the values of two secrets, move a name ciphertext into a value slot, or put a superseded value back into the current row, and each would decrypt and be believed.
+
+The fix binds `pdkVersion` into every grant, and the secret's permanent `sec_` id, its version and the field into every secret ciphertext. The server checks the stated version against the expected one in the same transaction as the write and refuses a mismatch. The amendment was approved on 2026-10-01 before any real signup, so it changed `v2` in place rather than introducing `v3`.
+
+What it does not stop is recorded in `SECURITY.md`, under "What the encryption bindings protect".
 
 ---
 
@@ -108,7 +135,7 @@ describe("assertId", () => {
   it("rejects an id of another kind", () => {
     expect(() =>
       assertId("env", "environmentUid", "usr_101112131415161718191a1b1c1d1e1f"),
-    ).toThrow("environmentUid must be an env id");
+    ).toThrow("environmentUid must be a well-formed env id");
   });
 
   /**
@@ -132,7 +159,7 @@ describe("assertId", () => {
 
   it("rejects a non-string without echoing it", () => {
     expect(() => assertId("env", "environmentUid", 42 as unknown as string)).toThrow(
-      "environmentUid must be an env id",
+      "environmentUid must be a well-formed env id",
     );
   });
 });
@@ -198,7 +225,7 @@ export function newId(kind: IdKind): string {
  */
 export function assertId(kind: IdKind, field: string, value: string): string {
   if (typeof value !== "string" || !PATTERNS[kind].test(value)) {
-    throw new Error(`${field} must be an ${kind} id`);
+    throw new Error(`${field} must be a well-formed ${kind} id`);
   }
   return value;
 }
@@ -222,6 +249,8 @@ git commit -m "Mint permanent ids on the client so bindings survive a cell move"
 ---
 
 ### Task 2: `v2` encryption bindings
+
+> **Superseded by the amendment of 2026-10-01.** The code blocks in this task bind only the environment into a secret and omit `pdkVersion` from a grant, and their hex constants are the pre-amendment values. They are kept as the record of what was first planned. The shipped functions also take `secretUid`, `version` and `field` (secrets) and `pdkVersion` (grants). `packages/crypto/test/protocol.test.ts` is authoritative, and the vector table above holds the final values.
 
 **Files:**
 - Modify: `packages/crypto/src/protocol.ts` (the three associated-data functions, their prefixes, and their header comments)
@@ -881,7 +910,7 @@ git commit -am "CLI: open bundles under the environment's permanent id"
 **Files:** `SECURITY.md`, `docs/plans/2026-09-17-sluice-backend.md`, `docs/plans/2026-09-30-sluice-architecture-design.md`
 
 - `SECURITY.md`: the salt is random per account; changing an email no longer changes the key; `getLoginSalt` and its decoy, under account enumeration.
-- Backend plan, "Decided 2026-09-18" and "Three invented constants": append **Implemented 2026-09-30 in Phase 1**, with the commit range.
+- Backend plan, "Decided 2026-09-18" and "Three invented constants": append **Implemented 2026-10-01 in Phase 1**, with the commit range.
 - Architecture design, section 13 rule 1: mark done.
 
 ```bash
@@ -918,4 +947,53 @@ Every hit must pass a `*Uid` field. `assertId` already rejects Convex ids at run
 4. Mint a token for the environment; run `sluice run -- node -e "console.log(process.env.YOUR_SECRET_NAME)"` with the token's environment variables set, and see the value arrive.
 5. Revoke the token in the dashboard; the process exits within seconds.
 
-**Step 4:** If all five pass, open a pull request from `phase-1-freeze-protocol` into `foundation`.
+> **Steps 4 and 5 cannot be run by hand today.** No shipped client mints a service token or signs a revocation: `createServiceToken` and `revokeServiceToken` are called only from tests, and the dashboard does not display the org revocation public key the CLI needs. How the manual steps are run is pending a decision (a dev script, a token UI, or skipping them). The automated contract test, `convex/bundle.contract.test.ts`, now covers the real path end to end: the real mutations, the real `/handshake`, the real `getBundle`, a revocation written through the real `revokeServiceToken`, read by the real CLI reader and acted on by the real `SluiceCore`.
+
+**Step 4:** If all steps that can run pass, open a pull request from `phase-1-freeze-protocol` into `foundation`.
+
+---
+
+## Outcome
+
+Recorded 2026-10-01, on branch `phase-1-freeze-protocol` (commits `16a3e92` onwards, on top of `foundation`). A snapshot: the test counts below are at commit `7824618`.
+
+**What shipped.** Tasks 1 to 14 as planned, plus the amendment of 2026-10-01:
+
+- Permanent client-minted ids (`org_`, `usr_`, `env_`, `sec_`) on every tenant row, with a direct `orgId` reference, checked for shape and uniqueness by the server.
+- `v2` associated data for secrets (environment, secret, version, field), key grants (environment, key version, grantee) and revocation keys (org, grantee). The server checks every stated version in the write transaction and refuses a stale or skipped one with a reload message.
+- A random 16-byte account salt at signup, two-call login (`getLoginSalt`, then `login`) and a keyed decoy salt for unknown addresses.
+- The dashboard's invented constants (user key associated data, the wrapped key blob grammar, the auth verifier label) moved into `@sluice/crypto` with known-answer vectors.
+- The CLI opening bundles under the environment's permanent id and each secret's slot and version, and naming version skew when the backend is older than the CLI.
+
+**Tests.** 1,140 passing across six packages, up from 892 at the Task 0 baseline:
+
+| Package | Tests |
+| --- | --- |
+| root (Convex backend) | 404 |
+| `packages/crypto` | 305 |
+| `packages/cli` | 173 |
+| `apps/admin` | 157 |
+| `packages/sdk` | 93 |
+| `apps/web` | 8 |
+
+**The critical fix found during review.** A bundle carrying a revocation notice beside a `secrets` field of `null` made the `sluice run` supervisor throw inside the Convex websocket callback, and the process exited. With a forged or replayed notice, the child kept running with its secrets and could no longer be revoked; with a genuine notice, the SIGKILL escalation was lost. It is fixed in layers (the shape is handled, handler exceptions are contained at the subscription boundary, any failure in the shutdown logic is fatal, tries to persist the revocation floor and SIGKILLs the child with exit code 70, and a process-level last-resort handler SIGKILLs the child and exits 70), and disclosed in `SECURITY.md`.
+
+**How it was verified, and what is still pending.** The end-to-end exit criterion was met by the automated contract test `convex/bundle.contract.test.ts`, not by hand. `pnpm build` passed at `151188e` (`apps/admin`: `tsc --noEmit` and `vite build`; `apps/web`: `next build`; `packages/cli`: `vite build`). The dev Convex deployment was cleared on 2026-10-01 with the user's go-ahead (16 pre-Phase-1 rows), and the Phase 1 schema pushed cleanly. Manual steps 1 to 3 were run on 2026-10-02 against that deployment: sign up, unlock, create an org, a project and `development`, add two secrets, reload (vault locked, rows sealed under their `sec_` ids), unlock, and both values revealed exactly as entered. The stored rows carry `usr_`/`sec_` ids and a 32-hex-character account salt. Sign-in from the login page was confirmed by the user on their own account. All 1,142 tests passed again before merge. Steps 4 and 5 still wait on the token surface decision filed under Phase 3 in the roadmap.
+
+**Notes for anyone reading the history.**
+
+- The dashboard's "rekeying" state is defensive. It handles a grant whose `pdkVersion` differs from the environment's, as it would mid re-key or after a database edit. No re-key mutation exists, and re-keying an environment is not supported.
+- `apps/admin` is red from `43afd99` up to `99e49a8`: `43afd99` changed the associated data functions it calls, and the dashboard caught up only at `99e49a8`. When bisecting across that range, use `git bisect skip` on those commits or scope the test run to the package under suspicion.
+- `packages/sdk` has no changes in Phase 1. It computes no associated data and opens no ciphertext, so nothing in it depended on the bindings.
+
+**Left open, and where each one is tracked.** All are in `docs/plans/2026-09-30-roadmap.md` under the phase named.
+
+- Phase 2: the `apps/admin` vitest aliases duplicate `vite.config.ts`.
+- Phase 3: the decision, open with the user, on a surface for issuing and revoking tokens and displaying the org revocation public key (a dev script, a dashboard screen, or skipping the manual check).
+- Phase 3: the single-string token carries the environment uid, so the CLI pins name to uid instead of trusting the server's mapping; and, near-term, each device remembers the salt for every account that has logged in on it, so a server can hand out a shared salt only on a device's first login. The random salt is what gave the server that choice: under v1 the client computed the salt from the address.
+- Phase 5: a hard requirement that every client that signs a revocation calls `revocationKeyMatches` before signing.
+- Phase 6: a client-side version ratchet against wholesale rollback; audit events carry `secretUid` and version once the audit metadata validator exists; key rotation bumps secret versions rather than re-sealing at the same version; the dashboard pins the environment name to uid mapping; a client-held secret key in the 1Password style.
+- Phase 6: revocation triggers a re-key of the token's environment.
+- Phase 7: a render test for the `AuthProvider` if a DOM test library is added.
+- Phase 8: rate-limiting `auth.getLoginSalt`, once it is a mutation or an HTTP action.
+- Architecture design, section 13: any path that moves or imports an org between cells rejects a uid already present in the target and never upserts by uid.

@@ -3,16 +3,23 @@ import { emailLocalPart } from "./email";
 /**
  * THE PASSWORD STRENGTH GATE.
  *
- * WHY THIS IS A SECURITY CONTROL AND NOT A NICETY. The Argon2id salt is
- * `SHA-256("sluice/muk-salt/v1" || userId)` where the user id is the account's
- * email address. The address is public, so the salt is public, so the salt
- * contributes NOTHING to the difficulty of guessing a particular account's key.
- * It only stops one precomputed table from covering every account at once.
+ * WHY THIS IS A SECURITY CONTROL AND NOT A NICETY. The Argon2id salt is a
+ * domain-separated SHA-256 of the account salt, built by `deriveMUK` in
+ * `@sluice/crypto` (whose label is defined there and only there), where the
+ * account salt is 16 random bytes minted at signup. Random is not secret: the
+ * server returns that salt to anyone who asks to log in as the account, decoy
+ * or not, so an
+ * attacker targeting one account can fetch its salt before any breach and
+ * precompute against it at leisure. The salt therefore contributes NOTHING to
+ * the difficulty of guessing a particular account's key. It only stops one
+ * precomputed table from covering every account at once. Moving from the
+ * email to a random value changed what the salt is tied to, not how much it
+ * protects, and this gate is exactly as strict as it was.
  *
- * That leaves the password as the ONLY entropy in the master unlock key, which
- * is the root of the entire key hierarchy. Argon2id at m=64MiB, t=3, p=4 makes
- * each guess expensive; it does not make a small guess space large. A six
- * character password is at most a few billion candidates, and an attacker who
+ * That leaves the password as the ONLY secret input to the master unlock key,
+ * which is the root of the entire key hierarchy. Argon2id at m=64MiB, t=3,
+ * p=4 makes each guess expensive; it does not make a small guess space large.
+ * A six character password is at most a few billion candidates, and an attacker who
  * has stolen the wrapped key bundle grinds them offline at their own pace with
  * no rate limit and no way for anyone to notice. There is no lockout to hide
  * behind: the attack does not touch the server.

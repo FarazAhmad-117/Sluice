@@ -46,17 +46,39 @@ export async function listCurrentSecretsByEnvironment(
 }
 
 /**
- * Every version of one logical secret, oldest first. This is what makes
- * "the previous version remains readable" answerable at all.
+ * Every version of one logical secret, oldest first, by its permanent `sec_`
+ * id. This is what makes "the previous version remains readable" answerable at
+ * all.
  */
 export async function listSecretVersions(
   ctx: QueryCtx,
-  lineageId: string,
+  secretUid: string,
 ): Promise<Doc<"secrets">[]> {
   return await ctx.db
     .query("secrets")
-    .withIndex("by_lineage_version", (q) => q.eq("lineageId", lineageId))
+    .withIndex("by_secret_version", (q) => q.eq("secretUid", secretUid))
     .collect();
+}
+
+/**
+ * `createSecret`'s uniqueness check: does ANY row, in any environment,
+ * superseded or deleted included, carry this `secretUid`?
+ *
+ * `.first()` on the same `by_secret_version` range `listSecretVersions` reads,
+ * rather than collecting every version just to count them. The read set is the
+ * same index range either way, so a concurrent insert under this id still
+ * conflicts with this transaction and one of the two is retried: the
+ * protection is the range read, not the number of rows fetched.
+ */
+export async function secretUidTaken(
+  ctx: QueryCtx,
+  secretUid: string,
+): Promise<boolean> {
+  const row = await ctx.db
+    .query("secrets")
+    .withIndex("by_secret_version", (q) => q.eq("secretUid", secretUid))
+    .first();
+  return row !== null;
 }
 
 export async function insertSecret(

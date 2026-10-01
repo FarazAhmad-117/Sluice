@@ -470,9 +470,11 @@ LOGIN    1. send email        -> accountSalt
          3. send authVerifier -> wrapped blobs
 ```
 
-Costs one round trip before the derivation, which is already 1.6 seconds, so it is not the bottleneck. Gains a changeable email and a salt that is not derived from a public address. This is the shape 1Password and Bitwarden use, for the same reason.
+Costs one round trip before the derivation, which is already 1.6 seconds, so it is not the bottleneck. Gains a changeable email and a salt that is not derived from a public address. This is the 1Password shape, where the server stores a random per-account salt and hands it to the client before derivation. Bitwarden does not do this: it salts its master key derivation with the email.
 
 **Note the enumeration consequence:** step 1 answers "does this account exist" to an unauthenticated caller. Account existence is already public, because signup rejects duplicates with a message that says so, and that is published in `SECURITY.md` as a stated limit. Return a deterministic decoy salt for an unknown email anyway, so the endpoint does not make the existing leak easier to automate.
+
+**Implemented 2026-10-01 in Phase 1 (branch `phase-1-freeze-protocol`, commits `ad06684` to `9404447`).** The account salt is 16 random bytes; the Argon2id salt is `sha256("sluice/muk-salt/v2" || accountSalt)`, not the raw value. `auth.getLoginSalt` is a query that returns the stored salt, or `HMAC-SHA256(AUTH_PEPPER, "sluice/decoy-salt/v1|" || email)` truncated to 16 bytes for an unknown address. What that endpoint still leaks is listed in `SECURITY.md`.
 
 ## Three invented constants that must be ratified and moved
 
@@ -483,6 +485,8 @@ The dashboard had to invent these because nothing specified them, and said so ra
 - **The user key AAD:** `sluice/user-key/v1|x25519` and `sluice/user-key/v1|ed25519`.
 
 All three belong in `packages/crypto/src/protocol.ts` alongside `secretAssociatedData` and `tokenIdHash`, pinned by known-answer vectors, for exactly the reason that module exists. Leaving them in `apps/web` means the SDK and any future client re-derive them by hand.
+
+**Implemented 2026-10-01 in Phase 1 (branch `phase-1-freeze-protocol`, commit `cd34829`).** All three are ratified unchanged and pinned by known-answer vectors. They live in `packages/crypto/src/identity.ts` (`deriveAuthVerifier`, `encodeWrappedKey` and `decodeWrappedKey`, `userKeyAssociatedData`) rather than `protocol.ts`, which holds only the constructions the backend and a workload must agree on. `normaliseEmail` moved to `packages/crypto/src/email.ts`, and `convex/lib/email.ts` and `apps/admin/src/lib/auth/email.ts` both call it.
 
 **`normaliseEmail` is currently duplicated** between `convex/lib/email.ts` and `apps/web/src/lib/auth/email.ts` and the two must never drift: if the server's rule changes by one character, existing users derive a different salt, a different MUK, and cannot open their own keys. It belongs in the crypto package too. Note that the account salt decision above reduces but does not remove this, since the email is still the lookup key.
 

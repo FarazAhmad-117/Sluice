@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ed25519 } from "@noble/curves/ed25519";
 import {
   MasterUnlockKey,
+  newId,
   randomBytes,
   signRevocation,
   toHex,
@@ -25,11 +26,12 @@ import {
  * state that creates, stores and lists perfectly and fails exactly once --
  * during the incident revocation exists for.
  *
- * `granteeId` is the `users` document id the grant is wrapped to, spelled
- * exactly as `revocationGrants.granteeId` stores it. It is the ONLY thing bound
- * into the associated data besides the domain, and the reason the org id is not
- * there is on `revocationKeyAssociatedData` in `@sluice/crypto`: `createOrg`
- * takes this wrap as an argument, so at wrap time the org does not exist.
+ * The associated data names the org's permanent `org_` uid and the grantee's
+ * permanent `usr_` uid. Both are minted before the wrap (the org uid by the
+ * creating browser, the user uid at signup), which is what lets the org be
+ * bound at all: the Convex document id does not exist when the wrap is made,
+ * the permanent uid does. What the associated data still cannot bind is the
+ * published public key, which is why `revocationKeyMatches` is tested below.
  */
 
 /** A deterministic stand-in for a real derivation. Not a real key. */
@@ -37,8 +39,10 @@ function fixedKey(fill = 9): MasterUnlockKey {
   return new MasterUnlockKey(new Uint8Array(32).fill(fill));
 }
 
-const GRANTEE = "k17abcuserid00000000000000";
-const OTHER_GRANTEE = "k17abcuserid00000000000001";
+const GRANTEE = { orgUid: newId("org"), granteeUid: newId("usr") } as const;
+const OTHER_GRANTEE = { ...GRANTEE, granteeUid: newId("usr") } as const;
+/** The same member, filed under another org. */
+const OTHER_ORG = { ...GRANTEE, orgUid: newId("org") } as const;
 
 describe("createRevocationKeypair", () => {
   it("produces a 32 byte Ed25519 seed and its public key in canonical hex", () => {
@@ -81,9 +85,11 @@ describe("wrapRevocationKey", () => {
     // the blob with the wrong field. The server checks the nonce width, because
     // AES-GCM accepts any width and derives its counter block through GHASH for
     // anything other than 96 bits, and checks only non-empty on the blob.
-    const wrapped = await wrapRevocationKey(fixedKey(), createRevocationKeypair().privateKey, {
-      granteeId: GRANTEE,
-    });
+    const wrapped = await wrapRevocationKey(
+      fixedKey(),
+      createRevocationKeypair().privateKey,
+      GRANTEE,
+    );
     expect(Object.keys(wrapped).sort()).toEqual(["revocationKeyNonce", "wrappedRevocationKey"]);
     expect(wrapped.revocationKeyNonce).toMatch(/^[0-9a-f]{24}$/);
     expect(wrapped.wrappedRevocationKey).toMatch(/^[0-9a-f]{96}$/);
@@ -91,7 +97,7 @@ describe("wrapRevocationKey", () => {
 
   it("never emits the plaintext seed", async () => {
     const pair = createRevocationKeypair();
-    const wrapped = await wrapRevocationKey(fixedKey(), pair.privateKey, { granteeId: GRANTEE });
+    const wrapped = await wrapRevocationKey(fixedKey(), pair.privateKey, GRANTEE);
     expect(JSON.stringify(wrapped)).not.toContain(toHex(pair.privateKey));
   });
 
@@ -101,7 +107,7 @@ describe("wrapRevocationKey", () => {
     const nonces = new Set<string>();
     for (let i = 0; i < 8; i += 1) {
       nonces.add(
-        (await wrapRevocationKey(muk, pair.privateKey, { granteeId: GRANTEE }))
+        (await wrapRevocationKey(muk, pair.privateKey, GRANTEE))
           .revocationKeyNonce,
       );
     }
@@ -113,16 +119,27 @@ describe("wrapRevocationKey", () => {
     // tries to sign with it, which is the day it mattered.
     for (const length of [0, 16, 31, 33, 64]) {
       await expect(
-        wrapRevocationKey(fixedKey(), new Uint8Array(length), { granteeId: GRANTEE }),
+        wrapRevocationKey(fixedKey(), new Uint8Array(length), GRANTEE),
       ).rejects.toThrow(/32 bytes/);
     }
   });
 
+  /**
+   * A Convex document id is in the list on purpose: it is what `session.userId`
+   * and `orgId` hold, and passing one where the permanent uid belongs must fail
+   * at the call rather than seal a grant keyed by nothing the server stores.
+   */
+  it("refuses a Convex document id as the org", async () => {
+    await expect(
+      wrapRevocationKey(fixedKey(), randomBytes(32), { ...GRANTEE, orgUid: "jd7abcorgid0000000000000" }),
+    ).rejects.toThrow(/orgUid must be a well-formed org id/);
+  });
+
   it("refuses a malformed grantee id rather than binding to the domain alone", async () => {
-    for (const bad of ["", "a|b", "user id", "\uD800"]) {
+    for (const bad of ["", "a|b", "user id", "\uD800", "k17abcuserid00000000000000"]) {
       await expect(
-        wrapRevocationKey(fixedKey(), randomBytes(32), { granteeId: bad }),
-      ).rejects.toThrow(/granteeId/);
+        wrapRevocationKey(fixedKey(), randomBytes(32), { ...GRANTEE, granteeUid: bad }),
+      ).rejects.toThrow(/granteeUid/);
     }
   });
 });
@@ -131,7 +148,7 @@ describe("unwrapRevocationKey", () => {
   it("round trips the seed the browser generated", async () => {
     const muk = fixedKey();
     const pair = createRevocationKeypair();
-    const wrapped = await wrapRevocationKey(muk, pair.privateKey, { granteeId: GRANTEE });
+    const wrapped = await wrapRevocationKey(muk, pair.privateKey, GRANTEE);
 
     // Field names change across the wire: the MUTATION calls the nonce
     // `revocationKeyNonce` and the QUERY that reads the row back calls it
@@ -139,7 +156,7 @@ describe("unwrapRevocationKey", () => {
     const opened = await unwrapRevocationKey(
       muk,
       { wrappedRevocationKey: wrapped.wrappedRevocationKey, nonce: wrapped.revocationKeyNonce },
-      { granteeId: GRANTEE },
+      GRANTEE,
     );
     expect(toHex(opened)).toBe(toHex(pair.privateKey));
   });
@@ -152,30 +169,47 @@ describe("unwrapRevocationKey", () => {
    */
   it("refuses a grant addressed to a different grantee", async () => {
     const muk = fixedKey();
-    const wrapped = await wrapRevocationKey(muk, randomBytes(32), { granteeId: GRANTEE });
+    const wrapped = await wrapRevocationKey(muk, randomBytes(32), GRANTEE);
     await expect(
       unwrapRevocationKey(
         muk,
         { wrappedRevocationKey: wrapped.wrappedRevocationKey, nonce: wrapped.revocationKeyNonce },
-        { granteeId: OTHER_GRANTEE },
+        OTHER_GRANTEE,
+      ),
+    ).rejects.toThrow(RevocationKeyUnwrapError);
+  });
+
+  /**
+   * THE BINDING THIS REVISION ADDS. `revocationGrants.orgId` is a column too: a
+   * grant moved onto another org must not open there and hand that org's
+   * signer this org's kill switch.
+   */
+  it("refuses a grant filed under a different org", async () => {
+    const muk = fixedKey();
+    const wrapped = await wrapRevocationKey(muk, randomBytes(32), GRANTEE);
+    await expect(
+      unwrapRevocationKey(
+        muk,
+        { wrappedRevocationKey: wrapped.wrappedRevocationKey, nonce: wrapped.revocationKeyNonce },
+        OTHER_ORG,
       ),
     ).rejects.toThrow(RevocationKeyUnwrapError);
   });
 
   it("refuses a different master unlock key", async () => {
-    const wrapped = await wrapRevocationKey(fixedKey(1), randomBytes(32), { granteeId: GRANTEE });
+    const wrapped = await wrapRevocationKey(fixedKey(1), randomBytes(32), GRANTEE);
     await expect(
       unwrapRevocationKey(
         fixedKey(2),
         { wrappedRevocationKey: wrapped.wrappedRevocationKey, nonce: wrapped.revocationKeyNonce },
-        { granteeId: GRANTEE },
+        GRANTEE,
       ),
     ).rejects.toThrow(RevocationKeyUnwrapError);
   });
 
   it("refuses a tampered blob", async () => {
     const muk = fixedKey();
-    const wrapped = await wrapRevocationKey(muk, randomBytes(32), { granteeId: GRANTEE });
+    const wrapped = await wrapRevocationKey(muk, randomBytes(32), GRANTEE);
     const flipped = `${wrapped.wrappedRevocationKey.slice(0, -1)}${
       wrapped.wrappedRevocationKey.endsWith("0") ? "1" : "0"
     }`;
@@ -183,7 +217,7 @@ describe("unwrapRevocationKey", () => {
       unwrapRevocationKey(
         muk,
         { wrappedRevocationKey: flipped, nonce: wrapped.revocationKeyNonce },
-        { granteeId: GRANTEE },
+        GRANTEE,
       ),
     ).rejects.toThrow(RevocationKeyUnwrapError);
   });
@@ -198,25 +232,27 @@ describe("unwrapRevocationKey", () => {
     const muk = fixedKey();
     const { wrapProjectDataKey } = await import("../src/lib/secrets/pdk");
     const pdkWrap = await wrapProjectDataKey(muk, randomBytes(32), {
+      environmentUid: newId("env"),
+      pdkVersion: 1,
       granteeType: "user",
-      granteeId: GRANTEE,
+      granteeId: GRANTEE.granteeUid,
     });
     await expect(
       unwrapRevocationKey(
         muk,
         { wrappedRevocationKey: pdkWrap.wrappedPDK, nonce: pdkWrap.pdkNonce },
-        { granteeId: GRANTEE },
+        GRANTEE,
       ),
     ).rejects.toThrow(RevocationKeyUnwrapError);
   });
 
   it("says nothing about which input was wrong", async () => {
     const muk = fixedKey();
-    const wrapped = await wrapRevocationKey(muk, randomBytes(32), { granteeId: GRANTEE });
+    const wrapped = await wrapRevocationKey(muk, randomBytes(32), GRANTEE);
     const error: unknown = await unwrapRevocationKey(
       fixedKey(2),
       { wrappedRevocationKey: wrapped.wrappedRevocationKey, nonce: wrapped.revocationKeyNonce },
-      { granteeId: GRANTEE },
+      GRANTEE,
     ).then(
       () => null,
       (cause: unknown) => cause,
@@ -227,21 +263,22 @@ describe("unwrapRevocationKey", () => {
     // decryption oracle, and echoing the blob would put ciphertext in a log.
     const message = (error as Error).message;
     expect(message).not.toContain(wrapped.wrappedRevocationKey);
-    expect(message).not.toContain(GRANTEE);
+    expect(message).not.toContain(GRANTEE.granteeUid);
+    expect(message).not.toContain(GRANTEE.orgUid);
   });
 
   it("reports a malformed grantee id as the argument error it is", async () => {
     const muk = fixedKey();
-    const wrapped = await wrapRevocationKey(muk, randomBytes(32), { granteeId: GRANTEE });
+    const wrapped = await wrapRevocationKey(muk, randomBytes(32), GRANTEE);
     // Outside the AEAD `try`, so a caller can tell "you passed nonsense" from
     // "this did not authenticate".
     await expect(
       unwrapRevocationKey(
         muk,
         { wrappedRevocationKey: wrapped.wrappedRevocationKey, nonce: wrapped.revocationKeyNonce },
-        { granteeId: "" },
+        { ...GRANTEE, granteeUid: "" },
       ),
-    ).rejects.toThrow(/granteeId/);
+    ).rejects.toThrow(/granteeUid/);
   });
 });
 

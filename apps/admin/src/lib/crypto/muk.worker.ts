@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 
-import { deriveMUK } from "@sluice/crypto";
+import { deriveMUK, fromHex } from "@sluice/crypto";
 import { probeArgon2Memory, wasmArgon2 } from "./argon2-wasm";
 import type { WorkerRequest, WorkerResponse } from "./worker-protocol";
 
@@ -82,8 +82,16 @@ self_.onmessage = async (event: MessageEvent<WorkerRequest>) => {
     // THE PARAMETERS ARE NOT READ FROM THE MESSAGE. They come from the frozen
     // constant inside `@sluice/crypto`, so a crafted or corrupted message
     // cannot ask for a cheaper derivation. The only thing the caller controls
-    // is which password and which user.
-    const key = await deriveMUK(request.password, request.userId, { argon2: wasmArgon2 });
+    // is which password and which account salt.
+    //
+    // The salt is decoded HERE and its width is left to `deriveMUK`, which
+    // throws "accountSalt must be 16 bytes" for anything else. The main thread
+    // checks too, but this thread does not rely on it: a message that skipped
+    // that check is refused by the same rule, in the same words. `fromHex`
+    // throws on a non-hex character without echoing the input, and the salt is
+    // public anyway; either throw lands in the `catch` below.
+    const accountSalt = fromHex(request.accountSalt);
+    const key = await deriveMUK(request.password, accountSalt, { argon2: wasmArgon2 });
 
     // A COPY is posted, and the transfer detaches it on the way out. `key.bytes`
     // is the live array owned by the `MasterUnlockKey`; transferring that

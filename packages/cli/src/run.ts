@@ -1,4 +1,4 @@
-import { NO_PERSISTED_FLOOR, SluiceCore } from "@sluice/sdk";
+import { NO_PERSISTED_FLOOR, sanitiseForLog, SluiceCore } from "@sluice/sdk";
 import { loadConfig, type RunConfig } from "./config";
 import { defaultStateDir, FileEpochFloorStore } from "./floor";
 import { HttpHandshaker } from "./handshake";
@@ -8,7 +8,7 @@ import {
   NodeChildProcessSupervisor,
   NodeTimers,
 } from "./node-runtime";
-import type { BundleSource, Logger } from "./ports";
+import type { BundleSource, ChildProcessSupervisor, Logger } from "./ports";
 import { Shell } from "./shell";
 
 /**
@@ -27,6 +27,96 @@ import { Shell } from "./shell";
 /** Configuration was wrong. Deliberately not 1, which means revoked. */
 export const CONFIG_EXIT_CODE = 2;
 
+/**
+ * Sluice itself failed and killed the command rather than leave it running
+ * unsupervised. `EX_SOFTWARE` from sysexits, and deliberately neither 1, which
+ * means revoked, nor 2, which means configuration.
+ */
+export const FATAL_EXIT_CODE = 70;
+
+/**
+ * THE LAST LINE OF DEFENCE: WHAT HAPPENS WHEN SOMETHING ESCAPES ANYWAY.
+ *
+ * Every known path from a hostile bundle to an exception is closed in
+ * `shell.ts` and guarded twice at the transport boundary. This is for the
+ * unknown one. Node's default for an uncaught exception or an unhandled
+ * rejection is to exit, and a supervisor that exits while its child lives
+ * has ORPHANED the child: it keeps running with every secret in its
+ * environment, and no revocation can ever reach it again, because the only
+ * thing that could act on one is gone. That is the kill switch disabled, which
+ * is strictly worse than the outage of killing the child.
+ *
+ * So: SIGKILL, not SIGTERM. There is no drain because there is no supervisor
+ * left to time one; the next thing this process does is exit, and a SIGTERM
+ * the child ignores would leave exactly the orphan this exists to prevent.
+ * Synchronous and best effort, because the process is already in an unknown
+ * state. Then log (sanitised, never the error object itself) and exit
+ * {@link FATAL_EXIT_CODE}. Every step is individually guarded so that a
+ * failure in one cannot skip the next: the kill comes first because it is the
+ * one that matters, and the exit is in a `finally` so it always happens.
+ *
+ * NOT A SLUICE DECISION. The core is not consulted and the epoch floor is not
+ * touched: this is the supervisor failing, not a revocation.
+ *
+ * TWO ROUTES IN, ONE INSTANCE. `run` hands this same function to the shell as
+ * its `onFatal`, which `#pump` calls when the shutdown logic itself throws,
+ * and to the process-level `uncaughtException` / `unhandledRejection` hook.
+ * One instance, so its once-only guard is shared and a failure reported down
+ * both routes still kills and exits once.
+ *
+ * THE RESIDUAL, AND WHY IT IS ON THE RIGHT SIDE. A compromised Convex
+ * deployment, or a TLS man in the middle, can send websocket frames that are
+ * not valid JSON or not a valid protocol message, and the Convex client's
+ * `JSON.parse` in `ws.onmessage` throws outside any guard of ours. That now
+ * reaches this handler and kills the workload, exit 70, where before it would
+ * have crashed the supervisor and orphaned the child. A database writer
+ * cannot do this: they only shape the result of a valid query, which arrives
+ * as well-formed JSON and is handled by the guarded path. Section 4.3 says an
+ * outage never kills a workload, and this is not a regression of that rule:
+ * malformed frames are not an outage, they are a party in control of the
+ * transport actively attacking it, and before this change the same frames
+ * already killed the supervisor. The only choice was what happens to the
+ * child, and an orphan holding every secret that no revocation can reach is
+ * strictly worse than a stopped workload. An attacker in that position can
+ * also simply drop the socket, which 4.3 does protect, so nothing that the
+ * rule exists to preserve is given up.
+ */
+export function fatalHandler(
+  child: Pick<ChildProcessSupervisor, "running" | "signal">,
+  logger: Logger,
+  exit: (code: number) => void,
+): (error: unknown) => void {
+  let fired = false;
+  return (error: unknown) => {
+    if (fired) return;
+    fired = true;
+    try {
+      let killed = false;
+      try {
+        if (child.running) {
+          child.signal("SIGKILL");
+          killed = true;
+        }
+      } catch {
+        // Nothing left to try. The exit below still happens.
+      }
+      try {
+        logger.log(
+          "error",
+          "supervisor-fatal",
+          `Sluice failed unexpectedly and is exiting${
+            killed ? "; the command was killed so it is never left running unsupervised" : ""
+          }: ${sanitiseForLog(error instanceof Error ? error.message : String(error))}`,
+        );
+      } catch {
+        // A logger that throws must not stand between the kill and the exit.
+      }
+    } finally {
+      exit(FATAL_EXIT_CODE);
+    }
+  };
+}
+
 export interface RunDependencies {
   readonly env: Record<string, string | undefined>;
   readonly exit: (code: number) => void;
@@ -44,6 +134,11 @@ export interface RunDependencies {
    * overridable, deliberately.
    */
   readonly sourceFactory?: (deploymentUrl: string) => BundleSource;
+  /**
+   * Where `uncaughtException` and `unhandledRejection` are hooked. The entry
+   * point registers the handler on `process`; see {@link fatalHandler}.
+   */
+  readonly onFatal?: (handler: (error: unknown) => void) => void;
 }
 
 export function run(
@@ -99,6 +194,12 @@ export function run(
   const timers = new NodeTimers();
   const child = new NodeChildProcessSupervisor(command, args, logger);
 
+  // Hooked the moment a child exists to protect and before anything that can
+  // spawn it, so there is no window in which a crash leaves it orphaned.
+  // ONE instance for both routes; see `fatalHandler`.
+  const fatal = fatalHandler(child, logger, dependencies.exit);
+  dependencies.onFatal?.(fatal);
+
   const core = new SluiceCore({
     orgRevocationPublicKey: config.orgRevocationPublicKey,
     tokenId: config.identity.tokenIdHex,
@@ -130,6 +231,7 @@ export function run(
     killGraceMs: config.killGraceMs,
     bootTimeoutMs: config.bootTimeoutMs,
     baseEnv: dependencies.env,
+    onFatal: fatal,
   });
 
   /**

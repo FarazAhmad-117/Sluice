@@ -59,7 +59,24 @@ import * as api from "../src/index";
  *
  * `PDKGranteeType` is absent from the list below and that is not an oversight:
  * it is an interface-like type alias, erased at compile time, so `Object.keys`
- * cannot see it and only `tsc` guards it.
+ * cannot see it and only `tsc` guards it. The same is true of `KeyPurpose` and
+ * `EmailFormatReason`.
+ *
+ * `deriveAuthVerifier`, `encodeWrappedKey`, `decodeWrappedKey`,
+ * `userKeyAssociatedData` and `normaliseEmail` ARE here, for the same reason as
+ * the four above: the dashboard and the CLI must compute them identically for
+ * one account to work from both. `AUTH_VERIFIER_LABEL`, `KEY_AAD_PREFIX` and
+ * `BLOB_PATTERN` stay private on the same principle as the protocol prefixes.
+ * `WrappedKeyFormatError` and `EmailFormatError` are classes so that callers
+ * can `instanceof` them to decide how to report a failure.
+ *
+ * `newId`, `assertId`, `newAccountSalt` and `ACCOUNT_SALT_BYTES` ARE here,
+ * because a client mints every permanent id and the account salt before the
+ * mutation that stores them, and the server validates the same shapes on the
+ * way in. `ACCOUNT_SALT_BYTES` is the one `*_BYTES` constant exported: it is
+ * the width of a value that crosses the wire, which a client checks before
+ * spending an Argon2 run on a salt the server returned. `IdKind` is a type and
+ * so, like `PDKGranteeType`, invisible here.
  *
  * `mukSalt`, `handshakeMessage`, `encode`, `assertValidNotice`, `importKey` and
  * the `*_INFO` / `*_PATTERN` / `*_BYTES` / `*_LABEL` constants stay private.
@@ -67,16 +84,26 @@ import * as api from "../src/index";
  * function that is itself exported.
  */
 const PUBLIC_SURFACE = [
+  "ACCOUNT_SALT_BYTES",
   "ARGON2_PARAMS",
+  "EmailFormatError",
   "MasterUnlockKey",
   "MintedToken",
   "VERSION",
+  "WrappedKeyFormatError",
   "assertConformantArgon2",
+  "assertId",
   "constantTimeEqual",
+  "decodeWrappedKey",
+  "deriveAuthVerifier",
   "deriveMUK",
   "deriveTokenKeys",
+  "encodeWrappedKey",
   "fromHex",
   "mintToken",
+  "newAccountSalt",
+  "newId",
+  "normaliseEmail",
   "parseToken",
   "pdkAssociatedData",
   "randomBytes",
@@ -88,6 +115,7 @@ const PUBLIC_SURFACE = [
   "toHex",
   "tokenIdHash",
   "unseal",
+  "userKeyAssociatedData",
   "utf8",
   "verifyHandshake",
   "verifyRevocation",
@@ -176,7 +204,7 @@ describe("public API surface", () => {
 
   it("re-exports the same function objects the modules define", () => {
     // Guards against a barrel that wraps or shadows rather than re-exports.
-    expect(api.VERSION).toBe("sluice-crypto/v1");
+    expect(api.VERSION).toBe("sluice-crypto/v2");
     expect(api.ARGON2_PARAMS).toEqual({ m: 65536, t: 3, p: 4, dkLen: 32 });
     expect(api.toHex(api.fromHex("00ff"))).toBe("00ff");
   });

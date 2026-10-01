@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { ARGON2_PARAMS, deriveMUK, toHex } from "@sluice/crypto";
+import { ARGON2_PARAMS, deriveMUK, fromHex, toHex } from "@sluice/crypto";
 import { wasmArgon2 } from "@/lib/crypto/argon2-wasm";
 import {
   DerivationBusyError,
@@ -43,10 +43,15 @@ import {
  * it means a broken worker build will now show up at sign-in rather than here.
  */
 
-/** The published test vector. Not a secret, and deliberately not user input. */
-const KAT_PASSWORD = "correct horse battery staple";
-const KAT_USER_ID = "u1";
-const KAT_MUK = "dfee4c58ca2653a1b5ae9a64cd3743c1cb33b26f2a6a537715f26e84cfd5b588";
+/**
+ * The published v2 test vector. Not a secret, and deliberately not user input.
+ * The account salt is the bytes 0x30..0x3f, the same readable run
+ * `packages/crypto/test/muk.test.ts` pins; the v1 vector salted with a user id
+ * string, which `deriveMUK` no longer accepts.
+ */
+const KAT_PASSWORD = "correct horse battery staple, v2";
+const KAT_ACCOUNT_SALT = fromHex("303132333435363738393a3b3c3d3e3f");
+const KAT_MUK = "633977bb9b6fec724f6574028da06c834895735198e653c3f8a95cb28d70436c";
 
 const TICK_MS = 20;
 
@@ -119,7 +124,7 @@ export default function Argon2DiagnosticsRoute() {
       setStatus((s) => `${s} | running worker + WASM...`);
       results.push(
         await measure("WASM in Web Worker", async () => {
-          const result = await deriveMasterUnlockKey(KAT_PASSWORD, KAT_USER_ID);
+          const result = await deriveMasterUnlockKey(KAT_PASSWORD, KAT_ACCOUNT_SALT);
           if (result.path !== "worker-wasm") {
             throw new Error(`fell back to ${result.path}: ${JSON.stringify(result.degradations)}`);
           }
@@ -131,7 +136,7 @@ export default function Argon2DiagnosticsRoute() {
       setStatus((s) => `${s} | running WASM on main thread...`);
       results.push(
         await measure("WASM on main thread", async () => {
-          const key = await deriveMUK(KAT_PASSWORD, KAT_USER_ID, { argon2: wasmArgon2 });
+          const key = await deriveMUK(KAT_PASSWORD, KAT_ACCOUNT_SALT, { argon2: wasmArgon2 });
           return key.bytes;
         }),
       );
@@ -143,7 +148,7 @@ export default function Argon2DiagnosticsRoute() {
       await new Promise((resolve) => setTimeout(resolve, 50));
       results.push(
         await measure("noble (pure JS) on main thread", async () => {
-          const key = await deriveMUK(KAT_PASSWORD, KAT_USER_ID);
+          const key = await deriveMUK(KAT_PASSWORD, KAT_ACCOUNT_SALT);
           return key.bytes;
         }),
       );
@@ -163,11 +168,11 @@ export default function Argon2DiagnosticsRoute() {
   const runDoubleClick = useCallback(async () => {
     setBusy(true);
     try {
-      const a = deriveMasterUnlockKey(KAT_PASSWORD, KAT_USER_ID);
-      const b = deriveMasterUnlockKey(KAT_PASSWORD, KAT_USER_ID);
+      const a = deriveMasterUnlockKey(KAT_PASSWORD, KAT_ACCOUNT_SALT);
+      const b = deriveMasterUnlockKey(KAT_PASSWORD, KAT_ACCOUNT_SALT);
       let differentInputs = "no error";
       try {
-        deriveMasterUnlockKey("a different password", KAT_USER_ID);
+        deriveMasterUnlockKey("a different password", KAT_ACCOUNT_SALT);
       } catch (cause) {
         differentInputs = cause instanceof DerivationBusyError ? "DerivationBusyError" : "other";
       }

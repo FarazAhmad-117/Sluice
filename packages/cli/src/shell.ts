@@ -11,6 +11,7 @@ import {
 } from "@sluice/sdk";
 import { BundleDecryptError, decryptSecrets, readRevocation, type RawBundle } from "./bundle";
 import type { TokenIdentity } from "./config";
+import { ShellFatalError } from "./errors";
 import type { EpochFloorStore } from "./floor";
 import type { BundleCredential, Handshaker } from "./handshake";
 import type {
@@ -141,6 +142,24 @@ export interface ShellOptions {
    * not cancel it, and nothing it is given can.
    */
   readonly onRevoke?: (reason: string) => unknown;
+  /**
+   * WHAT HAPPENS WHEN THE SHUTDOWN LOGIC ITSELF THROWS. See `#pump`.
+   *
+   * Called once, with the error, when `core.handle`, the floor write or
+   * applying the core's decisions throws. `run.ts` passes the same
+   * `fatalHandler` it hooks to `uncaughtException`, so the child is SIGKILLed
+   * and the process exits 70, and the once-only guard is shared between both
+   * routes. It must not return control expecting the shell to carry on: by the
+   * time it is called the shell has stopped.
+   *
+   * THE DEFAULT, WHEN THIS IS OMITTED, IS TO RETHROW, as a
+   * {@link ShellFatalError}, so the failure reaches whatever process-level
+   * hook the embedder has. Both transport guards recognise that type and let
+   * it through rather than logging it, so omitting this option can never turn
+   * a fatal error back into a swallowed one. An embedder that has no process
+   * hook gets Node's default, a crash, which may orphan the child: supply this.
+   */
+  readonly onFatal?: (error: unknown) => void;
   /** Spreads a fleet's re-handshakes. Injected so tests are deterministic. */
   readonly jitter?: () => number;
 }
@@ -176,6 +195,7 @@ export class Shell {
   readonly #bootTimeoutMs: number;
   readonly #baseEnv: Record<string, string | undefined>;
   readonly #onRevoke: ((reason: string) => unknown) | undefined;
+  readonly #onFatal: ((error: unknown) => void) | undefined;
   readonly #jitter: () => number;
   readonly #host: SluiceHost;
 
@@ -217,6 +237,7 @@ export class Shell {
     this.#bootTimeoutMs = options.bootTimeoutMs;
     this.#baseEnv = options.baseEnv;
     this.#onRevoke = options.onRevoke;
+    this.#onFatal = options.onFatal;
     this.#jitter = options.jitter ?? Math.random;
     this.#persistedFloor = options.core.epochFloor;
 
@@ -328,6 +349,46 @@ export class Shell {
         this.#persistFloor();
         applyDecisions(this.#host, decisions);
       }
+    } catch (error) {
+      // FAIL CLOSED. A throw here is not hostile input, every path from a
+      // bundle's shape to an exception is closed before the queue. It is the
+      // shutdown logic itself failing: the core, the floor write, or applying
+      // a decision such as `exit`. A supervisor in that state cannot be trusted
+      // to deliver the next revocation, so it must not carry on supervising.
+      // `packages/sdk/src/host.ts` makes the same call and does not wrap
+      // `exit`, because swallowing it would leave a revoked process running
+      // with nothing in the log.
+      //
+      // ONE ROUTE, WHOEVER CALLED. The pump runs from timers, child exits,
+      // operator signals, decrypt continuations and websocket callbacks.
+      // Leaving the throw to propagate would make the same failure an
+      // uncaught exception from one caller, an unhandled rejection from
+      // another and, under the transport guard, a swallowed log line from a
+      // third. Routing it here makes it the same fatal outcome from all of
+      // them, without depending on a process-level hook being installed.
+      //
+      // THE FLOOR FIRST, before anything else here. If `core.handle` raised the
+      // floor for a genuine revocation and then threw, the normal persist
+      // above never ran, and after a restart a replay of that same notice
+      // would be accepted once more. Persisting is safe even mid-failure: the
+      // core only raises the floor after a notice has passed signature and
+      // token verification, so whatever value it holds was earned. The call
+      // is wrapped once more because the floor getter belongs to the core
+      // that just failed, and nothing here may stand between the failure and
+      // `onFatal`; `#persistFloor` already contains a failing store itself.
+      try {
+        this.#persistFloor();
+      } catch {
+        // The core cannot even report its floor. Fatal regardless.
+      }
+
+      // The shell stops next, so nothing queued behind the failure runs and
+      // no later event can reach a core in an unknown state.
+      this.#queue = [];
+      this.#phase = "stopped";
+      const onFatal = this.#onFatal;
+      if (onFatal === undefined) throw new ShellFatalError(error);
+      onFatal(error);
     } finally {
       this.#pumping = false;
     }
@@ -446,10 +507,57 @@ export class Shell {
     this.#retireOld();
     this.#retiringUnsubscribe = this.#currentUnsubscribe;
 
+    // THE BOUNDARY GUARD. NOTHING THROWN BELOW MAY REACH THE TRANSPORT.
+    //
+    // These handlers are called from inside the Convex client's websocket
+    // `onmessage`, unguarded. On Node 22 the global WebSocket is an
+    // EventTarget, which rethrows a listener's error on the next tick as an
+    // UNCAUGHT EXCEPTION, and the process exits. For a supervisor that is the
+    // worst failure available: the child is orphaned with its secrets, and
+    // every later revocation has nobody to deliver it to. The kill switch is
+    // disabled for that process for good, by one hostile bundle.
+    //
+    // SWALLOWING HERE NEVER LOSES A SHUTDOWN. `#onBundle` reads the notice and
+    // queues it, and `#enqueue` pumps it through the core and applies the
+    // decisions synchronously, before anything after `readRevocation` runs.
+    // So by the time anything later can throw, a genuine revocation has
+    // already been acted on, and a forged one correctly has not.
+    //
+    // This guard is a BACKSTOP FOR SHAPE-HANDLING BUGS ONLY. Pump failures
+    // never reach here; they are fatal, see `#pump`. The one exception that
+    // can arrive is the `ShellFatalError` the pump rethrows when no `onFatal`
+    // was supplied, and that is passed through untouched, because logging it
+    // would turn a fatal error back into a swallowed one.
     this.#currentUnsubscribe = this.#source.subscribe(credential.token, {
-      onResult: (raw) => this.#onBundle(generation, raw),
-      onError: (errorMessage) => this.#onSubscriptionError(generation, errorMessage),
+      onResult: (raw) => {
+        try {
+          this.#onBundle(generation, raw);
+        } catch (error) {
+          if (error instanceof ShellFatalError) throw error;
+          this.#handlerFailed(error);
+        }
+      },
+      onError: (errorMessage) => {
+        try {
+          this.#onSubscriptionError(generation, errorMessage);
+        } catch (error) {
+          if (error instanceof ShellFatalError) throw error;
+          this.#handlerFailed(error);
+        }
+      },
     });
+  }
+
+  #handlerFailed(error: unknown): void {
+    try {
+      this.#logger.log(
+        "error",
+        "bundle-handler-failed",
+        `a subscription event could not be handled and was dropped: ${sanitiseForLog(message(error))}`,
+      );
+    } catch {
+      // A logger that throws must not undo the guard it is reporting from.
+    }
   }
 
   #retireOld(): void {
@@ -486,7 +594,16 @@ export class Shell {
       // A revoked bundle carries no secrets by design. Feeding the empty set to
       // the core would read as "every secret was removed", which is a different
       // and untrue statement.
-      if (raw.secrets === undefined || raw.secrets.length === 0) return;
+      //
+      // `Array.isArray` FIRST, and not `=== undefined`. `secrets` is untrusted
+      // and anyone with database write access can serve `null` beside a notice.
+      // `null.length` used to throw HERE, after the notice was queued but out
+      // of the transport's callback, where nothing caught it: the supervisor
+      // died, and with a FORGED notice (which the core rejects, so nothing is
+      // queued) that left the child running, orphaned, with its secrets, and
+      // every later genuine revocation with nobody to deliver it to. Anything
+      // that is not an array here carries no secrets worth decrypting.
+      if (!Array.isArray(raw.secrets) || raw.secrets.length === 0) return;
     }
 
     const sequence = this.#bundleSequence + 1;

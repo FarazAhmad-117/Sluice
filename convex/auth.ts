@@ -1,8 +1,13 @@
 import { ConvexError, v } from "convex/values";
-import { mutation } from "./_generated/server";
+import { ACCOUNT_SALT_BYTES } from "@sluice/crypto";
+import { mutation, query } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { normaliseEmail } from "./lib/email";
+import { DUPLICATE_UID } from "./lib/errors";
 import type { NormalisedEmail } from "./lib/email";
+import { assertHexBytes } from "./lib/hex";
+import { requireId } from "./lib/ids";
+import { decoySalt } from "./lib/salt";
 import {
   assertCanonicalHex32,
   decoyVerifierHash,
@@ -15,7 +20,7 @@ import {
   issueSessionToken,
 } from "./lib/session";
 import { deleteSession, getSessionByTokenHash, insertSession } from "./repo/sessions";
-import { getUserByEmail, insertUser } from "./repo/users";
+import { getUserByEmail, getUserByUid, insertUser } from "./repo/users";
 
 /**
  * Nothing here ever sees a password.
@@ -25,12 +30,26 @@ import { getUserByEmail, insertUser } from "./repo/users";
  * same password by a different path. What arrives is public key material plus
  * opaque blobs the server cannot open, and a verifier that authenticates the
  * account without unlocking anything.
+ *
+ * LOGIN IS TWO CALLS. The MUK is salted with a random per-account value, not
+ * the address, so a client cannot derive anything until it knows that salt:
+ * it calls `getLoginSalt` first, runs Argon2id, and then calls `login` with
+ * the verifier. Signup is one call, because the client minted the salt itself.
  */
 
 const DUPLICATE_EMAIL = "An account already exists for that email.";
 
 export const signup = mutation({
   args: {
+    // The account's permanent id, `usr_` + 32 lowercase hex, minted by the
+    // client with `newId("usr")` before this call. It is what other people's
+    // wraps to this user bind to, so it is fixed here and never changes.
+    // Client-chosen, so its shape is checked and its uniqueness enforced
+    // below; see `packages/crypto/src/ids.ts`.
+    uid: v.string(),
+    // `newAccountSalt()`, lowercase hex: the salt the client just derived this
+    // account's MUK under. Stored verbatim and handed back by `getLoginSalt`.
+    accountSalt: v.string(),
     email: v.string(),
     // Hex, checked against the canonical rule below. The validator cannot
     // express "64 lowercase hex characters", so `v.string()` here is the outer
@@ -48,6 +67,12 @@ export const signup = mutation({
   returns: v.id("users"),
   handler: async (ctx, args): Promise<Id<"users">> => {
     const email = normaliseEmail(args.email);
+
+    const uid = requireId("usr", "uid", args.uid);
+    // Exactly the width `deriveMUK` accepts. A salt stored at any other width
+    // is an account the client refuses to derive for, and so one nobody can
+    // ever log in to; refusing it here turns that into an error at signup.
+    assertHexBytes("accountSalt", args.accountSalt, ACCOUNT_SALT_BYTES);
 
     // The key fields are validated even though the server never uses them,
     // because they are handed straight back to clients as the material other
@@ -73,7 +98,17 @@ export const signup = mutation({
       throw new ConvexError(DUPLICATE_EMAIL);
     }
 
+    // After the email check, so a plain double signup keeps reporting the
+    // address. In the same mutation as the insert, so two concurrent signups
+    // claiming one uid cannot both pass: Convex serialises the conflicting
+    // read of `by_uid` and retries the loser, which then sees the winner.
+    if ((await getUserByUid(ctx, uid)) !== null) {
+      throw new ConvexError(DUPLICATE_UID);
+    }
+
     return await insertUser(ctx, {
+      uid,
+      accountSalt: args.accountSalt,
       email,
       authVerifierHash,
       publicKey: args.publicKey,
@@ -84,6 +119,70 @@ export const signup = mutation({
         ? {}
         : { recoveryBlob: args.recoveryBlob }),
     });
+  },
+});
+
+/**
+ * THE FIRST HALF OF LOGIN: THE SALT TO DERIVE UNDER.
+ *
+ * For an address with an account, the salt stored at signup. For any other
+ * well-formed address, `decoySalt` of it: the same width, the same alphabet,
+ * the same answer on every call, so the response does not say whether the
+ * account exists. The client then derives under whatever it got and `login`
+ * fails with its one generic message.
+ *
+ * WHAT THIS DOES AND DOES NOT PROTECT. Account existence is already public:
+ * signup's duplicate-email message gives it away, and SECURITY.md publishes
+ * that limit. The decoy only stops this endpoint making the question cheaper
+ * and quieter to automate than it already is. And the REAL salt is public by
+ * design: anyone who asks for a known address receives it, so a targeted
+ * attacker can fetch one account's salt and precompute against it before any
+ * breach. What the salt buys is that one table of guesses cannot be run
+ * against every account at once; the password stays the only secret input.
+ *
+ * The decoy is computed FIRST, before the lookup, for two reasons. A missing
+ * or malformed pepper then fails loudly for every address, rather than only
+ * for unknown ones, which would itself distinguish them. And the HMAC then
+ * runs on both paths, so it contributes no difference between them.
+ *
+ * WHAT STILL LEAKS, STATED RATHER THAN HOPED AWAY:
+ *
+ * - TIMING. The known-address path is measurably SLOWER, not equal: it
+ *   materialises a user document where the unknown path resolves an empty
+ *   index range. It is the same document-read difference SECURITY.md records
+ *   for `login` (0.08 to 0.15 ms), and here it is on a cheaper endpoint: a
+ *   query, with no verifier to supply and no Argon2 for the caller to run.
+ *   Far below network jitter for one sample, extractable with enough of them.
+ *
+ * - NO RATE LIMIT IS POSSIBLE HERE AS WRITTEN. A query cannot write, so a
+ *   limiter that counts attempts in a table cannot see it. If this endpoint
+ *   ever needs limiting it must become a mutation or an HTTP action first.
+ *
+ * - A SUBSCRIPTION IS A SIGNUP WATCH. Convex queries are reactive: a client
+ *   subscribed to `getLoginSalt(address)` is pushed the real salt the moment
+ *   that address signs up, because the `users` row it read changed. That is a
+ *   real-time notification of one address registering. It is no worse than
+ *   calling `signup` with the address on a loop, which works while account
+ *   existence is public, but it is cheaper and silent.
+ *
+ * - A PEPPER ROTATION SEPARATES DECOYS FROM REAL SALTS. Every decoy is keyed
+ *   under `AUTH_PEPPER` and every real salt is not, so after a rotation every
+ *   decoy changes and no real salt does. A prober holding answers from before
+ *   and after can tell which addresses have accounts. See the matching note
+ *   on the pepper in `lib/verifier.ts`.
+ *
+ * A query, not a mutation: it writes nothing, and caching by argument is
+ * harmless because the answer for an address is fixed until it signs up (or
+ * until the pepper rotates, which changes only the decoys; see above).
+ */
+export const getLoginSalt = query({
+  args: { email: v.string() },
+  returns: v.object({ accountSalt: v.string() }),
+  handler: async (ctx, args) => {
+    const email = normaliseEmail(args.email);
+    const decoy = decoySalt(email);
+    const user = await getUserByEmail(ctx, email);
+    return { accountSalt: user?.accountSalt ?? decoy };
   },
 });
 
@@ -109,6 +208,10 @@ export const login = mutation({
     sessionToken: v.string(),
     sessionExpiresAt: v.number(),
     userId: v.id("users"),
+    // The permanent id. The client needs it to build the associated data of
+    // any wrap addressed to this user, starting with the first environment's
+    // project data key, and the Convex `userId` must never stand in for it.
+    userUid: v.string(),
     publicKey: v.string(),
     verifyKey: v.string(),
     wrappedPrivateKey: v.string(),
@@ -177,6 +280,7 @@ export const login = mutation({
       sessionToken,
       sessionExpiresAt,
       userId: user._id,
+      userUid: user.uid,
       publicKey: user.publicKey,
       verifyKey: user.verifyKey,
       wrappedPrivateKey: user.wrappedPrivateKey,

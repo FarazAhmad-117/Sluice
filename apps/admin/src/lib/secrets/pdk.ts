@@ -19,15 +19,58 @@ import type { MasterUnlockKey, PDKGranteeType } from "@sluice/crypto";
  * could choose the associated data could hand a client the bytes of a different
  * grant.
  *
- * WHAT IT BINDS, AND WHAT IT CANNOT. The wrap names the GRANTEE, because
- * `granteeType` and `granteeId` are database columns and a column is not
- * authenticated: a row whose grantee fields were edited must stop opening
- * rather than claim to belong to somebody it does not. It does NOT name the
- * environment, and that is not an oversight. The grant is written in the same
- * transaction that creates its environment, so at wrap time the environment has
- * no id yet; the environment binding that matters is carried by every secret
- * ciphertext through `secretAssociatedData`. The full argument is on
- * `pdkAssociatedData` itself.
+ * WHAT IT BINDS: THE ENVIRONMENT, THE KEY VERSION, AND THE GRANTEE. All four
+ * of `environmentUid`, `pdkVersion`, `granteeType` and `granteeId` are
+ * database columns or values a server hands back, and none of them is
+ * authenticated on its own. Naming each inside the associated data is what
+ * turns an edit to any of them into a grant that stops opening, instead of a
+ * grant that opens and claims to be something it is not:
+ *
+ *   environmentUid  a grant copied from environment A onto environment B
+ *                   would otherwise unwrap there and hand B's reader A's key.
+ *                   The secrets it then failed to open would look like
+ *                   corruption rather than the splice they are.
+ *   pdkVersion      a server could otherwise roll a grant back to the wrap of
+ *                   an earlier key generation, or serve an old wrap under a
+ *                   newer version number, and the client would seal new
+ *                   secrets under a key the environment has moved on from.
+ *   grantee         a row whose grantee fields were edited must stop opening
+ *                   rather than claim to belong to somebody it does not.
+ *
+ * An earlier revision of this file could not bind the environment, because
+ * the grant is written in the same transaction that creates its environment
+ * and the Convex document id did not exist at wrap time. The environment's
+ * PERMANENT id, `env_` plus 32 hex from `newId("env")`, is minted by this
+ * client BEFORE the wrap and sent to `createEnvironment` as an argument, so the
+ * id the grant is bound to is known at the moment it is sealed. The Convex
+ * document id is still not bound and must never be: it is local to one
+ * deployment and is re-minted when an org moves cells.
+ *
+ * WHAT A SUCCESSFUL UNWRAP PROVES, AND WHAT IT DOES NOT. It proves exactly one
+ * thing: that somebody holding this account's master unlock key (in practice,
+ * this user) once wrapped THIS key for THIS environment uid, at THIS key
+ * version, to THIS grantee. A uid the server simply made up does not open, and
+ * neither does a grant copied onto another environment's row. That is the
+ * property {@link EnvironmentKey} carries forward: every secret sealed or
+ * opened from it is bound to the uid the grant was wrapped for, and to no
+ * other.
+ *
+ * IT DOES NOT PROVE THAT THE UID BELONGS TO THE ENVIRONMENT THE USER SELECTED,
+ * or to the name on screen. The uid, the grant and the environment's name all
+ * come from the same server. A hostile server asked for "production" can
+ * answer `getEnvironment` with STAGING's uid and `getMyPdkGrant` with this
+ * user's genuine staging grant. The unwrap succeeds, because that grant really
+ * was wrapped for staging's uid by this user; the pane says "production"; the
+ * names and values shown are staging's; and every secret written there is
+ * sealed into staging, where everyone with a staging grant can read it.
+ * Nothing in this file can detect that, because the client holds no record of
+ * which uid a name maps to other than the server's word. Closing it needs the
+ * client to pin name to uid itself, which is follow-up work; see "WHAT PINNING
+ * THE CONSTRUCTION DOES NOT PIN" in `packages/crypto/src/protocol.ts`, which
+ * states the same limit for every reader of these rules.
+ * `use-project-data-key.ts` does check that the server's answers agree with
+ * each other and with the selection, which turns a server BUG into a clean
+ * failure; it cannot turn a server LIE into one.
  */
 
 /**
@@ -37,10 +80,45 @@ import type { MasterUnlockKey, PDKGranteeType } from "@sluice/crypto";
  */
 export const PDK_BYTES = 32;
 
-/** Who a grant is wrapped to, in the exact shape `pdkAssociatedData` takes. */
+/**
+ * Which grant a wrap is, in the exact shape `pdkAssociatedData` takes.
+ *
+ * `granteeId` is the user's permanent `usr_` uid (`session.userUid`) for a
+ * user grant, NEVER their Convex `users` document id (`session.userId`), and
+ * the token id hash for a token grant. `pdkAssociatedData` refuses anything
+ * else by shape, so passing the document id fails at the call rather than
+ * sealing a grant nobody can rebuild the associated data for.
+ */
 export interface PdkGrantee {
+  /** The environment's permanent `env_` id. Never the Convex `environmentId`. */
+  readonly environmentUid: string;
+  /** The key generation this wrap is of. A new environment starts at 1. */
+  readonly pdkVersion: number;
   readonly granteeType: PDKGranteeType;
   readonly granteeId: string;
+}
+
+/**
+ * AN OPENED PROJECT DATA KEY, TOGETHER WITH THE SLOT IT WAS OPENED FOR.
+ *
+ * The key alone is not enough to seal or open a secret: the associated data
+ * also names the environment's permanent uid, and that uid must come from the
+ * ENVIRONMENT, never from a column on the secret row being opened (a row's
+ * columns are exactly what an attacker with write access edits). Carrying the
+ * uid beside the key, as the value the grant was just verified under, makes
+ * the right source the only one available: nothing in `seal.ts` or
+ * `decrypt.ts` takes an environment uid from anywhere else.
+ *
+ * `pdkVersion` is the version the grant was opened under, and is what a write
+ * states to the server as the key generation it sealed with.
+ *
+ * Held in memory only. `pdk` is 32 raw bytes and is never logged, persisted or
+ * serialised; this object is never spread into a request.
+ */
+export interface EnvironmentKey {
+  readonly pdk: Uint8Array;
+  readonly environmentUid: string;
+  readonly pdkVersion: number;
 }
 
 /**
@@ -116,7 +194,11 @@ export async function wrapProjectDataKey(
  *
  * `grantee` must be the CALLER'S OWN identity, because the only grant anybody
  * can read is their own: `granteeType` is `"user"` and `granteeId` is the
- * caller's `users` document id, spelled exactly as the server stores it.
+ * caller's permanent `usr_` uid, `session.userUid`. `environmentUid` is the
+ * environment's `uid` as `environments.getEnvironment` returns it, and
+ * `pdkVersion` is the grant's own `pdkVersion` as `getMyPdkGrant` returns it.
+ * Both are untrusted on arrival and both are authenticated by this call: if
+ * either is not what the wrapper bound, the open fails.
  *
  * A rejection means the data is not authentic and the undecrypted bytes are
  * never used. It must not be swallowed and it must not be retried against a
@@ -130,8 +212,9 @@ export async function unwrapProjectDataKey(
   // Outside the `try`, so that a malformed grantee is reported as the argument
   // error it is rather than being folded into the opaque AEAD failure.
   const aad = pdkAssociatedData(grantee);
+  let opened: Uint8Array;
   try {
-    return await unseal(
+    opened = await unseal(
       muk.bytes,
       { ciphertext: fromHex(grant.wrappedPDK), nonce: fromHex(grant.nonce) },
       aad,
@@ -139,4 +222,15 @@ export async function unwrapProjectDataKey(
   } catch {
     throw new PdkUnwrapError();
   }
+  // An authentic blob of the wrong width. Only a wrapper holding this master
+  // unlock key can produce one, so it is a client bug rather than an attack,
+  // but the consequence is the same as for a forgery: a 16 or 24 byte key
+  // imports silently as AES-128 or AES-192, and every secret sealed under it
+  // is under a key nobody else will reconstruct. It fails here, as the same
+  // opaque refusal, and the bytes are zeroed rather than handed back.
+  if (opened.length !== PDK_BYTES) {
+    opened.fill(0);
+    throw new PdkUnwrapError();
+  }
+  return opened;
 }

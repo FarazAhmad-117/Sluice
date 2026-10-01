@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { convexTest } from "convex-test";
+import { newId } from "@sluice/crypto";
 import schema from "./schema";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -7,7 +8,11 @@ import { normaliseEmail } from "./lib/email";
 import { insertUser } from "./repo/users";
 import { insertSession } from "./repo/sessions";
 import { SESSION_LIFETIME_MS, hashSessionToken } from "./lib/session";
-import { getOrgMember, getRevocationGrant } from "./repo/orgs";
+import {
+  getOrg as getOrgRow,
+  getOrgMember,
+  getRevocationGrant,
+} from "./repo/orgs";
 import { listAuditEventsByActor } from "./repo/audit";
 import * as orgsModule from "./orgs";
 
@@ -22,7 +27,14 @@ type Harness = ReturnType<typeof convexTest>;
  * no handler takes a user id any more. Acting is `sessionToken` and nothing
  * else.
  */
-export type Actor = { userId: Id<"users">; sessionToken: string };
+export type Actor = {
+  userId: Id<"users">;
+  // The permanent id, for building associated data and for asserting on
+  // what a handler returns. Never passed as an argument for the same reason
+  // `userId` is not.
+  uid: string;
+  sessionToken: string;
+};
 
 /**
  * Seeded through the repo layer rather than through `signup` and `login`,
@@ -38,8 +50,11 @@ export type Actor = { userId: Id<"users">; sessionToken: string };
  */
 export async function seedUser(t: Harness, email: string): Promise<Actor> {
   const sessionToken = `session-for-${email}`;
+  const uid = newId("usr");
   const userId = await t.run(async (ctx) =>
     insertUser(ctx, {
+      uid,
+      accountSalt: "30".repeat(16),
       email: normaliseEmail(email),
       authVerifierHash: "hash",
       publicKey: "11".repeat(32),
@@ -56,16 +71,19 @@ export async function seedUser(t: Harness, email: string): Promise<Actor> {
       expiresAt: Date.now() + SESSION_LIFETIME_MS,
     }),
   );
-  return { userId, sessionToken };
+  return { userId, uid, sessionToken };
 }
 
 const REVOCATION_PUBLIC_KEY = "ab".repeat(32);
 // 12 bytes in lowercase hex, which is what `toHex(seal().nonce)` produces.
 const NONCE = "0f1e2d3c4b5a69788796a5b4";
 
+// A fresh permanent id per call, so two orgs built from these defaults
+// collide on the slug only, and the duplicate-slug tests keep testing slugs.
 function orgArgs(actor: Actor, overrides: Record<string, unknown> = {}) {
   return {
     sessionToken: actor.sessionToken,
+    orgUid: newId("org"),
     name: "Acme Rockets",
     slug: "acme-rockets",
     revocationPublicKey: REVOCATION_PUBLIC_KEY,
@@ -165,7 +183,7 @@ describe("orgs authorisation", () => {
       t.mutation(
         api.orgs.createOrg,
         orgArgs(
-          { userId: real.userId, sessionToken: "ff".repeat(32) },
+          { ...real, sessionToken: "ff".repeat(32) },
           { slug: "other" },
         ),
       ),
@@ -232,6 +250,25 @@ describe("orgs authorisation", () => {
     const mine = await t.query(api.orgs.listMyOrgs, { sessionToken: a.sessionToken });
     expect(mine.map((o) => o.slug)).toEqual(["org-a"]);
   });
+
+  it("returns each org's permanent id from listMyOrgs", async () => {
+    const t = convexTest(schema, modules);
+    const a = await seedUser(t, "a@example.test");
+    const orgUid = newId("org");
+    const orgId = await t.mutation(api.orgs.createOrg, orgArgs(a, { orgUid }));
+
+    const mine = await t.query(api.orgs.listMyOrgs, { sessionToken: a.sessionToken });
+    expect(mine).toEqual([
+      {
+        orgId,
+        uid: orgUid,
+        name: "Acme Rockets",
+        slug: "acme-rockets",
+        revocationPublicKey: REVOCATION_PUBLIC_KEY,
+        role: "owner",
+      },
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -276,6 +313,66 @@ describe("createOrg", () => {
     ).rejects.toThrow();
 
     expect(await t.query(api.orgs.listMyOrgs, { sessionToken: owner.sessionToken })).toEqual([]);
+  });
+
+  it("stores the permanent id it was given", async () => {
+    const t = convexTest(schema, modules);
+    const owner = await seedUser(t, "owner@example.test");
+    const orgUid = newId("org");
+
+    const orgId = await t.mutation(api.orgs.createOrg, orgArgs(owner, { orgUid }));
+
+    const row = await t.run(async (ctx) => getOrgRow(ctx, orgId));
+    expect(row?.uid).toBe(orgUid);
+  });
+
+  // The uid goes into the revocation grant's associated data on the client,
+  // so a malformed one is refused here rather than stored and found out when
+  // nobody can open the signing key. A user or environment id is refused by
+  // kind, and a Convex document id by shape.
+  describe("rejects an orgUid that is not a well-formed org id", () => {
+    const message = "orgUid must be a well-formed org id";
+    const cases: Array<[string, () => string]> = [
+      ["empty", () => ""],
+      ["a user id", () => newId("usr")],
+      ["an env id", () => newId("env")],
+      ["uppercase hex", () => "org_" + "ABCDEF0123456789".repeat(2)],
+      ["too short", () => newId("org").slice(0, -1)],
+      ["trailing newline", () => newId("org") + "\n"],
+    ];
+
+    for (const [name, value] of cases) {
+      it(name, async () => {
+        const t = convexTest(schema, modules);
+        const owner = await seedUser(t, "owner@example.test");
+        await expect(
+          t.mutation(api.orgs.createOrg, orgArgs(owner, { orgUid: value() })),
+        ).rejects.toThrow(message);
+        expect(
+          await t.query(api.orgs.listMyOrgs, { sessionToken: owner.sessionToken }),
+        ).toEqual([]);
+      });
+    }
+  });
+
+  // Client-chosen, so entropy is no defence against a client that reuses
+  // another org's uid on purpose. Uniqueness is enforced in the mutation.
+  it("rejects a duplicate orgUid, even under a different slug", async () => {
+    const t = convexTest(schema, modules);
+    const a = await seedUser(t, "a@example.test");
+    const b = await seedUser(t, "b@example.test");
+    const orgUid = newId("org");
+    await t.mutation(api.orgs.createOrg, orgArgs(a, { orgUid }));
+
+    await expect(
+      t.mutation(
+        api.orgs.createOrg,
+        orgArgs(b, { orgUid, slug: "somewhere-else" }),
+      ),
+    ).rejects.toThrow("An organisation with that id already exists.");
+    expect(
+      await t.query(api.orgs.listMyOrgs, { sessionToken: b.sessionToken }),
+    ).toEqual([]);
   });
 
   it("rejects a duplicate slug", async () => {
@@ -390,12 +487,14 @@ describe("getOrg", () => {
   it("returns public material and the caller's role, and no wrapped key", async () => {
     const t = convexTest(schema, modules);
     const owner = await seedUser(t, "owner@example.test");
-    const orgId = await t.mutation(api.orgs.createOrg, orgArgs(owner));
+    const orgUid = newId("org");
+    const orgId = await t.mutation(api.orgs.createOrg, orgArgs(owner, { orgUid }));
 
     const org = await t.query(api.orgs.getOrg, { sessionToken: owner.sessionToken, orgId });
 
     expect(org).toEqual({
       orgId,
+      uid: orgUid,
       name: "Acme Rockets",
       slug: "acme-rockets",
       revocationPublicKey: REVOCATION_PUBLIC_KEY,
@@ -405,10 +504,14 @@ describe("getOrg", () => {
 });
 
 describe("getMyRevocationGrant", () => {
-  it("returns the caller's own wrapped revocation key", async () => {
+  // `orgUid` comes back with the blob because it is half of what the client
+  // needs to rebuild the associated data the key was wrapped under; the other
+  // half is the caller's own uid, which `login` returned.
+  it("returns the caller's own wrapped revocation key and the org's uid", async () => {
     const t = convexTest(schema, modules);
     const owner = await seedUser(t, "owner@example.test");
-    const orgId = await t.mutation(api.orgs.createOrg, orgArgs(owner));
+    const orgUid = newId("org");
+    const orgId = await t.mutation(api.orgs.createOrg, orgArgs(owner, { orgUid }));
 
     const grant = await t.query(api.orgs.getMyRevocationGrant, {
       sessionToken: owner.sessionToken,
@@ -419,6 +522,7 @@ describe("getMyRevocationGrant", () => {
       wrappedRevocationKey: "7b3f1c9a5e8d2046b1f7c3a9e5d80264b7f1c3a9e5d80264",
       nonce: NONCE,
       revocationPublicKey: REVOCATION_PUBLIC_KEY,
+      orgUid,
     });
   });
 });
@@ -492,6 +596,7 @@ describe("the wrapped revocation key must look like a wrap", () => {
     await expect(
       t.mutation(api.orgs.createOrg, {
         sessionToken: alice.sessionToken,
+        orgUid: newId("org"),
         name: "Acme Rockets",
         slug: "acme-rockets",
         revocationPublicKey: "33".repeat(32),
@@ -507,6 +612,7 @@ describe("the wrapped revocation key must look like a wrap", () => {
     await expect(
       t.mutation(api.orgs.createOrg, {
         sessionToken: alice.sessionToken,
+        orgUid: newId("org"),
         name: "Acme Rockets",
         slug: "acme-rockets",
         // 15 bytes. A GCM ciphertext is never shorter than its 16 byte tag,

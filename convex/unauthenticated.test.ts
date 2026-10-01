@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { convexTest } from "convex-test";
-import { mintToken, signRevocation, toHex } from "@sluice/crypto";
+import { mintToken, newId, signRevocation, toHex } from "@sluice/crypto";
 import schema from "./schema";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -27,6 +27,9 @@ export const modules = import.meta.glob("./**/*.ts");
 const WRAP = {
   wrappedPDK: "dd".repeat(48),
   pdkNonce: "0a1b2c3d4e5f60718293a4b5",
+  // The key version the wrap above was made under, which the client states
+  // and `createEnvironment` checks: a new environment starts at 1.
+  pdkVersion: 1,
 } as const;
 
 type Harness = ReturnType<typeof convexTest>;
@@ -114,12 +117,22 @@ function reference(path: string): unknown {
 // A world, and one valid call for every function in it.
 // ---------------------------------------------------------------------------
 
-type Actor = { userId: Id<"users">; sessionToken: string };
+type Actor = {
+  userId: Id<"users">;
+  // The permanent id, for building associated data and for asserting on
+  // what a handler returns. Never passed as an argument for the same reason
+  // `userId` is not.
+  uid: string;
+  sessionToken: string;
+};
 
 async function seedUser(t: Harness, email: string): Promise<Actor> {
   const sessionToken = `session-for-${email}`;
+  const uid = newId("usr");
   const userId = await t.run(async (ctx) =>
     insertUser(ctx, {
+      uid,
+      accountSalt: "30".repeat(16),
       email: normaliseEmail(email),
       authVerifierHash: "hash",
       publicKey: "11".repeat(32),
@@ -136,7 +149,7 @@ async function seedUser(t: Harness, email: string): Promise<Actor> {
       expiresAt: Date.now() + SESSION_LIFETIME_MS,
     }),
   );
-  return { userId, sessionToken };
+  return { userId, uid, sessionToken };
 }
 
 const NAME_CIPHERTEXT = "aa".repeat(24);
@@ -179,6 +192,7 @@ async function world(t: Harness): Promise<World> {
   const orgKeys = mintToken({ environment: "revocation" });
   const orgId = await t.mutation(api.orgs.createOrg, {
     sessionToken: alice.sessionToken,
+    orgUid: newId("org"),
     name: "Acme Rockets",
     slug: "acme-rockets",
     revocationPublicKey: orgKeys.upload.publicKey,
@@ -193,6 +207,7 @@ async function world(t: Harness): Promise<World> {
   });
   const environmentId = await t.mutation(api.environments.createEnvironment, {
     sessionToken: alice.sessionToken,
+    environmentUid: newId("env"),
     projectId,
     name: "production",
     ...WRAP,
@@ -200,6 +215,9 @@ async function world(t: Harness): Promise<World> {
   const { secretId } = await t.mutation(api.secrets.createSecret, {
     sessionToken: alice.sessionToken,
     environmentId,
+    secretUid: newId("sec"),
+    version: 1,
+    pdkVersion: 1,
     nameCiphertext: NAME_CIPHERTEXT,
     nameNonce: NAME_NONCE,
     valueCiphertext: VALUE_CIPHERTEXT,
@@ -213,6 +231,7 @@ async function world(t: Harness): Promise<World> {
     publicKey: victim.upload.publicKey,
     wrappedPDK: "cc".repeat(48),
     pdkNonce: "0102030405060708090a0b0c",
+    pdkVersion: 1,
   });
   const notice = {
     tokenId: victim.upload.tokenId,
@@ -251,6 +270,9 @@ const CALLS: Record<
 > = {
   "orgs.createOrg": (_w, sessionToken) => ({
     sessionToken,
+    // Fresh per call, like the slug below, so the valid call is not refused
+    // as a duplicate of an earlier refused one.
+    orgUid: newId("org"),
     name: "Second Org",
     // A slug the world fixture has not used, so the valid call below is not
     // refused for being a duplicate.
@@ -281,6 +303,7 @@ const CALLS: Record<
   }),
   "environments.createEnvironment": (w, sessionToken) => ({
     sessionToken,
+    environmentUid: newId("env"),
     projectId: w.projectId,
     name: "staging",
     ...WRAP,
@@ -307,6 +330,10 @@ const CALLS: Record<
   "secrets.createSecret": (w, sessionToken) => ({
     sessionToken,
     environmentId: w.environmentId,
+    // Fresh per call, for the reason `orgUid` is above.
+    secretUid: newId("sec"),
+    version: 1,
+    pdkVersion: 1,
     nameCiphertext: NAME_CIPHERTEXT,
     nameNonce: "101112131415161718191a1b",
     valueCiphertext: VALUE_CIPHERTEXT,
@@ -315,6 +342,9 @@ const CALLS: Record<
   "secrets.updateSecret": (w, sessionToken) => ({
     sessionToken,
     secretId: w.secretId,
+    // `world()` seeded the secret at version 1, so the next one is 2.
+    version: 2,
+    pdkVersion: 1,
     nameCiphertext: NAME_CIPHERTEXT,
     nameNonce: "202122232425262728292a2b",
     valueCiphertext: "cc".repeat(40),
@@ -343,6 +373,7 @@ const CALLS: Record<
     publicKey: w.spare.publicKey,
     wrappedPDK: "dd".repeat(48),
     pdkNonce: "1112131415161718191a1b1c",
+    pdkVersion: 1,
   }),
   "tokens.revokeServiceToken": (w, sessionToken) => ({
     sessionToken,
@@ -538,6 +569,7 @@ describe("the session token does not leak", () => {
     try {
       await t.mutation(api.orgs.createOrg, {
         sessionToken: w.alice.sessionToken,
+        orgUid: newId("org"),
         name: "Bad Slug",
         slug: "Not A Slug",
         revocationPublicKey: "cd".repeat(32),

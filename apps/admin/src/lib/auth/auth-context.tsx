@@ -1,25 +1,18 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { ConvexError } from "convex/values";
 import type { MasterUnlockKey } from "@sluice/crypto";
 import { api } from "@convex/_generated/api";
 import { convexClient } from "@/lib/convex-provider";
-import {
-  DerivationBusyError,
-  deriveMasterUnlockKey,
-  probeDerivationCapability,
-} from "@/lib/crypto/derive";
+import { deriveMasterUnlockKey, probeDerivationCapability } from "@/lib/crypto/derive";
 import type { Degradation, DerivationPath } from "@/lib/crypto/derive";
-import { normaliseEmail } from "./email";
-import {
-  createIdentity,
-  deriveAuthVerifier,
-  identityMatches,
-  unwrapIdentity,
-} from "./identity";
+import { AuthFlowError } from "./auth-errors";
+import { createAuthFlows } from "./auth-flows";
+import type { AuthPhase } from "./auth-flows";
 import type { PrivateIdentity } from "./identity";
 import { clearSession, loadSession, saveSession } from "./session-store";
 import type { PersistedSession } from "./session-store";
+
+export type { AuthPhase } from "./auth-flows";
 
 /**
  * THE AUTHENTICATION AND VAULT STATE FOR THE WHOLE DASHBOARD.
@@ -61,14 +54,6 @@ export interface DeviceCapability {
   readonly wasmUsable: boolean;
   readonly reasons: readonly string[];
 }
-
-/** Phases a sign-in passes through, so the button can say something true. */
-export type AuthPhase =
-  | "idle"
-  | "deriving"
-  | "generating-keys"
-  | "contacting-server"
-  | "unwrapping";
 
 /**
  * THERE IS NO `hydrated` FLAG HERE, AND ITS ABSENCE IS DELIBERATE.
@@ -138,35 +123,6 @@ export interface AuthState {
 const MAX_TIMEOUT_MS = 2_147_483_647;
 
 const AuthContext = createContext<AuthState | null>(null);
-
-/**
- * Turns anything thrown by a Convex call into a sentence for the form.
- *
- * `ConvexError.data` is where the server's own message arrives. Everything else
- * gets a generic line: a raw transport error string on a login form is noise at
- * best and an information leak at worst.
- */
-function messageForUser(cause: unknown): string {
-  if (cause instanceof ConvexError) {
-    const data: unknown = cause.data;
-    if (typeof data === "string" && data.length > 0) return data;
-  }
-  if (cause instanceof DerivationBusyError) {
-    return "A key derivation is already running. Wait for it to finish.";
-  }
-  if (cause instanceof Error && cause.name.startsWith("Derivation")) return cause.message;
-  if (cause instanceof Error && cause.name === "EmailFormatError") return cause.message;
-  if (cause instanceof Error && cause.name === "UnwrapFailedError") return cause.message;
-  if (cause instanceof Error && cause.name === "WrappedKeyFormatError") return cause.message;
-  return "Something went wrong. Try again.";
-}
-
-export class AuthFlowError extends Error {
-  constructor(cause: unknown) {
-    super(messageForUser(cause));
-    this.name = "AuthFlowError";
-  }
-}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   /**
@@ -276,10 +232,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
    * which a warning is still useful: a page that reports the fallback after the
    * fact has already frozen for eight seconds.
    */
-  const derive = useCallback(async (password: string, salt: string) => {
+  const derive = useCallback(async (password: string, accountSalt: Uint8Array) => {
     setPhase("deriving");
     const seen: Degradation[] = [];
-    const result = await deriveMasterUnlockKey(password, salt, {
+    const result = await deriveMasterUnlockKey(password, accountSalt, {
       onDegraded: (degradation) => {
         seen.push(degradation);
         setDerivation({ path: degradation.to, elapsedMs: 0, degradations: [...seen] });
@@ -293,147 +249,62 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return result.key;
   }, []);
 
-  const requireClient = useCallback(() => {
-    if (convexClient === null) {
-      throw new AuthFlowError(new Error("This build has no Convex deployment URL."));
-    }
-    return convexClient;
-  }, []);
+  /**
+   * The three flows, as plain functions over the client: `auth-flows.ts`
+   * carries the sequences and the reasons for their order. What stays here is
+   * storing what they open and turning any failure into one `AuthFlowError`.
+   */
+  const flows = useMemo(() => createAuthFlows(convexClient, { derive, setPhase }), [derive]);
 
   const signup = useCallback(
-    async ({ email, password }: { email: string; password: string }) => {
-      const client = requireClient();
+    async (input: { email: string; password: string }) => {
       try {
-        // Normalised FIRST, because this exact string is the Argon2id salt
-        // input and the server will normalise the address the same way. A
-        // mismatch here produces an account whose key cannot be re-derived.
-        const salt = normaliseEmail(email);
-        const muk = await derive(password, salt);
-
-        setPhase("generating-keys");
-        const { wrapped, pub } = await createIdentity(muk);
-        const authVerifier = await deriveAuthVerifier(muk);
-
-        setPhase("contacting-server");
-        // Only public material, two opaque blobs and a verifier. No password,
-        // no master unlock key, no private key.
-        await client.mutation(api.auth.signup, {
-          email: salt,
-          authVerifier,
-          publicKey: wrapped.publicKey,
-          verifyKey: wrapped.verifyKey,
-          wrappedPrivateKey: wrapped.wrappedPrivateKey,
-          wrappedSigningKey: wrapped.wrappedSigningKey,
-        });
-
-        // `signup` returns a user id and nothing else: it does not sign the
-        // user in. Logging in immediately is the only way to obtain a session,
-        // and it deliberately reuses the SAME master unlock key rather than
-        // deriving a second time, which would cost another 64 MiB and another
-        // 1.6 seconds for an identical result.
-        const result = await client.mutation(api.auth.login, {
-          email: salt,
-          authVerifier,
-        });
-
-        setPhase("unwrapping");
-        // The round trip is checked rather than assumed. If what came back does
-        // not open under the key that sealed it, the account is broken NOW,
-        // which is far better than finding out at the first secret read.
-        const restored = await unwrapIdentity(muk, result);
-        if (!identityMatches(restored, pub)) {
-          throw new Error("The server returned key material that does not match this account.");
-        }
-
-        const persisted: PersistedSession = {
-          sessionToken: result.sessionToken,
-          sessionExpiresAt: result.sessionExpiresAt,
-          userId: result.userId,
-          email: salt,
-          publicKey: result.publicKey,
-          verifyKey: result.verifyKey,
-          wrappedPrivateKey: result.wrappedPrivateKey,
-          wrappedSigningKey: result.wrappedSigningKey,
-        };
-        saveSession(persisted);
-        setSession(persisted);
-        setVault({ identity: restored, muk });
+        const opened = await flows.signup(input);
+        saveSession(opened.session);
+        setSession(opened.session);
+        setVault({ identity: opened.identity, muk: opened.muk });
       } catch (cause) {
         throw new AuthFlowError(cause);
       } finally {
         setPhase("idle");
       }
     },
-    [derive, requireClient],
+    [flows],
   );
 
   const login = useCallback(
-    async ({ email, password }: { email: string; password: string }) => {
-      const client = requireClient();
+    async (input: { email: string; password: string }) => {
       try {
-        const salt = normaliseEmail(email);
-        const muk = await derive(password, salt);
-        const authVerifier = await deriveAuthVerifier(muk);
-
-        setPhase("contacting-server");
-        const result = await client.mutation(api.auth.login, { email: salt, authVerifier });
-
-        setPhase("unwrapping");
-        const priv = await unwrapIdentity(muk, result);
-        if (!identityMatches(priv, result)) {
-          throw new Error("The server returned key material that does not match this account.");
-        }
-
-        const persisted: PersistedSession = {
-          sessionToken: result.sessionToken,
-          sessionExpiresAt: result.sessionExpiresAt,
-          userId: result.userId,
-          email: salt,
-          publicKey: result.publicKey,
-          verifyKey: result.verifyKey,
-          wrappedPrivateKey: result.wrappedPrivateKey,
-          wrappedSigningKey: result.wrappedSigningKey,
-        };
-        saveSession(persisted);
-        setSession(persisted);
-        setVault({ identity: priv, muk });
+        const opened = await flows.login(input);
+        saveSession(opened.session);
+        setSession(opened.session);
+        setVault({ identity: opened.identity, muk: opened.muk });
       } catch (cause) {
         throw new AuthFlowError(cause);
       } finally {
         setPhase("idle");
       }
     },
-    [derive, requireClient],
+    [flows],
   );
 
   /**
-   * Re-opens the vault after a refresh, using the session that survived and the
-   * wrapped blobs stored beside it. No network call and no new session: the
-   * token is still live, so this is purely local work.
-   *
-   * A wrong password fails at `unwrapIdentity` with a message that does not say
-   * which input was wrong, because AES-GCM cannot tell us and guessing would be
-   * a decryption oracle.
+   * Re-opens the vault after a refresh. Local work only; see
+   * `createAuthFlows().unlock`.
    */
   const unlock = useCallback(
     async ({ password }: { password: string }) => {
       const current = session;
       if (current === null) throw new AuthFlowError(new Error("There is no session to unlock."));
       try {
-        const muk = await derive(password, current.email);
-        setPhase("unwrapping");
-        const priv = await unwrapIdentity(muk, current);
-        if (!identityMatches(priv, current)) {
-          throw new Error("The stored key material does not match this account.");
-        }
-        setVault({ identity: priv, muk });
+        setVault(await flows.unlock(current, password));
       } catch (cause) {
         throw new AuthFlowError(cause);
       } finally {
         setPhase("idle");
       }
     },
-    [derive, session],
+    [flows, session],
   );
 
   /**

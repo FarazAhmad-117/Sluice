@@ -9,9 +9,11 @@ import {
   NOT_PERMITTED,
 } from "./lib/authz";
 import { assertHexAtLeast, assertHexBytes } from "./lib/hex";
+import { requireId } from "./lib/ids";
 import { assertSlug } from "./lib/naming";
 import {
   getEnvironmentByName,
+  getEnvironmentByUid,
   getPDKGrant,
   insertEnvironment,
   insertPDKGrant,
@@ -31,18 +33,30 @@ import {
 
 const DUPLICATE_NAME =
   "An environment with that name already exists in this project.";
+const DUPLICATE_UID = "An environment with that id already exists.";
 
 /**
- * The starting values, and they are not arguments.
+ * The starting values. Neither is chosen by the caller.
  *
  * `epoch` is the token replay defence: it is globally monotonic per token id
  * and must never reset, so the only safe starting point is one the caller
- * cannot choose. `pdkVersion` starts at 1 rather than 0 so that "which key
- * version encrypted this row" is never answered by a falsy number, which is
- * the value a partly written client leaves behind.
+ * cannot choose, and it is not an argument at all. `pdkVersion` starts at 1
+ * rather than 0 so that "which key version encrypted this row" is never
+ * answered by a falsy number, which is the value a partly written client
+ * leaves behind.
+ *
+ * `pdkVersion` IS an argument, and it is not a choice. The client wraps the
+ * first grant under associated data that names the key version, so it must
+ * state the version it wrapped under, and that must be 1. The server stores
+ * exactly what the client sealed under, and the one way to guarantee that is
+ * to refuse anything else rather than store 1 beside bytes that name 2: that
+ * row would list, sync and never unwrap.
  */
 const INITIAL_PDK_VERSION = 1;
 const INITIAL_EPOCH = 0;
+
+const NEW_ENVIRONMENT_PDK_VERSION =
+  "A new environment's key starts at version 1.";
 
 // AES-GCM nonce, 96 bits, the only width `@sluice/crypto` produces.
 const NONCE_BYTES = 12;
@@ -53,6 +67,13 @@ const MIN_CIPHERTEXT_BYTES = 16;
 export const createEnvironment = mutation({
   args: {
     ...sessionArg,
+    // The environment's permanent id, `env_` + 32 lowercase hex, minted by
+    // the client with `newId("env")` BEFORE this call: the key below is
+    // wrapped under associated data that names it, and every secret in the
+    // environment will be sealed under it too. Client-chosen, so its shape is
+    // checked and its uniqueness enforced here; see
+    // `packages/crypto/src/ids.ts`.
+    environmentUid: v.string(),
     projectId: v.id("projects"),
     name: v.string(),
     // THE PROJECT DATA KEY, WRAPPED TO THE CREATOR. The key itself is minted in
@@ -61,12 +82,21 @@ export const createEnvironment = mutation({
     // arguments rather than being produced here, exactly as `createOrg` takes
     // `wrappedRevocationKey`.
     //
-    // The associated data the client wraps under is `pdkAssociatedData` from
-    // `@sluice/crypto`. Nothing on this server computes or checks it: the
-    // server cannot, and a server that could choose the associated data could
-    // hand a client the bytes of a different grant.
+    // The client wraps under `pdkAssociatedData({ environmentUid,
+    // pdkVersion: 1, granteeType: "user", granteeId: <the caller's usr_ uid>
+    // })` from `@sluice/crypto`: this environment's uid above, the first key
+    // version, and the uid `login` returned as `userUid`. All three exist
+    // before this mutation runs, which is what lets the wrap name the
+    // environment at all. Nothing on this server computes or checks that
+    // associated data: the server cannot, and a server that could choose it
+    // could hand a client the bytes of a different grant. What the server
+    // does is store exactly the inputs the client wrapped under, so a reader
+    // can rebuild them.
     wrappedPDK: v.string(),
     pdkNonce: v.string(),
+    // The key version the client wrapped `wrappedPDK` under. Must be 1. See
+    // `NEW_ENVIRONMENT_PDK_VERSION`.
+    pdkVersion: v.number(),
   },
   returns: v.id("environments"),
   handler: async (ctx, args): Promise<Id<"environments">> => {
@@ -79,6 +109,7 @@ export const createEnvironment = mutation({
       args.projectId,
     );
 
+    const uid = requireId("env", "environmentUid", args.environmentUid);
     const name = assertSlug("name", args.name);
 
     // The nonce is checked by shape and the wrapped key is not, which looks
@@ -90,15 +121,32 @@ export const createEnvironment = mutation({
     // business, and the server has no way to check it beyond a length floor.
     assertHexBytes("pdkNonce", args.pdkNonce, NONCE_BYTES);
     assertHexAtLeast("wrappedPDK", args.wrappedPDK, MIN_CIPHERTEXT_BYTES);
+    if (args.pdkVersion !== INITIAL_PDK_VERSION) {
+      throw new ConvexError(NEW_ENVIRONMENT_PDK_VERSION);
+    }
 
     // An indexed lookup on `by_project_name`, which is what that index's
     // second column is for.
     if ((await getEnvironmentByName(ctx, project._id, name)) !== null) {
       throw new ConvexError(DUPLICATE_NAME);
     }
+    // Deployment-wide, not per project or per org: the uid names the
+    // environment in ciphertext bindings and must mean one environment
+    // wherever it is read. A taken uid is a client reusing someone's id, not
+    // a random collision, and it is refused, never upserted onto. The message
+    // is the same whoever owns the existing row: it confirms the value is in
+    // use and nothing about where. A uid is a label, not a secret, and a
+    // caller only reaches this check by already holding one.
+    if ((await getEnvironmentByUid(ctx, uid)) !== null) {
+      throw new ConvexError(DUPLICATE_UID);
+    }
 
     const environmentId = await insertEnvironment(ctx, {
+      uid,
       projectId: project._id,
+      // From the org `requireProject` resolved through the membership walk,
+      // never from an argument: there is no orgId argument to take it from.
+      orgId: org._id,
       name,
       pdkVersion: INITIAL_PDK_VERSION,
       epoch: INITIAL_EPOCH,
@@ -122,14 +170,20 @@ export const createEnvironment = mutation({
     // ever read, discovered long after creation with no error at any point.
     await insertPDKGrant(ctx, {
       environmentId,
+      orgId: org._id,
       granteeType: "user",
       // The caller, resolved from the session. There is no grantee argument, so
       // an environment cannot be created with its only key wrapped to somebody
       // else, and nobody can plant a grant for a person who never asked for it.
-      granteeId: user._id,
+      //
+      // Their PERMANENT uid, not `user._id`: it is the value the client named
+      // in the associated data, and the lookup key must be that same string.
+      granteeId: user.uid,
       wrappedPDK: args.wrappedPDK,
       nonce: args.pdkNonce,
-      // Off the row this mutation just wrote, so the two cannot disagree.
+      // Off the row this mutation just wrote, so the two cannot disagree, and
+      // equal to the version the client stated it wrapped under, by the check
+      // above.
       pdkVersion: INITIAL_PDK_VERSION,
     });
 
@@ -148,6 +202,9 @@ export const getEnvironment = query({
   args: { ...sessionArg, environmentId: v.id("environments") },
   returns: v.object({
     environmentId: v.id("environments"),
+    // The permanent id. Secret and grant associated data name this, never
+    // `environmentId`.
+    uid: v.string(),
     projectId: v.id("projects"),
     name: v.string(),
     pdkVersion: v.number(),
@@ -161,6 +218,7 @@ export const getEnvironment = query({
     );
     return {
       environmentId: environment._id,
+      uid: environment.uid,
       projectId: environment.projectId,
       name: environment.name,
       pdkVersion: environment.pdkVersion,
@@ -174,6 +232,7 @@ export const listEnvironments = query({
   returns: v.array(
     v.object({
       environmentId: v.id("environments"),
+      uid: v.string(),
       projectId: v.id("projects"),
       name: v.string(),
       pdkVersion: v.number(),
@@ -189,6 +248,7 @@ export const listEnvironments = query({
     const environments = await listEnvironmentsByProject(ctx, project._id);
     return environments.map((environment) => ({
       environmentId: environment._id,
+      uid: environment.uid,
       projectId: environment.projectId,
       name: environment.name,
       pdkVersion: environment.pdkVersion,
@@ -216,7 +276,9 @@ export const getMyPdkGrant = query({
   args: { ...sessionArg, environmentId: v.id("environments") },
   returns: v.object({
     // Echoed back so a client cannot pair this blob with the wrong
-    // environment's secrets, whose associated data binds the environment id.
+    // environment's secrets. The associated data those secrets are sealed
+    // under names the environment's permanent uid, which `getEnvironment`
+    // returns, not this document id.
     environmentId: v.id("environments"),
     wrappedPDK: v.string(),
     nonce: v.string(),
@@ -235,7 +297,9 @@ export const getMyPdkGrant = query({
       args.environmentId,
     );
 
-    const grant = await getPDKGrant(ctx, environment._id, "user", user._id);
+    // Keyed by the caller's permanent uid, the value `createEnvironment`
+    // stored and the client's associated data names.
+    const grant = await getPDKGrant(ctx, environment._id, "user", user.uid);
     // A member of the right org holding no grant is a real state, and it is the
     // state every second member of an org is in today, because nothing wraps an
     // existing key to a new member. It answers with the SHARED refusal rather

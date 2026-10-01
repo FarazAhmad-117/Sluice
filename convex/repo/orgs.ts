@@ -19,6 +19,21 @@ export async function getOrgBySlug(
     .unique();
 }
 
+/**
+ * `.unique()` so two orgs sharing a permanent id throw rather than resolve to
+ * whichever row the index returns first. The uid is client-chosen; keeping it
+ * unique is `createOrg`'s job, and this is the read it does that with.
+ */
+export async function getOrgByUid(
+  ctx: QueryCtx,
+  uid: string,
+): Promise<Doc<"orgs"> | null> {
+  return await ctx.db
+    .query("orgs")
+    .withIndex("by_uid", (q) => q.eq("uid", uid))
+    .unique();
+}
+
 export async function insertOrg(
   ctx: MutationCtx,
   doc: WithoutSystemFields<Doc<"orgs">>,

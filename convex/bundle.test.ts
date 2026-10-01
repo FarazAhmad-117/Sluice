@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { convexTest } from "convex-test";
 import {
   mintToken,
+  newId,
   signHandshake,
   signRevocation,
   toHex,
@@ -40,10 +41,20 @@ export const modules = import.meta.glob("./**/*.ts");
 const WRAP = {
   wrappedPDK: "dd".repeat(48),
   pdkNonce: "0a1b2c3d4e5f60718293a4b5",
+  // The key version the wrap above was made under, which the client states
+  // and `createEnvironment` checks: a new environment starts at 1.
+  pdkVersion: 1,
 } as const;
 
 type Harness = ReturnType<typeof convexTest>;
-type Actor = { userId: Id<"users">; sessionToken: string };
+type Actor = {
+  userId: Id<"users">;
+  // The permanent id, for building associated data and for asserting on
+  // what a handler returns. Never passed as an argument for the same reason
+  // `userId` is not.
+  uid: string;
+  sessionToken: string;
+};
 
 const REFUSED = "Bundle refused.";
 
@@ -81,8 +92,11 @@ const VALUE_CIPHERTEXT = "bb".repeat(40);
 
 async function seedUser(t: Harness, email: string): Promise<Actor> {
   const sessionToken = `session-for-${email}`;
+  const uid = newId("usr");
   const userId = await t.run(async (ctx) =>
     insertUser(ctx, {
+      uid,
+      accountSalt: "30".repeat(16),
       email: normaliseEmail(email),
       authVerifierHash: "hash",
       publicKey: "11".repeat(32),
@@ -99,13 +113,14 @@ async function seedUser(t: Harness, email: string): Promise<Actor> {
       expiresAt: Date.now() + SESSION_LIFETIME_MS,
     }),
   );
-  return { userId, sessionToken };
+  return { userId, uid, sessionToken };
 }
 
 async function tenant(t: Harness, actor: Actor, slug: string) {
   const keys = mintToken({ environment: "revocation" });
   const orgId = await t.mutation(api.orgs.createOrg, {
     sessionToken: actor.sessionToken,
+    orgUid: newId("org"),
     name: "Acme Rockets",
     slug,
     revocationPublicKey: keys.upload.publicKey,
@@ -118,19 +133,31 @@ async function tenant(t: Harness, actor: Actor, slug: string) {
     name: "API",
     slug: "api",
   });
+  const productionUid = newId("env");
+  const stagingUid = newId("env");
   const production = await t.mutation(api.environments.createEnvironment, {
     sessionToken: actor.sessionToken,
+    environmentUid: productionUid,
     projectId,
     name: "production",
     ...WRAP,
   });
   const staging = await t.mutation(api.environments.createEnvironment, {
     sessionToken: actor.sessionToken,
+    environmentUid: stagingUid,
     projectId,
     name: "staging",
     ...WRAP,
   });
-  return { keys, orgId, projectId, production, staging };
+  return {
+    keys,
+    orgId,
+    projectId,
+    production,
+    staging,
+    productionUid,
+    stagingUid,
+  };
 }
 
 let nonceCounter = 0;
@@ -152,6 +179,11 @@ async function addSecret(
   return await t.mutation(api.secrets.createSecret, {
     sessionToken: actor.sessionToken,
     environmentId,
+    // Minted by the client, as the dashboard mints it, and stated at the only
+    // version a new secret has.
+    secretUid: newId("sec"),
+    version: 1,
+    pdkVersion: 1,
     nameCiphertext: NAME_CIPHERTEXT,
     valueCiphertext,
     ...freshNonces(),
@@ -176,6 +208,7 @@ async function issueAndHandshake(
     publicKey: minted.upload.publicKey,
     wrappedPDK: "cc".repeat(48),
     pdkNonce: "0102030405060708090a0b0c",
+    pdkVersion: 1,
   });
 
   const unixSeconds = Math.floor(Date.now() / 1000);
@@ -197,12 +230,14 @@ async function issueAndHandshake(
   return { minted, serviceTokenId, bundleToken: token };
 }
 
+// `secretUid` and `version` are the slot each row was sealed under, and the
+// SDK rebuilds the associated data from them. `secretId`, a Convex document
+// id, is deliberately absent: see the note on `secretShape` in `bundle.ts`.
 const SECRET_FIELDS = [
-  "lineageId",
   "nameCiphertext",
   "nameNonce",
   "pdkVersion",
-  "secretId",
+  "secretUid",
   "valueCiphertext",
   "valueNonce",
   "version",
@@ -223,14 +258,15 @@ describe("the bundle", () => {
     const { bundleToken } = await issueAndHandshake(t, alice, acme.production);
     const bundle = await t.query(api.bundle.getBundle, { token: bundleToken });
 
-    expect(bundle.environmentId).toBe(acme.production);
-    expect(bundle.secrets.map((secret) => secret.secretId)).toEqual([
-      mine.secretId,
+    expect(bundle.environmentUid).toBe(acme.productionUid);
+    expect(bundle.secrets.map((secret) => secret.secretUid)).toEqual([
+      mine.secretUid,
     ]);
     // Not merely "the other rows are absent": nothing about the sibling
     // environment or the other tenant appears anywhere in the payload.
     const serialised = JSON.stringify(bundle);
     expect(serialised).not.toContain(acme.staging);
+    expect(serialised).not.toContain(acme.stagingUid);
     expect(serialised).not.toContain("22".repeat(40));
     expect(serialised).not.toContain("33".repeat(40));
   });
@@ -247,6 +283,8 @@ describe("the bundle", () => {
     const updated = await t.mutation(api.secrets.updateSecret, {
       sessionToken: alice.sessionToken,
       secretId: replaced.secretId,
+      version: 2,
+      pdkVersion: 1,
       nameCiphertext: NAME_CIPHERTEXT,
       valueCiphertext: "44".repeat(40),
       ...freshNonces(),
@@ -259,11 +297,17 @@ describe("the bundle", () => {
     const { bundleToken } = await issueAndHandshake(t, alice, acme.production);
     const bundle = await t.query(api.bundle.getBundle, { token: bundleToken });
 
-    expect(bundle.secrets.map((secret) => secret.secretId).sort()).toEqual(
-      [kept.secretId, updated.secretId].sort(),
+    expect(
+      bundle.secrets
+        .map((secret) => `${secret.secretUid}@${secret.version}`)
+        .sort(),
+    ).toEqual(
+      [`${kept.secretUid}@1`, `${replaced.secretUid}@2`].sort(),
     );
+    // The new version kept the secret's permanent id.
+    expect(updated.secretUid).toBe(replaced.secretUid);
     // The superseded row's ciphertext must not travel either: a workload that
-    // installed both versions of one lineage would have no way to tell which
+    // installed both versions of one secret would have no way to tell which
     // is current, because the name is ciphertext.
     expect(JSON.stringify(bundle)).not.toContain("22".repeat(40));
   });
@@ -533,6 +577,7 @@ describe("the bundle", () => {
     const serviceTokenId = await t.run(async (ctx) =>
       insertServiceToken(ctx, {
         environmentId: acme.production,
+        orgId: acme.orgId,
         tokenIdHash: hash,
         publicKey: minted.upload.publicKey,
         epoch: 0,
@@ -582,7 +627,7 @@ describe("the bundle", () => {
     ) as { value: Record<string, { fieldType: { value?: Record<string, unknown> } }> };
 
     expect(Object.keys(returns.value).sort()).toEqual([
-      "environmentId",
+      "environmentUid",
       "epoch",
       "pdkNonce",
       "pdkVersion",
@@ -595,6 +640,85 @@ describe("the bundle", () => {
       expect(Object.keys(returns.value)).not.toContain(field);
       expect(Object.keys(bundle.secrets[0] ?? {})).not.toContain(field);
     }
+  });
+
+  /**
+   * THE PERMANENT ID REPLACES THE DOCUMENT ID, IT DOES NOT JOIN IT.
+   *
+   * The client builds the secret associated data from whatever environment
+   * identifier the bundle hands it. Handing it the Convex id as well would
+   * leave the deployment-local value one typo away from being bound into
+   * ciphertext, so the declared return type must not carry it and the payload
+   * must not contain it anywhere.
+   */
+  it("serves the environment's permanent id and never its Convex id", async () => {
+    const t = convexTest(schema, modules);
+    const alice = await seedUser(t, "alice@example.test");
+    const acme = await tenant(t, alice, "acme");
+    await addSecret(t, alice, acme.production);
+    const { bundleToken } = await issueAndHandshake(t, alice, acme.production);
+
+    const bundle = await t.query(api.bundle.getBundle, { token: bundleToken });
+
+    expect(bundle.environmentUid).toBe(acme.productionUid);
+    expect(Object.keys(bundle)).not.toContain("environmentId");
+    expect(JSON.stringify(bundle)).not.toContain(acme.production);
+
+    const returns = JSON.parse(
+      (bundleModule.getBundle as unknown as { exportReturns: () => string }).exportReturns(),
+    ) as { value: Record<string, unknown> };
+    expect(Object.keys(returns.value)).not.toContain("environmentId");
+    expect(Object.keys(returns.value)).toContain("environmentUid");
+  });
+
+  /**
+   * EVERY INPUT TO THE ASSOCIATED DATA, AND NOTHING DEPLOYMENT-LOCAL.
+   *
+   * The SDK opens each row under `secretAssociatedData({ environmentUid,
+   * secretUid, version, field })` and the grant under `pdkAssociatedData({
+   * environmentUid, pdkVersion, ... })`, so the bundle must carry exactly what
+   * the client sealed under. And it must NOT carry the secret's Convex
+   * document id: it is not in the associated data, and a client holding it is
+   * one confusion away from treating it as the secret's identity.
+   */
+  it("carries each row's secretUid and version and the grant's pdkVersion, and no secretId", async () => {
+    const t = convexTest(schema, modules);
+    const alice = await seedUser(t, "alice@example.test");
+    const acme = await tenant(t, alice, "acme");
+    const created = await addSecret(t, alice, acme.production, "11".repeat(40));
+    const updated = await t.mutation(api.secrets.updateSecret, {
+      sessionToken: alice.sessionToken,
+      secretId: created.secretId,
+      version: 2,
+      pdkVersion: 1,
+      nameCiphertext: NAME_CIPHERTEXT,
+      valueCiphertext: "44".repeat(40),
+      ...freshNonces(),
+    });
+    const { bundleToken } = await issueAndHandshake(t, alice, acme.production);
+
+    const bundle = await t.query(api.bundle.getBundle, { token: bundleToken });
+
+    expect(bundle.pdkVersion).toBe(1);
+    expect(bundle.secrets).toHaveLength(1);
+    expect(bundle.secrets[0]?.secretUid).toBe(created.secretUid);
+    expect(bundle.secrets[0]?.secretUid).toMatch(/^sec_[0-9a-f]{32}$/);
+    expect(bundle.secrets[0]?.version).toBe(2);
+
+    // Neither document id, nor the field name, anywhere in the payload.
+    const serialised = JSON.stringify(bundle);
+    expect(serialised).not.toContain("secretId");
+    expect(serialised).not.toContain(created.secretId);
+    expect(serialised).not.toContain(updated.secretId);
+
+    // And the declared return type agrees with the value.
+    const returns = JSON.parse(
+      (bundleModule.getBundle as unknown as { exportReturns: () => string }).exportReturns(),
+    );
+    const declared = JSON.stringify(returns);
+    expect(declared).not.toContain('"secretId"');
+    expect(declared).toContain('"secretUid"');
+    expect(declared).toContain('"pdkVersion"');
   });
 
   it("refuses a token issued for a different service token", async () => {
@@ -612,13 +736,13 @@ describe("the bundle", () => {
     const bundle = await t.query(api.bundle.getBundle, {
       token: second.bundleToken,
     });
-    expect(bundle.environmentId).toBe(acme.staging);
+    expect(bundle.environmentUid).toBe(acme.stagingUid);
     expect(bundle.secrets).toEqual([]);
 
     const own = await t.query(api.bundle.getBundle, {
       token: first.bundleToken,
     });
-    expect(own.secrets.map((secret) => secret.secretId)).toEqual([mine.secretId]);
+    expect(own.secrets.map((secret) => secret.secretUid)).toEqual([mine.secretUid]);
   });
 
   it("refuses a forged, expired, absent or unknown credential identically", async () => {

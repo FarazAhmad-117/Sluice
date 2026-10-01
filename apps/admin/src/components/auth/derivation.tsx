@@ -45,6 +45,7 @@ function useElapsedSinceMount(): number {
 
 const PHASE_LABEL: Record<AuthPhase, string> = {
   idle: "",
+  "fetching-salt": "Preparing sign-in",
   deriving: "Deriving your master unlock key",
   "generating-keys": "Generating your keypairs",
   "contacting-server": "Talking to the server",

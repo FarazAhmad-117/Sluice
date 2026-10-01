@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { convexTest } from "convex-test";
+import { newId } from "@sluice/crypto";
 import schema from "./schema";
 import { normaliseEmail } from "./lib/email";
 import { getUser, insertUser } from "./repo/users";
@@ -32,6 +33,8 @@ describe("convex-test harness", () => {
 
     const id = await t.run(async (ctx) =>
       insertUser(ctx, {
+        uid: newId("usr"),
+        accountSalt: "30".repeat(16),
         email: normaliseEmail("harness@example.test"),
         authVerifierHash: "hash",
         publicKey: "00",

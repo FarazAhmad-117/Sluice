@@ -53,13 +53,32 @@ afterEach(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-async function waitFor(predicate: () => boolean, timeoutMs = 10_000): Promise<void> {
+/**
+ * How long one wait may take, and how long a whole test may take.
+ *
+ * These tests spawn a REAL child process and talk to a real local server, so
+ * they are measured in wall time. Each test waits for several things in turn,
+ * and on a machine running every other suite in parallel each wait can be slow
+ * without anything being wrong. The test budget is therefore the sum of its
+ * waits plus headroom, so a slow step fails with THIS file's named error
+ * ("timed out waiting for: …") rather than vitest's anonymous "Test timed
+ * out", which says nothing about which step stalled. Same reasoning as
+ * FLUSH_BOUND_MS in fakes.ts.
+ */
+const WAIT_MS = 10_000;
+const TEST_MS = 4 * WAIT_MS + 20_000;
+
+async function waitFor(
+  label: string,
+  predicate: () => boolean,
+  timeoutMs = WAIT_MS,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error("timed out waiting for a condition");
+  throw new Error(`timed out waiting for: ${label}`);
 }
 
 describe("sluice run, end to end", () => {
@@ -152,13 +171,13 @@ describe("sluice run, end to end", () => {
     shell.start();
 
     // The handshake really happened, over a real socket, and was accepted.
-    await waitFor(() => source.subscriptions.length > 0);
+    await waitFor("the subscription to open", () => source.subscriptions.length > 0);
     expect(handshakeCalls).toBe(1);
     expect(source.subscriptions[0]!.token).toBe("bundle.jwt.value");
 
     source.emit(await fixture.bundleWith({ DATABASE_URL: "postgres://the-real-one" }));
 
-    await waitFor(() => existsSync(marker) && readFileSync(marker, "utf8").length > 0);
+    await waitFor("the child to write its secret", () => existsSync(marker) && readFileSync(marker, "utf8").length > 0);
     expect(readFileSync(marker, "utf8")).toBe("postgres://the-real-one");
     expect(child.running).toBe(true);
     // The parent environment came through and the service token did not.
@@ -171,9 +190,9 @@ describe("sluice run, end to end", () => {
       revocationNotice: signedNotice(org, fixture.identity, { epoch: 4 }),
     });
 
-    await waitFor(() => exits.length > 0);
+    await waitFor("the supervisor to exit", () => exits.length > 0);
     expect(exits).toEqual([1]);
-    await waitFor(() => !child.running);
+    await waitFor("the child to stop", () => !child.running);
 
     // The floor really reached the disk, so a restart refuses this notice.
     expect(floorStore.load()).toEqual({ ok: true, floor: 4 });
@@ -182,7 +201,7 @@ describe("sluice run, end to end", () => {
     expect(logger.text).not.toContain("postgres://the-real-one");
     expect(logger.text).not.toContain(fixture.rawToken);
     expect(logger.text).not.toContain("bundle.jwt.value");
-  }, 30_000);
+  }, TEST_MS);
 
   it("refuses a forged handshake the way the deployment would, and fails to start", async () => {
     const fixture = await tokenFixture();
@@ -227,12 +246,12 @@ describe("sluice run, end to end", () => {
     });
 
     shell.start();
-    await waitFor(() => exits.length > 0);
+    await waitFor("the supervisor to exit", () => exits.length > 0);
     expect(exits).toEqual([1]);
     expect(child.started).toBe(false);
     expect(logger.has("boot-failed")).toBe(true);
     expect(handshakeCalls).toBeGreaterThan(0);
-  }, 30_000);
+  }, TEST_MS);
 });
 
 describe("ConsoleLogger on the real stream", () => {

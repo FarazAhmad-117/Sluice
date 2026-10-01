@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { convexTest } from "convex-test";
 import schema from "./schema";
 import { api } from "./_generated/api";
+import { newId } from "@sluice/crypto";
 import { normaliseEmail } from "./lib/email";
 import { getUserByEmail, insertUser } from "./repo/users";
 
@@ -34,8 +35,17 @@ const PUBLIC_KEY =
 const VERIFY_KEY =
   "2222222222222222222222222222222222222222222222222222222222222222";
 
+// Fixed rather than minted per call so a test that signs up twice with the
+// same arguments collides on BOTH the address and the uid, and the duplicate
+// email test keeps pinning the email message: the email check runs first.
+const USER_UID = "usr_" + "0123456789abcdef".repeat(2);
+// 16 bytes, lowercase hex: the shape `newAccountSalt` produces once encoded.
+const ACCOUNT_SALT = "5a".repeat(16);
+
 function signupArgs(overrides: Record<string, unknown> = {}) {
   return {
+    uid: USER_UID,
+    accountSalt: ACCOUNT_SALT,
     email: "ada@example.test",
     authVerifier: VERIFIER_A,
     publicKey: PUBLIC_KEY,
@@ -182,6 +192,183 @@ describe("signup", () => {
       t.mutation(api.auth.signup, signupArgs({ email: "   " })),
     ).rejects.toThrow("email must be between 1 and 254 characters.");
   });
+
+  it("stores the uid and the account salt it was given", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(api.auth.signup, signupArgs());
+
+    const stored = await t.run(async (ctx) =>
+      getUserByEmail(ctx, normaliseEmail("ada@example.test")),
+    );
+    expect(stored?.uid).toBe(USER_UID);
+    expect(stored?.accountSalt).toBe(ACCOUNT_SALT);
+  });
+
+  // The uid goes into associated data on the client, so a malformed one is
+  // refused here rather than stored and discovered when a wrap fails to open.
+  // A Convex document id is the case that matters most: it is the thing the
+  // permanent id exists to keep out of bindings.
+  describe("rejects a uid that is not a well-formed usr id", () => {
+    const message = "uid must be a well-formed usr id";
+    const cases: Array<[string, string]> = [
+      ["empty", ""],
+      ["an org id", newId("org")],
+      ["an env id", newId("env")],
+      ["uppercase hex", "usr_" + "0123456789ABCDEF".repeat(2)],
+      ["too short", USER_UID.slice(0, -1)],
+      ["too long", USER_UID + "0"],
+      ["trailing newline", USER_UID + "\n"],
+      ["no prefix", "0123456789abcdef".repeat(2)],
+    ];
+
+    for (const [name, value] of cases) {
+      it(name, async () => {
+        const t = convexTest(schema, modules);
+        await expect(
+          t.mutation(api.auth.signup, signupArgs({ uid: value })),
+        ).rejects.toThrow(message);
+      });
+    }
+
+    it("missing", async () => {
+      const t = convexTest(schema, modules);
+      const { uid: _omitted, ...rest } = signupArgs();
+      await expect(
+        t.mutation(api.auth.signup, rest as ReturnType<typeof signupArgs>),
+      ).rejects.toThrow();
+    });
+  });
+
+  // Exactly 16 bytes, because that is what the client's width check accepts
+  // before it spends an Argon2 run. A salt stored at any other width would be
+  // an account nobody can log in to.
+  describe("rejects an account salt that is not 16 bytes of lowercase hex", () => {
+    const message = "accountSalt must be 32 lowercase hex characters.";
+    const cases: Array<[string, string]> = [
+      ["empty", ""],
+      ["15 bytes", "5a".repeat(15)],
+      ["17 bytes", "5a".repeat(17)],
+      ["32 bytes", "5a".repeat(32)],
+      ["uppercase", "5A".repeat(16)],
+      ["non hex", "5a".repeat(15) + "zz"],
+      ["odd length", "5a".repeat(16).slice(1)],
+    ];
+
+    for (const [name, value] of cases) {
+      it(name, async () => {
+        const t = convexTest(schema, modules);
+        await expect(
+          t.mutation(api.auth.signup, signupArgs({ accountSalt: value })),
+        ).rejects.toThrow(message);
+      });
+    }
+
+    it("missing", async () => {
+      const t = convexTest(schema, modules);
+      const { accountSalt: _omitted, ...rest } = signupArgs();
+      await expect(
+        t.mutation(api.auth.signup, rest as ReturnType<typeof signupArgs>),
+      ).rejects.toThrow();
+    });
+  });
+
+  // The uid is client-chosen, so its entropy is no defence against a client
+  // that copies another account's uid on purpose. Uniqueness is enforced here.
+  it("rejects a second account with the same uid", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(api.auth.signup, signupArgs());
+
+    await expect(
+      t.mutation(
+        api.auth.signup,
+        signupArgs({ email: "grace@example.test", authVerifier: VERIFIER_B }),
+      ),
+    ).rejects.toThrow("An account already exists with that uid.");
+
+    // And the second address was not created.
+    const second = await t.run(async (ctx) =>
+      getUserByEmail(ctx, normaliseEmail("grace@example.test")),
+    );
+    expect(second).toBeNull();
+  });
+});
+
+describe("getLoginSalt", () => {
+  it("returns the stored salt for a known address", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(api.auth.signup, signupArgs());
+
+    const result = await t.query(api.auth.getLoginSalt, {
+      email: "  ADA@Example.test ",
+    });
+    expect(result).toEqual({ accountSalt: ACCOUNT_SALT });
+  });
+
+  // An unknown address gets an answer of the same shape and width, stable
+  // across calls, so a client cannot tell it from a real salt by looking at
+  // it and an automated prober cannot tell it by asking twice.
+  it("returns a stable 16 byte decoy for an unknown address", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(api.auth.signup, signupArgs());
+
+    const first = await t.query(api.auth.getLoginSalt, {
+      email: "nobody@example.test",
+    });
+    const second = await t.query(api.auth.getLoginSalt, {
+      email: "Nobody@Example.test",
+    });
+
+    expect(first.accountSalt).toMatch(/^[0-9a-f]{32}$/);
+    expect(second).toEqual(first);
+    expect(first.accountSalt).not.toBe(ACCOUNT_SALT);
+
+    const other = await t.query(api.auth.getLoginSalt, {
+      email: "someone-else@example.test",
+    });
+    expect(other.accountSalt).not.toBe(first.accountSalt);
+  });
+
+  it("fails loudly when AUTH_PEPPER is unset, even for a known address", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(api.auth.signup, signupArgs());
+    delete process.env.AUTH_PEPPER;
+
+    await expect(
+      t.query(api.auth.getLoginSalt, { email: "ada@example.test" }),
+    ).rejects.toThrow("AUTH_PEPPER is not set on this deployment.");
+  });
+});
+
+describe("getLoginSalt with a malformed address", () => {
+  // A malformed address is refused with `normaliseEmail`'s own message, and
+  // the refusal must not depend on whether a registered address looks like
+  // it. The "registered-looking" input below is the real account's address
+  // with a space inserted, so a lookup that ran before validation would find
+  // something near it; the answer has to be the same either way.
+  it("answers with the normalisation error, identically whoever is registered", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(api.auth.signup, signupArgs());
+
+    const capture = async (email: string) => {
+      try {
+        await t.query(api.auth.getLoginSalt, { email });
+      } catch (error) {
+        return {
+          name: (error as Error).name,
+          data: (error as { data?: unknown }).data,
+        };
+      }
+      throw new Error("expected getLoginSalt to refuse the address");
+    };
+
+    const nearRegistered = await capture("ada @example.test");
+    const nearNobody = await capture("nobody @example.test");
+
+    expect(nearRegistered.data).toBe(
+      "email must be a single address with no spaces.",
+    );
+    expect(nearRegistered).toEqual(nearNobody);
+  });
 });
 
 describe("email identity", () => {
@@ -197,6 +384,8 @@ describe("email identity", () => {
     await t.run(async (ctx) => {
       for (const suffix of ["a", "b"]) {
         await insertUser(ctx, {
+          uid: newId("usr"),
+          accountSalt: ACCOUNT_SALT,
           email,
           authVerifierHash: `hash-${suffix}`,
           publicKey: PUBLIC_KEY,
@@ -252,6 +441,7 @@ describe("login", () => {
       sessionToken: expect.stringMatching(/^[0-9a-f]{64}$/),
       sessionExpiresAt: expect.any(Number),
       userId,
+      userUid: USER_UID,
       publicKey: PUBLIC_KEY,
       verifyKey: VERIFY_KEY,
       wrappedPrivateKey: "wrapped-private-key-blob",

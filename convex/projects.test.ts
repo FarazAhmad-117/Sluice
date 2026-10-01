@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { convexTest } from "convex-test";
+import { newId } from "@sluice/crypto";
 import schema from "./schema";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -19,7 +20,14 @@ type Harness = ReturnType<typeof convexTest>;
  * never passed to a handler: no handler takes a user id any more. Acting is
  * `sessionToken` and nothing else.
  */
-type Actor = { userId: Id<"users">; sessionToken: string };
+type Actor = {
+  userId: Id<"users">;
+  // The permanent id, for building associated data and for asserting on
+  // what a handler returns. Never passed as an argument for the same reason
+  // `userId` is not.
+  uid: string;
+  sessionToken: string;
+};
 
 /**
  * Seeded through the repo layer, including the session, because the scan in
@@ -29,8 +37,11 @@ type Actor = { userId: Id<"users">; sessionToken: string };
  */
 async function seedUser(t: Harness, email: string): Promise<Actor> {
   const sessionToken = `session-for-${email}`;
+  const uid = newId("usr");
   const userId = await t.run(async (ctx) =>
     insertUser(ctx, {
+      uid,
+      accountSalt: "30".repeat(16),
       email: normaliseEmail(email),
       authVerifierHash: "hash",
       publicKey: "11".repeat(32),
@@ -47,7 +58,7 @@ async function seedUser(t: Harness, email: string): Promise<Actor> {
       expiresAt: Date.now() + SESSION_LIFETIME_MS,
     }),
   );
-  return { userId, sessionToken };
+  return { userId, uid, sessionToken };
 }
 
 async function seedOrg(
@@ -57,6 +68,7 @@ async function seedOrg(
 ): Promise<Id<"orgs">> {
   return await t.mutation(api.orgs.createOrg, {
     sessionToken: actor.sessionToken,
+    orgUid: newId("org"),
     name: "Acme Rockets",
     slug,
     revocationPublicKey: "ab".repeat(32),

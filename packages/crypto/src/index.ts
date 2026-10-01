@@ -32,7 +32,10 @@
  * `experimental.extensionAlias` does not help because it is webpack-only. Do
  * not put the extensions back without also giving this package a build step.
  */
-export const VERSION = "sluice-crypto/v1";
+// v2 since the associated data rules and the MUK salt construction moved to
+// their v2 forms: a v1 build and a v2 build cannot open each other's ciphertext,
+// so they must not report the same version.
+export const VERSION = "sluice-crypto/v2";
 
 export { constantTimeEqual, fromHex, randomBytes, toHex, utf8 } from "./bytes";
 
@@ -41,6 +44,29 @@ export type { SealedBox } from "./aead";
 
 export { ARGON2_PARAMS, deriveMUK, MasterUnlockKey } from "./muk";
 export type { DeriveMUKOptions } from "./muk";
+
+/**
+ * The per-account salt `deriveMUK` takes. `newAccountSalt` is called once, at
+ * signup, by whichever client creates the account; `ACCOUNT_SALT_BYTES` is
+ * exported so a client can check the width of a salt the server hands back
+ * BEFORE spending an Argon2 run on it, and so the server's validator and the
+ * client's minting share one number. It is the one `*_BYTES` constant on this
+ * surface, because unlike the others it describes a value that crosses the
+ * wire rather than an internal of a construction.
+ */
+export { ACCOUNT_SALT_BYTES, newAccountSalt } from "./muk";
+
+/**
+ * Permanent, client-minted identifiers for orgs, users, environments and
+ * secrets.
+ * Exported because the client must mint them BEFORE the creation mutation --
+ * the keys it wraps for that mutation are bound to them -- and because the
+ * server must validate the same shape on the way in. `assertId` is the only
+ * validator; the per-kind patterns stay private for the reason the protocol
+ * prefixes do.
+ */
+export { assertId, newId } from "./ids";
+export type { IdKind } from "./ids";
 
 /**
  * The Argon2 injection seam. `assertConformantArgon2` is the ONE runtime name
@@ -108,4 +134,32 @@ export {
   secretAssociatedData,
   tokenIdHash,
 } from "./protocol";
-export type { PDKGranteeType } from "./protocol";
+export type { PDKGranteeType, SecretField } from "./protocol";
+
+/**
+ * The account identity's wire formats: the auth verifier, the wrapped key blob
+ * and the associated data binding each blob to its purpose.
+ *
+ * These moved here from the dashboard for the same reason as the four above,
+ * with a different second party: not the SDK but the CLI, which must log in to
+ * an account the browser created and open the keys the browser wrapped. The
+ * labels (`AUTH_VERIFIER_LABEL`, `KEY_AAD_PREFIX`) and the blob pattern stay
+ * private for the reason given above -- reaching them means calling the
+ * function that binds them.
+ */
+export {
+  decodeWrappedKey,
+  deriveAuthVerifier,
+  encodeWrappedKey,
+  userKeyAssociatedData,
+  WrappedKeyFormatError,
+} from "./identity";
+export type { KeyPurpose } from "./identity";
+
+/**
+ * Email canonicalisation. Not cryptography, but an input to it, and the server
+ * index and the client key derivation both break silently if two sides
+ * canonicalise one address differently. One definition, here.
+ */
+export { EmailFormatError, normaliseEmail } from "./email";
+export type { EmailFormatReason } from "./email";

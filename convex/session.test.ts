@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { convexTest } from "convex-test";
+import { newId } from "@sluice/crypto";
 import schema from "./schema";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -28,6 +29,8 @@ afterEach(() => {
 
 function signupArgs(overrides: Record<string, unknown> = {}) {
   return {
+    uid: "usr_" + "ad".repeat(16),
+    accountSalt: "30".repeat(16),
     email: "ada@example.test",
     authVerifier: VERIFIER,
     publicKey: "11".repeat(32),
@@ -205,6 +208,8 @@ describe("a presented token is verified against the table", () => {
     const t = convexTest(schema, modules);
     const userId = await t.run(async (ctx) =>
       insertUser(ctx, {
+        uid: newId("usr"),
+        accountSalt: "30".repeat(16),
         email: normaliseEmail("ghost@example.test"),
         authVerifierHash: "hash",
         publicKey: "11".repeat(32),

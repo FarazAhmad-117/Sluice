@@ -103,6 +103,8 @@ function keyLabel(keyState: ProjectDataKeyState): { tone: "healthy" | "warning";
       return { tone: "warning", text: "vault locked" };
     case "idle":
       return { tone: "warning", text: "no environment" };
+    case "rekeying":
+      return { tone: "warning", text: "re-keying" };
     case "refused":
     case "failed":
       return { tone: "warning", text: "no key" };
@@ -154,8 +156,11 @@ export function RightPanel({ secret, keyState }: RightPanelProps) {
               </dd>
             </div>
             <div className="flex items-baseline justify-between gap-3">
-              <dt className="shrink-0 text-base text-text-muted">User</dt>
-              <dd className="truncate font-mono text-sm text-text-primary">{session.userId}</dd>
+              {/* The PERMANENT account id, which every grant is addressed to
+                  and which survives an org moving cells. The Convex document
+                  id is this deployment's handle and is not shown. */}
+              <dt className="shrink-0 text-base text-text-muted">Account id</dt>
+              <dd className="truncate font-mono text-sm text-text-primary">{session.userUid}</dd>
             </div>
           </dl>
         )}
@@ -193,8 +198,11 @@ export function RightPanel({ secret, keyState }: RightPanelProps) {
             {[
               ["Version", `v${secret.version}`],
               ["Key version", `pdk v${secret.pdkVersion}`],
-              ["Lineage", secret.lineageId],
-              ["Secret id", secret.secretId],
+              // The permanent uid first: it is what every version of this
+              // secret shares and what its ciphertext is bound to. The row id
+              // below it is this deployment's handle for one version.
+              ["Secret uid", secret.secretUid],
+              ["Row id", secret.secretId],
               ["Environment", secret.environmentId],
             ].map(([label, value]) => (
               <div key={label} className="flex flex-col gap-0.5">

@@ -3,8 +3,12 @@ import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it } from "vitest";
 import { MAX_CLOCK_STEP_MS, NO_PERSISTED_FLOOR, SluiceCore } from "@sluice/sdk";
 import { toHex } from "@sluice/crypto";
+import type { RawBundle } from "../src/bundle";
+import { fatalHandler, FATAL_EXIT_CODE } from "../src/run";
+import { ShellFatalError } from "../src/errors";
 import { Shell } from "../src/shell";
 import {
+  ENVIRONMENT_UID,
   FakeChild,
   FakeFloorStore,
   FakeHandshaker,
@@ -22,6 +26,7 @@ import {
 
 interface Harness {
   readonly shell: Shell;
+  readonly core: SluiceCore;
   readonly timers: FakeTimers;
   readonly source: FakeSource;
   readonly handshaker: FakeHandshaker;
@@ -39,6 +44,8 @@ interface HarnessOptions {
   readonly killGraceMs?: number;
   readonly bootTimeoutMs?: number;
   readonly baseEnv?: Record<string, string | undefined>;
+  /** Wire `onFatal` to a real `fatalHandler`, exactly as `run.ts` does. */
+  readonly fatal?: boolean;
 }
 
 /**
@@ -91,6 +98,9 @@ function harness(fixture: Fixture, org: Org, options: HarnessOptions = {}): Harn
     bootTimeoutMs: options.bootTimeoutMs ?? 30_000,
     baseEnv: options.baseEnv ?? { PATH: "/usr/bin", SLUICE_TOKEN: fixture.rawToken },
     jitter: () => 0,
+    ...(options.fatal === true
+      ? { onFatal: fatalHandler(child, logger, (code: number) => exits.push(code)) }
+      : {}),
     ...(options.onRevoke === undefined
       ? {}
       : {
@@ -103,6 +113,7 @@ function harness(fixture: Fixture, org: Org, options: HarnessOptions = {}): Harn
 
   return {
     shell,
+    core,
     timers,
     source,
     handshaker,
@@ -150,6 +161,28 @@ async function booted(options: HarnessOptions = {}): Promise<Harness> {
   await flush(() => h.shell.busy);
   return h;
 }
+
+describe("flush, the helper every test here leans on", () => {
+  // If flush could return while the shell was still busy, every assertion
+  // after it would be checking a state from before the bundle, and a failure
+  // would read as a shell bug. These pin that it waits, and that it fails
+  // loudly rather than returning early.
+  it("throws, naming the bound, when the shell never stops being busy", async () => {
+    const started = Date.now();
+    await expect(flush(() => true, 50)).rejects.toThrow("flush: shell still busy after 50 ms");
+    expect(Date.now() - started).toBeGreaterThanOrEqual(50);
+  });
+
+  it("waits past any number of turns for work that finishes in time", async () => {
+    // Busy for far more than the 500 turns the old version gave up after.
+    let turns = 0;
+    await flush(() => {
+      turns += 1;
+      return turns < 2_000;
+    });
+    expect(turns).toBeGreaterThanOrEqual(2_000);
+  });
+});
 
 describe("Shell: the happy path", () => {
   it("handshakes, subscribes, decrypts and spawns the child with the secrets", async () => {
@@ -264,24 +297,36 @@ describe("Shell: obligations two and three, the drain cannot be cancelled", () =
       release = resolve;
     });
     const inner = h.handshaker.handshake.bind(h.handshaker);
+    let entered = 0;
     h.handshaker.handshake = async () => {
+      entered += 1;
       await gate;
       return await inner();
     };
+    // `h.shell.busy` CANNOT be the flush predicate while the gate is shut: the
+    // held handshake is in flight by design, so the shell stays busy until
+    // `release`, and the time-bounded flush would rightly throw. So the waits
+    // below are on what this test actually needs, and each is asserted.
+
     // Start a renewal and leave it hanging.
     h.source.emitError("Bundle refused.");
-    await flush(() => h.shell.busy);
+    await flush();
+    expect(entered).toBe(1);
     const subscriptionsBefore = h.source.subscriptions.length;
 
+    // A notice with no secrets is handled synchronously (there is nothing to
+    // decrypt), so the drain has begun once the handler has been called.
     h.source.emit({
       ...(await fixture.bundleWith({}, 1)),
       revocationNotice: signedNotice(org, fixture.identity),
     });
-    await flush(() => h.shell.busy);
-
-    // Now let the in-flight handshake finish, mid-drain.
-    release!();
     await flush();
+    expect(h.onRevokeCalls).toHaveLength(1);
+
+    // Now let the in-flight handshake finish, mid-drain. From here `busy` is a
+    // valid predicate again, and stronger than a fixed number of turns.
+    release!();
+    await flush(() => h.shell.busy);
     expect(h.source.subscriptions.length).toBe(subscriptionsBefore);
 
     await h.tick(5_000);
@@ -557,13 +602,401 @@ describe("Shell: availability, section 4.3", () => {
   it("delivers a notice even when the grant has vanished, which is the point of the split", async () => {
     const h = await booted({ drainMs: 0 });
     h.source.emit({
-      environmentId: "k17abcdefghijklmnopqrstuvwxyz01",
+      environmentUid: ENVIRONMENT_UID,
       epoch: 1,
       secrets: [],
       revocationNotice: signedNotice(org, fixture.identity, { epoch: 3 }),
     });
     await flush(() => h.shell.busy);
     expect(h.exits).toEqual([1]);
+  });
+
+  it("does not exit on a bundle whose environmentUid is malformed, and keeps the last good set", async () => {
+    // The crypto layer throws on a malformed id. That throw must land as a
+    // logged, unreadable bundle and never as a shutdown or an escaped exception.
+    const h = await booted();
+    const bootSet = h.core.lastKnownGood?.secrets;
+    expect(bootSet).toEqual({ DATABASE_URL: "postgres://real" });
+
+    const replacement = await fixture.bundleWith({ A: "b" }, 2);
+    for (const environmentUid of [
+      "k17dn9q2x4m8p3v6b0zc5t7wgh",
+      "env_" + ENVIRONMENT_UID.slice(4).toUpperCase(),
+    ]) {
+      h.source.emit({ ...replacement, environmentUid });
+      await flush(() => h.shell.busy);
+    }
+    const { environmentUid: _dropped, ...withoutUid } = replacement;
+    h.source.emit(withoutUid as typeof replacement);
+    await flush(() => h.shell.busy);
+    await h.tick(MAX_CLOCK_STEP_MS * 3);
+
+    expect(h.exits).toEqual([]);
+    expect(h.child.signals).toEqual([]);
+    // The core, not the boot-time child environment, is what proves nothing
+    // from the three refused bundles was installed.
+    expect(h.core.lastKnownGood?.secrets).toEqual(bootSet);
+    // One entry per refused bundle, each logged under the bundle layer's own
+    // code rather than as an anonymous exception.
+    const unreadable = h.logger.lines.filter((line) => line.code === "bundle-unreadable");
+    expect(unreadable).toHaveLength(3);
+    for (const line of unreadable) expect(line.message.startsWith("malformed:")).toBe(true);
+
+    // And the wrapper is still alive: the next valid bundle is applied.
+    h.source.emit(replacement);
+    await flush(() => h.shell.busy);
+    expect(h.core.lastKnownGood?.secrets).toEqual({ A: "b" });
+    expect(h.logger.lines.filter((line) => line.code === "bundle-unreadable")).toHaveLength(3);
+    expect(h.exits).toEqual([]);
+  });
+
+  it("shuts down on a valid notice even when the same bundle's secrets fail to decrypt", async () => {
+    // A bundle with real rows, a malformed environment id AND a genuine notice.
+    // The notice is read first and the decrypt failure runs concurrently; this
+    // proves that failure cannot interfere with the shutdown.
+    const h = await booted({ drainMs: 0 });
+    const withRows = await fixture.bundleWith({ A: "b" }, 2);
+    expect(withRows.secrets.length).toBeGreaterThan(0);
+    h.source.emit({
+      ...withRows,
+      environmentUid: "k17dn9q2x4m8p3v6b0zc5t7wgh",
+      revocationNotice: signedNotice(org, fixture.identity, { epoch: 3 }),
+    });
+    await flush(() => h.shell.busy);
+    expect(h.exits).toEqual([1]);
+    expect(h.logger.has("bundle-unreadable")).toBe(true);
+  });
+
+  it("shuts down on a valid notice carried by a bundle with a malformed row", async () => {
+    // The row's secret id and version feed associated data that THROWS on a
+    // malformed input. Neither that, nor a row that is not even an object,
+    // may stand between a signed notice and the exit.
+    const withRows = await fixture.bundleWith({ A: "b", C: "d" }, 2);
+    for (const badRow of [
+      { ...withRows.secrets[0]!, secretUid: "sec_not-a-real-id" },
+      { ...withRows.secrets[0]!, version: 0 },
+      null,
+    ]) {
+      const h = await booted({ drainMs: 0 });
+      h.source.emit({
+        ...withRows,
+        secrets: [badRow as (typeof withRows.secrets)[number], withRows.secrets[1]!],
+        revocationNotice: signedNotice(org, fixture.identity, { epoch: 3 }),
+      });
+      await flush(() => h.shell.busy);
+      expect(h.exits).toEqual([1]);
+      expect(h.child.signals).toEqual(["SIGTERM"]);
+      expect(h.child.running).toBe(false);
+      const unreadable = h.logger.lines.filter((line) => line.code === "bundle-unreadable");
+      expect(unreadable.length).toBeGreaterThan(0);
+      for (const line of unreadable) expect(line.message.startsWith("row-open:")).toBe(true);
+    }
+  });
+
+  it("does not exit on a bundle with a malformed row, and keeps the last good set", async () => {
+    const h = await booted();
+    const bootSet = h.core.lastKnownGood?.secrets;
+    const replacement = await fixture.bundleWith({ A: "b" }, 2);
+    h.source.emit({
+      ...replacement,
+      secrets: [{ ...replacement.secrets[0]!, secretUid: "sec_bad" }],
+    });
+    await flush(() => h.shell.busy);
+    await h.tick(MAX_CLOCK_STEP_MS * 3);
+    expect(h.exits).toEqual([]);
+    expect(h.core.lastKnownGood?.secrets).toEqual(bootSet);
+    const unreadable = h.logger.lines.filter((line) => line.code === "bundle-unreadable");
+    expect(unreadable).toHaveLength(1);
+    expect(unreadable[0]!.message.startsWith("row-open:")).toBe(true);
+  });
+
+  // A NOTICE BESIDE `secrets` THAT IS NOT AN ARRAY. Any database writer can
+  // serve this. `null.length` used to throw out of the transport callback,
+  // uncaught, and kill the supervisor: with a genuine notice the SIGKILL
+  // escalation never fired, and with a forged one the child was orphaned with
+  // its secrets and could never be revoked again.
+  const NOT_AN_ARRAY: readonly unknown[] = [null, "x", {}, { length: 1 }];
+
+  function withSecrets(raw: RawBundle, secrets: unknown): RawBundle {
+    return { ...raw, secrets: secrets as RawBundle["secrets"] };
+  }
+
+  it("shuts down on a genuine notice whatever non-array the secrets field holds", async () => {
+    for (const secrets of NOT_AN_ARRAY) {
+      const h = await booted({ drainMs: 0 });
+      const base = await fixture.bundleWith({}, 2);
+      const bundle = withSecrets(
+        { ...base, revocationNotice: signedNotice(org, fixture.identity, { epoch: 3 }) },
+        secrets,
+      );
+      expect(() => h.source.emit(bundle)).not.toThrow();
+      await flush(() => h.shell.busy);
+      expect(h.child.signals).toEqual(["SIGTERM"]);
+      expect(h.exits).toEqual([1]);
+      expect(h.logger.has("bundle-handler-failed")).toBe(false);
+    }
+  });
+
+  it("escalates to SIGKILL on a wedged child, whatever non-array the secrets field holds", async () => {
+    for (const secrets of NOT_AN_ARRAY) {
+      const h = await booted({ drainMs: 0, killGraceMs: 4_000 });
+      h.child.ignoreSigterm = true;
+      const base = await fixture.bundleWith({}, 2);
+      const bundle = withSecrets(
+        { ...base, revocationNotice: signedNotice(org, fixture.identity, { epoch: 3 }) },
+        secrets,
+      );
+      expect(() => h.source.emit(bundle)).not.toThrow();
+      await flush(() => h.shell.busy);
+      expect(h.child.signals).toEqual(["SIGTERM"]);
+      expect(h.exits).toEqual([]);
+      await h.tick(4_000);
+      expect(h.child.signals).toEqual(["SIGTERM", "SIGKILL"]);
+      expect(h.child.running).toBe(false);
+      expect(h.exits).toEqual([1]);
+    }
+  });
+
+  it("stays alive and supervising after a FORGED notice beside non-array secrets", async () => {
+    for (const secrets of NOT_AN_ARRAY) {
+      const h = await booted({ drainMs: 0 });
+      const forger = orgKeyPair();
+      const base = await fixture.bundleWith({}, 2);
+      const forged = withSecrets(
+        { ...base, revocationNotice: signedNotice(forger, fixture.identity, { epoch: 3 }) },
+        secrets,
+      );
+      expect(() => h.source.emit(forged)).not.toThrow();
+      await flush(() => h.shell.busy);
+      await h.tick(MAX_CLOCK_STEP_MS * 3);
+      expect(h.exits).toEqual([]);
+      expect(h.child.signals).toEqual([]);
+      expect(h.child.running).toBe(true);
+
+      // Still supervised: the next genuine notice is delivered and acted on.
+      h.source.emit({
+        ...(await fixture.bundleWith({}, 3)),
+        revocationNotice: signedNotice(org, fixture.identity, { epoch: 4 }),
+      });
+      await flush(() => h.shell.busy);
+      expect(h.child.signals).toEqual(["SIGTERM"]);
+      expect(h.exits).toEqual([1]);
+    }
+  });
+
+  it("contains a throw from inside the bundle handler, after the notice has been acted on", async () => {
+    // A bundle whose `secrets` throws on read stands in for any future bug
+    // that throws after `readRevocation`. The notice is queued and pumped
+    // first, so the shutdown happens, and the throw is logged by the boundary
+    // guard instead of reaching the transport.
+    const h = await booted({ drainMs: 0 });
+    const base = await fixture.bundleWith({}, 2);
+    const hostile = {
+      ...base,
+      revocationNotice: signedNotice(org, fixture.identity, { epoch: 3 }),
+    } as Record<string, unknown>;
+    Object.defineProperty(hostile, "secrets", {
+      get() {
+        throw new TypeError("secrets exploded\u001b[2J");
+      },
+    });
+    expect(() => h.source.emit(hostile as unknown as RawBundle)).not.toThrow();
+    await flush(() => h.shell.busy);
+    expect(h.child.signals).toEqual(["SIGTERM"]);
+    expect(h.exits).toEqual([1]);
+    expect(h.logger.has("bundle-handler-failed")).toBe(true);
+    expect(h.logger.text).not.toContain("\u001b");
+  });
+
+  it("contains a throw from the bundle handler without a notice, and keeps supervising", async () => {
+    const h = await booted();
+    const hostile = {} as Record<string, unknown>;
+    Object.defineProperty(hostile, "revocationNotice", {
+      get() {
+        throw new Error("notice exploded");
+      },
+    });
+    expect(() => h.source.emit(hostile as unknown as RawBundle)).not.toThrow();
+    await flush(() => h.shell.busy);
+    expect(h.logger.has("bundle-handler-failed")).toBe(true);
+    expect(h.exits).toEqual([]);
+    expect(h.child.running).toBe(true);
+
+    h.source.emit({
+      ...(await fixture.bundleWith({}, 3)),
+      revocationNotice: signedNotice(org, fixture.identity, { epoch: 4 }),
+    });
+    await flush(() => h.shell.busy);
+    expect(h.exits).toEqual([1]);
+  });
+
+  it("still delivers a notice carried on a bundle whose environmentUid is malformed", async () => {
+    const h = await booted({ drainMs: 0 });
+    h.source.emit({
+      environmentUid: "k17dn9q2x4m8p3v6b0zc5t7wgh",
+      epoch: 1,
+      secrets: [],
+      revocationNotice: signedNotice(org, fixture.identity, { epoch: 3 }),
+    });
+    await flush(() => h.shell.busy);
+    expect(h.exits).toEqual([1]);
+  });
+});
+
+describe("Shell: the shutdown logic itself failing fails CLOSED", () => {
+  /** Makes `core.handle` throw for one event type and behave for the rest. */
+  function breakCore(h: Harness, type: string): void {
+    const original = h.core.handle.bind(h.core);
+    (h.core as { handle: SluiceCore["handle"] }).handle = (event) => {
+      if (event.type === type) throw new Error(`core broke on ${type}\u001b[2J`);
+      return original(event);
+    };
+  }
+
+  it("SIGKILLs the child and exits 70 when the core throws on a genuine revocation", async () => {
+    const h = await booted({ drainMs: 0, fatal: true });
+    breakCore(h, "revocation");
+    expect(() =>
+      h.source.emit({
+        ...withNoSecrets(),
+        revocationNotice: signedNotice(org, fixture.identity, { epoch: 3 }),
+      }),
+    ).not.toThrow();
+    await flush(() => h.shell.busy);
+    expect(h.child.signals).toEqual(["SIGKILL"]);
+    expect(h.child.running).toBe(false);
+    expect(h.exits).toEqual([FATAL_EXIT_CODE]);
+    expect(h.logger.has("supervisor-fatal")).toBe(true);
+    // Not swallowed by the transport guard, which is for shape bugs only.
+    expect(h.logger.has("bundle-handler-failed")).toBe(false);
+    expect(h.logger.text).not.toContain("\u001b");
+
+    // Stopped: nothing later reaches the broken core or exits twice.
+    await h.tick(MAX_CLOCK_STEP_MS * 3);
+    expect(h.exits).toEqual([FATAL_EXIT_CODE]);
+    expect(h.child.signals).toEqual(["SIGKILL"]);
+  });
+
+  it("persists a floor the core raised before it threw, so a restart refuses the replay", async () => {
+    // The real core verifies the genuine notice and raises the floor, and only
+    // THEN fails. The normal persist after `handle` never runs, so without
+    // the persist in the catch the floor would be lost and a restart would
+    // accept this same notice once more.
+    const h = await booted({ drainMs: 0, fatal: true });
+    const original = h.core.handle.bind(h.core);
+    (h.core as { handle: SluiceCore["handle"] }).handle = (event) => {
+      const decisions = original(event);
+      if (event.type === "revocation") throw new Error("failed after raising the floor");
+      return decisions;
+    };
+    const before = h.floor.saved.length;
+    h.source.emit({
+      ...withNoSecrets(),
+      revocationNotice: signedNotice(org, fixture.identity, { epoch: 3 }),
+    });
+    await flush(() => h.shell.busy);
+    expect(h.core.epochFloor).toBe(3);
+    expect(h.floor.saved.slice(before)).toEqual([3]);
+    expect(h.child.signals).toEqual(["SIGKILL"]);
+    expect(h.exits).toEqual([FATAL_EXIT_CODE]);
+  });
+
+  it("still reaches onFatal when the broken core cannot even report its floor", async () => {
+    const h = await booted({ drainMs: 0, fatal: true });
+    breakCore(h, "revocation");
+    Object.defineProperty(h.core, "epochFloor", {
+      get() {
+        throw new Error("floor unreadable");
+      },
+    });
+    h.source.emit({
+      ...withNoSecrets(),
+      revocationNotice: signedNotice(org, fixture.identity, { epoch: 3 }),
+    });
+    await flush(() => h.shell.busy);
+    expect(h.child.signals).toEqual(["SIGKILL"]);
+    expect(h.exits).toEqual([FATAL_EXIT_CODE]);
+  });
+
+  it("has the identical outcome when the same failure arrives on a timer tick", async () => {
+    const h = await booted({ drainMs: 0, fatal: true });
+    breakCore(h, "tick");
+    await h.tick(MAX_CLOCK_STEP_MS);
+    expect(h.child.signals).toEqual(["SIGKILL"]);
+    expect(h.child.running).toBe(false);
+    expect(h.exits).toEqual([FATAL_EXIT_CODE]);
+    expect(h.logger.has("supervisor-fatal")).toBe(true);
+  });
+
+  it("fails closed when applying the exit decision itself throws", async () => {
+    // The host side rather than the core: the SIGTERM of `#stopChild` throws.
+    const h = await booted({ drainMs: 0, fatal: true });
+    const signal = h.child.signal.bind(h.child);
+    h.child.signal = (name) => {
+      if (name === "SIGTERM") {
+        h.child.signals.push(name);
+        throw new Error("SIGTERM failed");
+      }
+      signal(name);
+    };
+    h.source.emit({
+      ...withNoSecrets(),
+      revocationNotice: signedNotice(org, fixture.identity, { epoch: 3 }),
+    });
+    await flush(() => h.shell.busy);
+    expect(h.child.signals).toEqual(["SIGTERM", "SIGKILL"]);
+    expect(h.child.running).toBe(false);
+    expect(h.exits).toEqual([FATAL_EXIT_CODE]);
+  });
+
+  it("still does nothing at all on a FORGED notice beside secrets: null", async () => {
+    const h = await booted({ drainMs: 0, fatal: true });
+    h.source.emit({
+      ...withNoSecrets(),
+      secrets: null as unknown as RawBundle["secrets"],
+      revocationNotice: signedNotice(orgKeyPair(), fixture.identity, { epoch: 3 }),
+    });
+    await flush(() => h.shell.busy);
+    await h.tick(MAX_CLOCK_STEP_MS * 3);
+    expect(h.child.signals).toEqual([]);
+    expect(h.exits).toEqual([]);
+    expect(h.child.running).toBe(true);
+  });
+
+  it("with no onFatal, rethrows past the transport guard instead of being swallowed", async () => {
+    const h = await booted({ drainMs: 0 });
+    breakCore(h, "revocation");
+    let thrown: unknown;
+    try {
+      h.source.emit({
+        ...withNoSecrets(),
+        revocationNotice: signedNotice(org, fixture.identity, { epoch: 3 }),
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(ShellFatalError);
+    expect(h.logger.has("bundle-handler-failed")).toBe(false);
+  });
+
+  function withNoSecrets(): RawBundle {
+    return { environmentUid: ENVIRONMENT_UID, epoch: 2, secrets: [] };
+  }
+});
+
+describe("Shell: wiring onFatal changes nothing on the ordinary path", () => {
+  it("still exits 1 with SIGTERM on a genuine revocation, never 70", async () => {
+    const h = await booted({ drainMs: 0, fatal: true });
+    h.source.emit({
+      environmentUid: "k17dn9q2x4m8p3v6b0zc5t7wgh",
+      epoch: 1,
+      secrets: [],
+      revocationNotice: signedNotice(org, fixture.identity, { epoch: 3 }),
+    });
+    await flush(() => h.shell.busy);
+    expect(h.child.signals).toEqual(["SIGTERM"]);
+    expect(h.exits).toEqual([1]);
+    expect(h.logger.has("supervisor-fatal")).toBe(false);
   });
 });
 

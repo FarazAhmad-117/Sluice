@@ -1,4 +1,11 @@
-import { ARGON2_PARAMS, MasterUnlockKey, assertConformantArgon2, deriveMUK } from "@sluice/crypto";
+import {
+  ACCOUNT_SALT_BYTES,
+  ARGON2_PARAMS,
+  MasterUnlockKey,
+  assertConformantArgon2,
+  deriveMUK,
+  toHex,
+} from "@sluice/crypto";
 import { probeArgon2Memory, wasmArgon2 } from "./argon2-wasm";
 import type {
   ProbeResult,
@@ -123,11 +130,20 @@ let nextRequestId = 1;
  * would put a password oracle in module scope for no benefit. Keying by nothing
  * -- a plain mutex that rejects any concurrent call -- would turn an ordinary
  * double-click into an error message on a form the user has already filled in.
- * Comparing the strings directly is what makes the second click a no-op.
+ * Comparing the strings directly is what makes the second click a no-op --
+ * for login and unlock, whose salt is the same on every attempt. Signup mints
+ * a new salt per submit, so its second click never matches; the disabled
+ * submit button is what stops a double signup, not this slot.
+ *
+ * The salt is held as HEX, and compared as hex, for the same reason: login
+ * decodes it afresh on every attempt, so a double-click delivers two distinct
+ * `Uint8Array`s with equal contents, and comparing those by reference would
+ * turn the second click into {@link DerivationBusyError}. The salt is public,
+ * so holding it here costs nothing.
  */
 let inFlight: {
   readonly password: string;
-  readonly userId: string;
+  readonly accountSaltHex: string;
   readonly promise: Promise<DerivationResult>;
 } | null = null;
 
@@ -279,7 +295,8 @@ export async function probeDerivationCapability(): Promise<{
 
 async function deriveOnce(
   password: string,
-  userId: string,
+  accountSalt: Uint8Array,
+  accountSaltHex: string,
   options: DeriveOptions,
 ): Promise<DerivationResult> {
   const started = Date.now();
@@ -291,7 +308,9 @@ async function deriveOnce(
 
   // ROUTE 1: the intended one.
   try {
-    const response = await runInWorker({ kind: "derive", password, userId });
+    // Hex across the boundary; the worker decodes it and `deriveMUK` there
+    // checks the width again. See `worker-protocol.ts`.
+    const response = await runInWorker({ kind: "derive", password, accountSalt: accountSaltHex });
     if (response.kind !== "derived") throw new DerivationUnavailableError("unexpected worker reply");
     return {
       // Re-wrapped here rather than in the worker: `MasterUnlockKey` keeps its
@@ -313,7 +332,7 @@ async function deriveOnce(
   // paints. The tab freezes for the duration. This is a real degradation and it
   // is reported as one, never taken quietly.
   try {
-    const key = await deriveMUK(password, userId, { argon2: wasmArgon2 });
+    const key = await deriveMUK(password, accountSalt, { argon2: wasmArgon2 });
     return { key, path: "main-wasm", elapsedMs: Date.now() - started, degradations };
   } catch (cause) {
     degrade({ from: "main-wasm", to: "main-noble", reason: messageOf(cause) });
@@ -325,18 +344,30 @@ async function deriveOnce(
   // roughly twelve times the wall time: seconds on a desktop, most of a minute
   // on a slow phone. It exists because the alternative is a user who cannot log
   // in at all, and it is reported so nobody mistakes it for normal.
-  const key = await deriveMUK(password, userId);
+  const key = await deriveMUK(password, accountSalt);
   return { key, path: "main-noble", elapsedMs: Date.now() - started, degradations };
 }
 
 /**
  * Derives the Master Unlock Key, once, off the main thread where possible.
  *
- * SINGLE-FLIGHTED. A second call with the SAME password and user id while one
- * is running returns the SAME promise -- a double-clicked submit button does
+ * `accountSalt` is the account's public 16-byte salt: minted by
+ * `newAccountSalt()` at signup, fetched with `auth.getLoginSalt` at login, and
+ * read back from the persisted session on unlock. It is no longer the email.
+ *
+ * SINGLE-FLIGHTED. A second call with the SAME password and salt bytes while
+ * one is running returns the SAME promise -- a double-clicked submit button does
  * one derivation and one 64 MiB allocation, not two. A concurrent call with
  * DIFFERENT inputs throws {@link DerivationBusyError} rather than starting a
  * second allocation beside the first.
+ *
+ * THE DEDUPE APPLIES ONLY WHEN THE SALT IS IDENTICAL. That covers login and
+ * unlock, where every attempt derives under the same stored or fetched salt.
+ * It does NOT cover signup: each submit mints a fresh salt, so a second click
+ * is a different request and is refused with `DerivationBusyError`, not
+ * joined. What actually prevents a double signup is the submit button being
+ * disabled while a phase is running; this slot only guarantees that a missed
+ * disable costs an error message rather than a second 64 MiB allocation.
  *
  * The returned {@link DerivationResult} names the route that was actually
  * taken. A UI that ignores `path` and `degradations` will not notice that every
@@ -345,21 +376,41 @@ async function deriveOnce(
  */
 export function deriveMasterUnlockKey(
   password: string,
-  userId: string,
+  accountSalt: Uint8Array,
   options: DeriveOptions = {},
 ): Promise<DerivationResult> {
+  // THE WIDTH IS CHECKED HERE AS WELL AS IN `deriveMUK`, and the reason is the
+  // fallback chain, not distrust of the package. Left to `deriveMUK` alone, a
+  // fifteen-byte salt fails in the worker, then on main-thread WASM, then on
+  // noble, and the result reports two "degradations" that say this DEVICE is
+  // impaired when the INPUT was wrong. Refusing it here, synchronously and
+  // before the slot is taken, keeps those reports about the device. The
+  // message is the package's own, so the two checks cannot be told apart. It
+  // is a copy of a rule, not a replacement for it: the worker still enforces
+  // it through `deriveMUK` on whatever actually arrives.
+  if (!(accountSalt instanceof Uint8Array) || accountSalt.length !== ACCOUNT_SALT_BYTES) {
+    throw new Error(`accountSalt must be ${ACCOUNT_SALT_BYTES} bytes`);
+  }
+  // A private copy, so a caller that reuses or zeroes its array mid-derivation
+  // cannot change the salt under a run already in progress, or make the slot's
+  // record disagree with what is actually being derived.
+  const salt = accountSalt.slice();
+  const accountSaltHex = toHex(salt);
+
   if (inFlight) {
-    if (inFlight.password === password && inFlight.userId === userId) return inFlight.promise;
+    if (inFlight.password === password && inFlight.accountSaltHex === accountSaltHex) {
+      return inFlight.promise;
+    }
     throw new DerivationBusyError();
   }
 
-  const promise = deriveOnce(password, userId, options).finally(() => {
+  const promise = deriveOnce(password, salt, accountSaltHex, options).finally(() => {
     // Clears the retained password reference on every outcome, including
     // rejection and the timeout path.
     inFlight = null;
   });
 
-  inFlight = { password, userId, promise };
+  inFlight = { password, accountSaltHex, promise };
   return promise;
 }
 

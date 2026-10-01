@@ -44,6 +44,18 @@
  * which is a real cost; they also get the session token in the same read, which
  * is strictly worse and immediate. The blobs are not the weak link.
  *
+ * TWO PUBLIC VALUES THE RECORD IS THE ONLY SOURCE FOR. `userUid`, the account's
+ * permanent `usr_` id, and `accountSalt`, the random salt its master unlock key
+ * is derived under. `auth.login` returns the uid and `auth.getLoginSalt` the
+ * salt, but both are reached only through a fresh login: nothing a signed-in
+ * session can call hands either back. After a refresh, then, this record is
+ * where the unlock prompt gets the salt it must re-derive under and where every
+ * wrap addressed to this user gets the uid it is bound to. Neither is secret --
+ * the server gives the salt to anyone who asks to log in as the account -- so
+ * storing them adds nothing an attacker who reads this record lacked. A record
+ * WITHOUT them, or with a malformed one, cannot be unlocked and cannot be
+ * repaired from here, so `loadSession` discards it and the user logs in again.
+ *
  * WHAT IS NEVER STORED. The master unlock key. The unwrapped private keys. The
  * password. Any decrypted secret. All of those live in React state and die with
  * the page, which is why a refresh locks the vault and asks for the password
@@ -52,7 +64,31 @@
  * server side session lasts."
  */
 
+import { ACCOUNT_SALT_BYTES, assertId } from "@sluice/crypto";
+
+/**
+ * Unchanged from the build that had no `userUid` or `accountSalt`, on purpose.
+ * A record that build left behind is read, found incomplete by `isLive`, and
+ * removed -- the user is sent to log in, which is the only way to recover the
+ * missing values. A new key would instead leave the old record sitting in the
+ * tab's storage, unread, holding a live bearer token for no purpose.
+ */
 const STORAGE_KEY = "sluice.session.v1";
+
+/**
+ * Exactly `toHex` of `ACCOUNT_SALT_BYTES` bytes: lowercase, nothing else. That
+ * is what the server stores and what `getLoginSalt` returns, so anything else
+ * did not come from this code.
+ *
+ * ONE RULE FOR THE WIRE AND FOR STORAGE. `decodeLoginSalt` in `auth-errors.ts`
+ * checks `getLoginSalt`'s reply against this same pattern, so a salt the login
+ * flow accepts is always one this store will load back after a reload. Two
+ * patterns would let them drift, and the first symptom would be an unlock
+ * prompt that refuses every password. Built from `ACCOUNT_SALT_BYTES` rather
+ * than spelled `{32}` so a width change in the package moves it too. No `g`
+ * flag: a global regex carries `lastIndex` between `test` calls.
+ */
+export const ACCOUNT_SALT_HEX = new RegExp(`^[0-9a-f]{${ACCOUNT_SALT_BYTES * 2}}$`);
 
 /**
  * The persisted half of a signed-in session. Every field here is either public
@@ -64,8 +100,25 @@ export interface PersistedSession {
   readonly sessionToken: string;
   /** Absolute, from the server. Never extended client side. */
   readonly sessionExpiresAt: number;
+  /** The Convex document id. Not the permanent id; nothing is bound to it. */
   readonly userId: string;
-  /** The normalised address. It is the Argon2id salt input, so it must match. */
+  /**
+   * The permanent `usr_` id, from `auth.login`. Every wrap addressed to this
+   * user binds to it, and no query returns it after login, so this is the only
+   * copy once the page has reloaded.
+   */
+  readonly userUid: string;
+  /**
+   * The account's Argon2id salt, 32 lowercase hex characters. PUBLIC: the
+   * server returns it to anyone who asks to log in as this account. Kept so
+   * that unlocking after a reload can re-derive the master unlock key without
+   * a network call; without it the vault could not be reopened at all.
+   */
+  readonly accountSalt: string;
+  /**
+   * The normalised address. Only the login lookup key now: the salt is
+   * `accountSalt`, so this no longer feeds the derivation.
+   */
   readonly email: string;
   readonly publicKey: string;
   readonly verifyKey: string;
@@ -91,6 +144,8 @@ function isLive(value: unknown): value is PersistedSession {
   const stringFields = [
     "sessionToken",
     "userId",
+    "userUid",
+    "accountSalt",
     "email",
     "publicKey",
     "verifyKey",
@@ -101,6 +156,17 @@ function isLive(value: unknown): value is PersistedSession {
     if (typeof record[field] !== "string" || (record[field] as string).length === 0) return false;
   }
   if (typeof record.sessionExpiresAt !== "number") return false;
+  // MANDATORY, not a nicety. Without a well-formed uid the dashboard would
+  // bind wraps to garbage; without a well-formed salt the unlock prompt would
+  // take the user's password and then fail on every attempt, a failure that
+  // looks exactly like a wrong password. Neither can be recovered from this
+  // record, so it is rejected here and the user is sent to log in.
+  try {
+    assertId("usr", "userUid", record.userUid as string);
+  } catch {
+    return false;
+  }
+  if (!ACCOUNT_SALT_HEX.test(record.accountSalt as string)) return false;
   // The client's clock is not authority over the server's, and it is not
   // treated as one: this only drops a record that is obviously spent, so the
   // user is not sent into a shell whose every query will refuse. The server

@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { convexTest } from "convex-test";
 import {
+  fromHex,
   mintToken,
+  newId,
   signHandshake,
   signRevocation,
   toHex,
   tokenIdHash,
-  fromHex,
 } from "@sluice/crypto";
 import schema from "./schema";
 import { api } from "./_generated/api";
@@ -36,6 +37,9 @@ export const modules = import.meta.glob("./**/*.ts");
 const WRAP = {
   wrappedPDK: "dd".repeat(48),
   pdkNonce: "0a1b2c3d4e5f60718293a4b5",
+  // The key version the wrap above was made under, which the client states
+  // and `createEnvironment` checks: a new environment starts at 1.
+  pdkVersion: 1,
 } as const;
 
 type Harness = ReturnType<typeof convexTest>;
@@ -87,12 +91,22 @@ afterEach(() => {
 });
 
 
-type Actor = { userId: Id<"users">; sessionToken: string };
+type Actor = {
+  userId: Id<"users">;
+  // The permanent id, for building associated data and for asserting on
+  // what a handler returns. Never passed as an argument for the same reason
+  // `userId` is not.
+  uid: string;
+  sessionToken: string;
+};
 
 async function seedUser(t: Harness, email: string): Promise<Actor> {
   const sessionToken = `session-for-${email}`;
+  const uid = newId("usr");
   const userId = await t.run(async (ctx) =>
     insertUser(ctx, {
+      uid,
+      accountSalt: "30".repeat(16),
       email: normaliseEmail(email),
       authVerifierHash: "hash",
       publicKey: "11".repeat(32),
@@ -109,7 +123,7 @@ async function seedUser(t: Harness, email: string): Promise<Actor> {
       expiresAt: Date.now() + SESSION_LIFETIME_MS,
     }),
   );
-  return { userId, sessionToken };
+  return { userId, uid, sessionToken };
 }
 
 /**
@@ -129,6 +143,7 @@ async function world(t: Harness) {
 
   const orgId = await t.mutation(api.orgs.createOrg, {
     sessionToken: admin.sessionToken,
+    orgUid: newId("org"),
     name: "Acme Rockets",
     slug: "acme",
     revocationPublicKey: keys.publicKey,
@@ -143,6 +158,7 @@ async function world(t: Harness) {
   });
   const environmentId = await t.mutation(api.environments.createEnvironment, {
     sessionToken: admin.sessionToken,
+    environmentUid: newId("env"),
     projectId,
     name: "production",
     ...WRAP,
@@ -170,6 +186,7 @@ async function issueToken(
     publicKey: minted.upload.publicKey,
     wrappedPDK: "cc".repeat(48),
     pdkNonce: "0102030405060708090a0b0c",
+    pdkVersion: 1,
     ...(options.expiresAt === undefined ? {} : { expiresAt: options.expiresAt }),
   });
   return { minted, serviceTokenId };

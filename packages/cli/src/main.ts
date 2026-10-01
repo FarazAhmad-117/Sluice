@@ -10,7 +10,9 @@ import { CONFIG_EXIT_CODE, run } from "./run";
  * is three lines on top of it.
  */
 
-export const VERSION = "sluice-cli/v1";
+// v2 since the bundle contract and the associated data it opens under moved
+// to v2. A v1 CLI cannot read a v2 bundle, so `--version` must tell them apart.
+export const VERSION = "sluice-cli/v2";
 
 export const HELP = `sluice, the secrets manager with a kill switch that works.
 
@@ -45,6 +47,8 @@ Exit codes:
   1   revoked by a signed notice, or the offline limit was reached, or the
       command failed to start with no secrets to run with
   2   configuration is wrong
+  70  Sluice itself failed; the command was killed rather than left running
+      unsupervised
   n   whatever the supervised command exited with
 
 The service token is removed from the child's environment. Sluice never writes
@@ -57,6 +61,7 @@ export interface MainDependencies {
   readonly exit: (code: number) => void;
   readonly stdout: (text: string) => void;
   readonly onSignal?: (handler: (signal: NodeJS.Signals) => void) => void;
+  readonly onFatal?: (handler: (error: unknown) => void) => void;
 }
 
 export function main(dependencies: MainDependencies): void {
@@ -79,6 +84,7 @@ export function main(dependencies: MainDependencies): void {
         env: dependencies.env,
         exit: dependencies.exit,
         ...(dependencies.onSignal === undefined ? {} : { onSignal: dependencies.onSignal }),
+        ...(dependencies.onFatal === undefined ? {} : { onFatal: dependencies.onFatal }),
       });
       return;
     default:

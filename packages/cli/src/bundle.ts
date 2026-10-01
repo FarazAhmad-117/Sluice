@@ -1,4 +1,10 @@
-import { fromHex, pdkAssociatedData, secretAssociatedData, unseal } from "@sluice/crypto";
+import {
+  assertId,
+  fromHex,
+  pdkAssociatedData,
+  secretAssociatedData,
+  unseal,
+} from "@sluice/crypto";
 import type { RevocationNotice, SecretBundle } from "@sluice/sdk";
 import type { TokenIdentity } from "./config";
 
@@ -35,9 +41,39 @@ import type { TokenIdentity } from "./config";
  * subscription, usually a matter of milliseconds.
  */
 
+/**
+ * One secret, as `convex/bundle.ts` returns it.
+ *
+ * `secretUid` and `version` are what this row's two ciphertexts are BOUND to,
+ * together with the bundle's `environmentUid` and the field each ciphertext
+ * fills. The name is sealed under field `"name"` and the value under field
+ * `"value"`, so a row's two halves have different associated data. All four
+ * arrive as plain columns that anyone with database write access can edit,
+ * and that is the point: none of them is trusted, every one is re-derived into
+ * the associated data, and a row whose ciphertext was sealed for any other
+ * slot fails to open. A server cannot swap the values of two secrets (the
+ * `secretUid` differs), move a name into a value (the field differs), or put a
+ * superseded value into the current version's row (the `version` differs).
+ *
+ * `secretUid` is the secret's PERMANENT `sec_` id, minted by the client that
+ * created the secret and shared by every version of it. It replaced the Convex
+ * document id `secretId`, for the same reason `environmentUid` replaced
+ * `environmentId`: a document id is re-minted when an org moves cells, and
+ * ciphertext bound to it would stop opening on the day of the move. This file
+ * never reads a `secretId`.
+ *
+ * `secretUid` is also how every message NAMES a row (see {@link rowLabel}),
+ * and it is the only label used. An earlier revision preferred a separate,
+ * unbound display id when the row carried one. That let whoever shapes the
+ * bundle choose the name an operator sees in an error, pointing them at the
+ * wrong secret during an incident, with nothing tying the label to the row's
+ * ciphertext. The label is authenticated only in errors raised after the row
+ * opens (a bad or duplicate name): a row that lies about its `secretUid` does
+ * not open. In an error raised because the row did not open, the label is the
+ * row's own unauthenticated claim, and may be another secret's well-formed id.
+ */
 export interface RawSecretRow {
-  readonly secretId: string;
-  readonly lineageId: string;
+  readonly secretUid: string;
   readonly version: number;
   readonly pdkVersion: number;
   readonly nameCiphertext: string;
@@ -57,8 +93,25 @@ export interface RawRevocationNotice {
 
 /** Exactly the shape `convex/bundle.ts` returns. Nothing here reads anything else. */
 export interface RawBundle {
-  readonly environmentId: string;
+  /**
+   * The environment's PERMANENT id, `env_` plus 32 lowercase hex, minted by the
+   * client that created the environment. Both associated data rules bind it.
+   *
+   * Never the Convex document id. That id is local to one deployment and is
+   * re-minted when an org moves cells, so ciphertext bound to it would stop
+   * opening on the day of the move, and no server could repair it because no
+   * server holds a key. A bundle that still carries only `environmentId` is a
+   * bundle from a backend this build does not speak to, and is refused as
+   * malformed rather than guessed at.
+   */
+  readonly environmentUid: string;
   readonly epoch: number;
+  /**
+   * The generation of the project data key this token's grant wraps. Bound
+   * into the grant's associated data, so an old wrap served under a newer
+   * version number (a rotation rolled back by the server) fails to unwrap.
+   * Absent, together with `wrappedPDK` and `pdkNonce`, when there is no grant.
+   */
   readonly pdkVersion?: number | undefined;
   readonly wrappedPDK?: string | undefined;
   readonly pdkNonce?: string | undefined;
@@ -91,6 +144,11 @@ export class BundleDecryptError extends Error {
 }
 
 const SIGNATURE_HEX = /^[0-9a-f]{128}$/;
+
+/** The one message for a bundle shaped by a backend that predates this CLI. */
+const OLDER_BACKEND =
+  "This bundle comes from a Sluice backend older than this CLI; deploy the backend " +
+  "and the CLI together. Sluice is keeping any last known good secrets.";
 
 /**
  * What a decrypted secret name is allowed to be.
@@ -165,8 +223,8 @@ export function readRevocation(raw: RawBundle | null | undefined): ParsedRevocat
  * Opens every row in the bundle, or opens none of them.
  *
  * NO MESSAGE THIS FUNCTION PRODUCES CONTAINS A NAME, A VALUE, A KEY OR A
- * CIPHERTEXT. An unopenable row is named by its `lineageId`, which is a server
- * side identifier an operator can paste into the dashboard and which reveals
+ * CIPHERTEXT. An unopenable row is named by {@link rowLabel}: its `secretUid`,
+ * an identifier an operator can look up in the dashboard and which reveals
  * nothing about the secret. The AEAD failures deliberately carry no detail
  * about which input was wrong, matching `@sluice/crypto`: inventing a
  * distinction between a wrong key, a tampered ciphertext and wrong associated
@@ -176,10 +234,23 @@ export async function decryptSecrets(
   identity: TokenIdentity,
   raw: RawBundle,
 ): Promise<SecretBundle> {
+  if (typeof raw === "object" && raw !== null && raw.environmentUid === undefined) {
+    // VERSION SKEW, NAMED AS SUCH. A bundle with no `environmentUid` but with
+    // the v1 `environmentId` field is not hostile, it is a backend that has not
+    // been deployed alongside this CLI. It is still refused, as `malformed`,
+    // because the v1 id cannot be bound into the v2 associated data and
+    // guessing would decrypt nothing. But the operator is told the fix rather
+    // than handed a shape error. The value of the old field is never echoed: it
+    // arrived from the same untrusted row as everything else.
+    if (Object.prototype.hasOwnProperty.call(raw, "environmentId")) {
+      throw new BundleDecryptError("malformed", OLDER_BACKEND);
+    }
+  }
+
   if (
     typeof raw !== "object" ||
     raw === null ||
-    typeof raw.environmentId !== "string" ||
+    typeof raw.environmentUid !== "string" ||
     typeof raw.epoch !== "number" ||
     !Number.isSafeInteger(raw.epoch) ||
     raw.epoch < 0 ||
@@ -191,11 +262,58 @@ export async function decryptSecrets(
     );
   }
 
-  if (
-    typeof raw.wrappedPDK !== "string" ||
-    typeof raw.pdkNonce !== "string" ||
-    typeof raw.pdkVersion !== "number"
-  ) {
+  // EVERY ASSOCIATED DATA VALUE IS BUILT INSIDE A GUARD.
+  //
+  // `assertId`, `pdkAssociatedData` and `secretAssociatedData` validate what
+  // they are given and THROW a plain `Error` when an id is not well formed or a
+  // version is not a positive whole number. Those values come straight off a
+  // subscription that anyone with database write access can shape, so a
+  // malformed one is an ordinary hostile input, not a bug, and it must fail
+  // exactly like every other bundle that will not open: as a named
+  // `BundleDecryptError` that the shell logs by code while keeping any last
+  // known good set. Letting the crypto layer's throw out unconverted would make
+  // a malformed bundle an anonymous exception on the same code path that, one
+  // bundle later, has to deliver a shutdown. A malformed bundle must never
+  // become an exception on the path to a shutdown.
+  //
+  // The guards are this narrow on purpose. They wrap only the pure functions
+  // whose throw is a statement about their input; they do not wrap `unseal`,
+  // which has its own named failures below. No message repeats the offending
+  // value, for the same reason `safeId` exists.
+  //
+  // SEPARATE GUARDS, NOT ONE, so each message blames only what it can know is
+  // wrong. The environment id is checked first and on its own, with the crypto
+  // package's own validator, so its failure is that id's fault and says so.
+  // The secret associated data is no longer built here: it now names the
+  // secret, its version and the field, so there is one pair per row, built in
+  // the row loop under that row's failure code.
+  //
+  // The environment check runs BEFORE the grant check, so a bundle whose
+  // environment id is unusable is reported as malformed even when it also lacks
+  // a grant. The bad id is the root cause: reporting `no-grant` instead would
+  // send an operator to the dashboard to issue a grant that could never have
+  // helped.
+  try {
+    assertId("env", "environmentUid", raw.environmentUid);
+  } catch {
+    throw new BundleDecryptError(
+      "malformed",
+      "The Sluice bundle named its environment with an id that is not a permanent " +
+        "environment id, so none of its secrets can be bound to it. Sluice is keeping any " +
+        "last known good secrets.",
+    );
+  }
+
+  // A MISSING GRANT IS ALL THREE FIELDS ABSENT, AND ONLY THEN. That is exactly
+  // what `convex/bundle.ts` sends when there is no `pdkGrants` row. Any other
+  // combination, one or two of the three present, or a wrap or nonce that is
+  // not a string, is not a missing grant but a malformed one, and is reported
+  // as `malformed` below. Calling it `no-grant` would send an operator to the
+  // dashboard to issue a grant the token already has. A `pdkVersion` that is
+  // present but is not a positive whole number (`"1"`, `null`, `1.5`) is
+  // likewise malformed, and is caught by the crypto layer's own version rule
+  // in the guard after this one.
+  if (raw.wrappedPDK === undefined && raw.pdkNonce === undefined && raw.pdkVersion === undefined) {
     // The token authenticated and the environment exists; there is simply no
     // `pdkGrants` row for it. Named separately from every other failure because
     // the fix is an administrative one, in the dashboard, and no amount of
@@ -208,48 +326,143 @@ export async function decryptSecrets(
     );
   }
 
+  if (
+    typeof raw.wrappedPDK !== "string" ||
+    typeof raw.pdkNonce !== "string" ||
+    raw.pdkVersion === undefined
+  ) {
+    // Part of a grant. No value is echoed: all three came off the same
+    // untrusted bundle.
+    throw new BundleDecryptError(
+      "malformed",
+      "The Sluice bundle carried an incomplete project data key grant, so no secret can be " +
+        "opened. Sluice is keeping any last known good secrets.",
+    );
+  }
+
+  // `pdkVersion` is bound into the grant's associated data, so a wrap of the
+  // OLD key served under the new version number (a rotation rolled back by
+  // the server, which would have this process seal new secrets under a key a
+  // removed member still holds) fails to unwrap below. It is the one field
+  // here that is both server supplied and validated by the crypto layer, so a
+  // malformed one throws from `pdkAssociatedData` and is converted here.
+  //
+  // ONE FIXED MESSAGE, deliberately neutral about which input was wrong. By
+  // now the environment id has passed the same check above, so the candidates
+  // are the bundle's `pdkVersion` and this token's own `tokenIdHashHex`, which
+  // is computed locally. The first is far likelier, but a local bug must never
+  // be reported as certainly the server's fault, and the value is never echoed.
+  const pdkVersion = raw.pdkVersion;
+  let pdkAAD: Uint8Array;
+  try {
+    // Pinned in client code and NEVER taken from the server beyond the id and
+    // the version the bundle names. A deployment that could choose these bytes
+    // could hand this process the associated data of a different grant.
+    pdkAAD = pdkAssociatedData({
+      environmentUid: raw.environmentUid,
+      pdkVersion,
+      granteeType: "token",
+      granteeId: identity.tokenIdHashHex,
+    });
+  } catch {
+    throw new BundleDecryptError(
+      "malformed",
+      "Sluice could not build the associated data this bundle's key grant is bound to: " +
+        "the grant's key version is not a positive whole number, or this token's identity " +
+        "is not in the form it must be. Sluice is keeping any last known good secrets.",
+    );
+  }
+
   let pdk: Uint8Array;
   try {
     pdk = await unseal(
       identity.unwrapKey,
       { ciphertext: fromHex(raw.wrappedPDK), nonce: fromHex(raw.pdkNonce) },
-      // Pinned in client code and NEVER taken from the server. A deployment
-      // that could choose these bytes could hand this process the associated
-      // data of a different grant.
-      pdkAssociatedData({ granteeType: "token", granteeId: identity.tokenIdHashHex }),
+      // Bound to the environment and the key version as well as to this token
+      // since v2, so a grant copied into another environment's row, or an old
+      // grant relabelled as the current version, fails HERE, at the first
+      // unwrap.
+      pdkAAD,
     );
   } catch {
     throw new BundleDecryptError(
       "pdk-unwrap",
       "The project data key in this bundle could not be opened with this token's unwrap key. " +
         "The bundle is not authentic for this token, or the grant was wrapped to a different " +
-        "grantee.",
+        "grantee, for a different environment or for a different key version.",
     );
   }
 
-  const associatedData = secretAssociatedData({ environmentId: raw.environmentId });
   const secrets: Record<string, string> = {};
   try {
-    for (const row of raw.secrets) {
+    for (const row of raw.secrets as readonly unknown[] as readonly RawSecretRow[]) {
+      if (typeof row !== "object" || row === null) {
+        // Not a row at all. Reading a field off it would be a raw TypeError on
+        // the path to a shutdown, so it fails as the unreadable row it is.
+        throw unreadableRow(row);
+      }
+
+      // CHECKED BEFORE IT IS COMPARED, because the comparison's message prints
+      // it. A row's `pdkVersion` is an untrusted column, and anything that is
+      // not a positive whole number (a 10,000 character string, an escape
+      // sequence, `null`) would otherwise be interpolated into a log line. It
+      // is not a re-key either, so it fails as the unreadable row it is. The
+      // bundle's own `pdkVersion` needs no such check here: the grant guard
+      // above has already held it to the crypto layer's version rule.
+      if (!Number.isSafeInteger(row.pdkVersion) || row.pdkVersion < 1) {
+        throw unreadableRow(row);
+      }
+
       if (row.pdkVersion !== raw.pdkVersion) {
         // Expected during a re-key and only then. The next push carries the
-        // matching wrap, so holding the last known good set costs milliseconds.
+        // matching wrap, so keeping any last known good set costs milliseconds.
         throw new BundleDecryptError(
           "pdk-version-mismatch",
           `A secret in this bundle is sealed under project data key version ${row.pdkVersion} ` +
             `while this token holds version ${raw.pdkVersion}. This is what a re-key looks ` +
-            "like from here. Sluice is holding the last known good secrets and waiting for " +
+            "like from here. Sluice is keeping any last known good secrets and waiting for " +
             "the next update.",
         );
       }
 
-      const name = await open(pdk, associatedData, row, row.nameCiphertext, row.nameNonce);
-      const value = await open(pdk, associatedData, row, row.valueCiphertext, row.valueNonce);
+      // TWO ASSOCIATED DATA VALUES PER ROW, ONE PER FIELD. The name and the
+      // value of a row are sealed under different associated data, both bound
+      // to this environment, this secret's permanent id and this version. That
+      // is what makes every splice a database writer can perform fail to open
+      // rather than decrypt and be believed: another secret's value in this row
+      // (wrong `secretUid`), the name ciphertext in the value slot (wrong
+      // field), or a superseded value under the current version number (wrong
+      // `version`). What it does NOT catch is the whole old row served with its
+      // own old version, whose associated data is correct for it; that needs a
+      // client-side ratchet on the highest version seen.
+      //
+      // `secretUid` and `version` are untrusted columns and
+      // `secretAssociatedData` THROWS on a malformed one. That throw is
+      // converted to the same `row-open` an unopenable ciphertext produces, and
+      // like that failure it refuses the whole bundle: a row that cannot be
+      // bound is a row that cannot be opened, and partial decryption is refused
+      // for the reason in the header of this file.
+      let nameAAD: Uint8Array;
+      let valueAAD: Uint8Array;
+      try {
+        const slot = {
+          environmentUid: raw.environmentUid,
+          secretUid: row.secretUid,
+          version: row.version,
+        };
+        nameAAD = secretAssociatedData({ ...slot, field: "name" });
+        valueAAD = secretAssociatedData({ ...slot, field: "value" });
+      } catch {
+        throw unreadableRow(row);
+      }
+
+      const name = await open(pdk, nameAAD, row, row.nameCiphertext, row.nameNonce);
+      const value = await open(pdk, valueAAD, row, row.valueCiphertext, row.valueNonce);
 
       if (!ENV_NAME.test(name)) {
         throw new BundleDecryptError(
           "bad-name",
-          `The secret with lineage id ${safeId(row.lineageId)} has a name that cannot be an ` +
+          `The secret ${rowLabel(row)} has a name that cannot be an ` +
             "environment variable. Names must start with a letter or an underscore and " +
             "contain only letters, digits and underscores. The name is not printed here.",
         );
@@ -257,8 +470,8 @@ export async function decryptSecrets(
       if (Object.prototype.hasOwnProperty.call(secrets, name)) {
         throw new BundleDecryptError(
           "duplicate-name",
-          `Two secrets in this environment decrypt to the same name, one of them with ` +
-            `lineage id ${safeId(row.lineageId)}. Sluice will not choose between them. ` +
+          `Two secrets in this environment decrypt to the same name, one of them ` +
+            `the secret ${rowLabel(row)}. Sluice will not choose between them. ` +
             "The name is not printed here.",
         );
       }
@@ -294,21 +507,52 @@ async function open(
     // not hex, and a plaintext that is not UTF-8, are both rows this token did
     // not write, and both must fail as "not authentic" rather than as a parse
     // error carrying the offending bytes in its message.
-    throw new BundleDecryptError(
-      "row-open",
-      `The secret with lineage id ${safeId(row.lineageId)} could not be opened with this ` +
-        "environment's project data key. Sluice is holding the last known good secrets.",
-    );
+    throw unreadableRow(row);
   }
 }
 
 /**
- * A lineage id, or a placeholder.
+ * THE ONE `row-open` FAILURE, whatever made the row unreadable: a ciphertext
+ * that will not open, a secret id or version that cannot be bound, or an entry
+ * that is not a row. One message for all of them, so the error says nothing
+ * about which input was wrong, matching the AEAD failures it sits beside.
+ */
+function unreadableRow(row: unknown): BundleDecryptError {
+  return new BundleDecryptError(
+    "row-open",
+    `The secret ${rowLabel(row)} could not be opened with this ` +
+      "environment's project data key. Sluice is keeping any last known good secrets.",
+  );
+}
+
+/**
+ * How every message names a row: its `secretUid` through {@link safeId}, and
+ * nothing else; see {@link RawSecretRow} for why no other field may supply the
+ * label. Takes `unknown` because it is called on entries that may not be rows
+ * at all, and must never throw on one, since it runs while building the error
+ * for exactly those.
+ */
+function rowLabel(row: unknown): string {
+  if (typeof row !== "object" || row === null) return safeId(undefined);
+  return safeId((row as { secretUid?: unknown }).secretUid);
+}
+
+/**
+ * A well-formed permanent secret id, or a placeholder.
  *
- * The id is a server side identifier and is safe to show, but it arrives from
- * the same untrusted row as everything else, so a value that is not a short
- * opaque string never reaches a terminal.
+ * The id is safe to show, but it arrives from the same untrusted row as
+ * everything else. Only the exact shape `@sluice/crypto` mints (`assertId`'s
+ * `sec_` plus 32 lowercase hex) is printed. Anything else, including a near
+ * miss such as an uppercase spelling, another kind's id or a Convex document
+ * id, is the very value that made the row unreadable, and echoing it would let
+ * the bundle put text of its choosing into the operator's terminal. The
+ * operator gets "unknown" instead, which is true.
  */
 function safeId(value: unknown): string {
-  return typeof value === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(value) ? value : "unknown";
+  if (typeof value !== "string") return "unknown";
+  try {
+    return assertId("sec", "secretUid", value);
+  } catch {
+    return "unknown";
+  }
 }
