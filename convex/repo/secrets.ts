@@ -81,6 +81,46 @@ export async function secretUidTaken(
   return row !== null;
 }
 
+/**
+ * `createSharedSecret`'s uniqueness check on the share id: does ANY row, in
+ * any environment, superseded or deleted included, carry this `shareUid`?
+ *
+ * The same reasoning as `secretUidTaken`. A share id is client-chosen, and one
+ * that is accepted while an old group still carries it would fold the new rows
+ * into that group, so the dashboard would label and delete them together. The
+ * `.first()` range read on `by_share` is what makes a concurrent insert under
+ * the same id conflict with this transaction.
+ */
+export async function shareUidTaken(
+  ctx: QueryCtx,
+  shareUid: string,
+): Promise<boolean> {
+  const row = await ctx.db
+    .query("secrets")
+    .withIndex("by_share", (q) => q.eq("shareUid", shareUid))
+    .first();
+  return row !== null;
+}
+
+/**
+ * The current, live rows of one shared secret, one per environment when the
+ * group is intact. Every version of every row carries the share id (an update
+ * copies it), so the history is filtered out here rather than by the index:
+ * a shared secret has a handful of rows and this runs only on a delete.
+ */
+export async function listCurrentByShareUid(
+  ctx: QueryCtx,
+  shareUid: string,
+): Promise<Doc<"secrets">[]> {
+  const rows = await ctx.db
+    .query("secrets")
+    .withIndex("by_share", (q) => q.eq("shareUid", shareUid))
+    .collect();
+  return rows.filter(
+    (row) => row.supersededAt === undefined && row.deletedAt === undefined,
+  );
+}
+
 export async function insertSecret(
   ctx: MutationCtx,
   doc: WithoutSystemFields<Doc<"secrets">>,

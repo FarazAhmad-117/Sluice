@@ -321,6 +321,10 @@ const secretShape = {
   valueCiphertext: v.string(),
   valueNonce: v.string(),
   supersededAt: v.optional(v.number()),
+  // Present only on a row of a shared secret. Plaintext grouping metadata,
+  // bound into nothing: see `shr_` in `packages/crypto/src/ids.ts`.
+  shareUid: v.optional(v.string()),
+  overridden: v.optional(v.boolean()),
 };
 
 /**
@@ -343,6 +347,10 @@ function view(secret: Doc<"secrets">) {
     ...(secret.supersededAt === undefined
       ? {}
       : { supersededAt: secret.supersededAt }),
+    ...(secret.shareUid === undefined ? {} : { shareUid: secret.shareUid }),
+    ...(secret.overridden === undefined
+      ? {}
+      : { overridden: secret.overridden }),
   };
 }
 
@@ -534,6 +542,14 @@ export const updateSecret = mutation({
       pdkVersion: args.pdkVersion,
       // Equal to `args.version` by the check above: exactly what was sealed.
       version: nextVersion,
+      // A new version of a shared row stays in its group and keeps its
+      // override state, read off the row being replaced for the same reason
+      // as the three fields above. Spread only when present, so a plain
+      // secret's new version stays plain rather than gaining `undefined`s.
+      ...(secret.shareUid === undefined ? {} : { shareUid: secret.shareUid }),
+      ...(secret.overridden === undefined
+        ? {}
+        : { overridden: secret.overridden }),
     });
 
     await patchSecret(ctx, current._id, { supersededAt: Date.now() });
