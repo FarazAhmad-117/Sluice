@@ -342,8 +342,14 @@ export function signedNotice(
  * How long {@link flush} waits for a busy shell before failing the test.
  *
  * Measured in WALL TIME, not in event loop turns. See {@link flush} for why.
+ *
+ * Deliberately BELOW vitest's default 5 s test timeout. At 5 s the two would
+ * race, and a shell that is genuinely stuck would usually surface as vitest's
+ * anonymous "Test timed out" rather than as this file's named error, because
+ * `booted()` and earlier awaits have already spent part of the test's budget.
+ * Same failure either way; only the diagnosis is lost.
  */
-export const FLUSH_BOUND_MS = 5_000;
+export const FLUSH_BOUND_MS = 3_000;
 
 /**
  * Lets every pending promise settle, including the real ones.
