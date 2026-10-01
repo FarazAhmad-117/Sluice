@@ -108,7 +108,7 @@ describe("assertId", () => {
   it("rejects an id of another kind", () => {
     expect(() =>
       assertId("env", "environmentUid", "usr_101112131415161718191a1b1c1d1e1f"),
-    ).toThrow("environmentUid must be an env id");
+    ).toThrow("environmentUid must be a well-formed env id");
   });
 
   /**
@@ -132,7 +132,7 @@ describe("assertId", () => {
 
   it("rejects a non-string without echoing it", () => {
     expect(() => assertId("env", "environmentUid", 42 as unknown as string)).toThrow(
-      "environmentUid must be an env id",
+      "environmentUid must be a well-formed env id",
     );
   });
 });
@@ -198,7 +198,7 @@ export function newId(kind: IdKind): string {
  */
 export function assertId(kind: IdKind, field: string, value: string): string {
   if (typeof value !== "string" || !PATTERNS[kind].test(value)) {
-    throw new Error(`${field} must be an ${kind} id`);
+    throw new Error(`${field} must be a well-formed ${kind} id`);
   }
   return value;
 }
