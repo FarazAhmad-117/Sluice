@@ -130,6 +130,7 @@ async function world(t: Harness) {
   async function tenant(actor: Actor, slug: string) {
     const orgId = await t.mutation(api.orgs.createOrg, {
       sessionToken: actor.sessionToken,
+      orgUid: newId("org"),
       name: "Acme Rockets",
       slug,
       revocationPublicKey: "ab".repeat(32),
@@ -1233,6 +1234,7 @@ describe("end to end", () => {
       });
       const orgId = await t.mutation(api.orgs.createOrg, {
         sessionToken,
+        orgUid: newId("org"),
         name: "Acme Rockets",
         slug: "acme-rockets",
         revocationPublicKey: revocationKeypair.revocationPublicKey,

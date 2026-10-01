@@ -189,6 +189,7 @@ async function world(t: Harness): Promise<World> {
   const orgKeys = mintToken({ environment: "revocation" });
   const orgId = await t.mutation(api.orgs.createOrg, {
     sessionToken: alice.sessionToken,
+    orgUid: newId("org"),
     name: "Acme Rockets",
     slug: "acme-rockets",
     revocationPublicKey: orgKeys.upload.publicKey,
@@ -548,6 +549,7 @@ describe("the session token does not leak", () => {
     try {
       await t.mutation(api.orgs.createOrg, {
         sessionToken: w.alice.sessionToken,
+        orgUid: newId("org"),
         name: "Bad Slug",
         slug: "Not A Slug",
         revocationPublicKey: "cd".repeat(32),

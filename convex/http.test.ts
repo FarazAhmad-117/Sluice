@@ -140,6 +140,7 @@ async function world(t: Harness) {
 
   const orgId = await t.mutation(api.orgs.createOrg, {
     sessionToken: admin.sessionToken,
+    orgUid: newId("org"),
     name: "Acme Rockets",
     slug: "acme",
     revocationPublicKey: keys.publicKey,

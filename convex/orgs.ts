@@ -9,10 +9,12 @@ import {
   NOT_PERMITTED,
 } from "./lib/authz";
 import { assertHexAtLeast, assertHexBytes } from "./lib/hex";
+import { requireId } from "./lib/ids";
 import { assertDisplayName, assertSlug } from "./lib/naming";
 import {
   getOrg as getOrgRow,
   getOrgBySlug,
+  getOrgByUid,
   getRevocationGrant,
   insertOrg,
   insertOrgMember,
@@ -26,6 +28,7 @@ import {
  */
 
 const DUPLICATE_SLUG = "An organisation with that slug already exists.";
+const DUPLICATE_UID = "An organisation with that id already exists.";
 
 // Ed25519 public key, 32 bytes.
 const REVOCATION_PUBLIC_KEY_BYTES = 32;
@@ -37,6 +40,12 @@ const TAG_BYTES = 16;
 export const createOrg = mutation({
   args: {
     ...sessionArg,
+    // The org's permanent id, `org_` + 32 lowercase hex, minted by the client
+    // with `newId("org")` BEFORE this call, because the revocation key below
+    // is wrapped under associated data that names it. Client-chosen, so its
+    // shape is checked and its uniqueness enforced here; see
+    // `packages/crypto/src/ids.ts`.
+    orgUid: v.string(),
     name: v.string(),
     slug: v.string(),
     // The public half of the org revocation keypair. Public material, one per
@@ -51,6 +60,7 @@ export const createOrg = mutation({
   handler: async (ctx, args): Promise<Id<"orgs">> => {
     const user = await requireSession(ctx, args.sessionToken);
 
+    const uid = requireId("org", "orgUid", args.orgUid);
     const name = assertDisplayName("name", args.name);
     const slug = assertSlug("slug", args.slug);
     assertHexBytes(
@@ -82,8 +92,16 @@ export const createOrg = mutation({
     if ((await getOrgBySlug(ctx, slug)) !== null) {
       throw new ConvexError(DUPLICATE_SLUG);
     }
+    // The same transaction argument holds for the uid. A uid that is already
+    // taken is not a collision of random values, which at 128 bits does not
+    // happen; it is a client reusing somebody else's id, and the answer to
+    // that is a refusal, never an upsert onto the existing row.
+    if ((await getOrgByUid(ctx, uid)) !== null) {
+      throw new ConvexError(DUPLICATE_UID);
+    }
 
     const orgId = await insertOrg(ctx, {
+      uid,
       name,
       slug,
       revocationPublicKey: args.revocationPublicKey,
@@ -103,6 +121,13 @@ export const createOrg = mutation({
     // two rows either both land or neither does, and that atomicity is the
     // only thing making this safe. Never split this across two mutations, and
     // never add a second way to insert into `orgs`.
+    //
+    // The wrapped key is ALSO bound to this org, though not by anything this
+    // server checks: the client sealed it under associated data naming the
+    // org's uid, which it minted before calling. That binding is why the uid
+    // has to exist before the mutation rather than being assigned by it, and
+    // it means a grant row copied onto another org opens to nothing. The
+    // server cannot verify the binding (it holds no key) and does not try.
     await insertRevocationGrant(ctx, {
       orgId,
       granteeId: user._id,
@@ -125,6 +150,8 @@ export const getOrg = query({
   args: { ...sessionArg, orgId: v.id("orgs") },
   returns: v.object({
     orgId: v.id("orgs"),
+    // The permanent id. Every client binding names this, never `orgId`.
+    uid: v.string(),
     name: v.string(),
     slug: v.string(),
     revocationPublicKey: v.string(),
@@ -137,6 +164,7 @@ export const getOrg = query({
     // only by its own grantee.
     return {
       orgId: org._id,
+      uid: org.uid,
       name: org.name,
       slug: org.slug,
       revocationPublicKey: org.revocationPublicKey,
@@ -150,6 +178,7 @@ export const listMyOrgs = query({
   returns: v.array(
     v.object({
       orgId: v.id("orgs"),
+      uid: v.string(),
       name: v.string(),
       slug: v.string(),
       revocationPublicKey: v.string(),
@@ -176,6 +205,7 @@ export const listMyOrgs = query({
       if (org === null) continue;
       out.push({
         orgId: org._id,
+        uid: org.uid,
         name: org.name,
         slug: org.slug,
         revocationPublicKey: org.revocationPublicKey,
@@ -201,6 +231,10 @@ export const getMyRevocationGrant = query({
     wrappedRevocationKey: v.string(),
     nonce: v.string(),
     revocationPublicKey: v.string(),
+    // Returned beside the blob because the client needs it to rebuild the
+    // associated data the key was sealed under. The caller's own uid, the
+    // other input, came back from `login`.
+    orgUid: v.string(),
   }),
   handler: async (ctx, args) => {
     const { org, user } = await requireOrg(ctx, args.sessionToken, args.orgId);
@@ -214,6 +248,7 @@ export const getMyRevocationGrant = query({
       wrappedRevocationKey: grant.wrappedRevocationKey,
       nonce: grant.nonce,
       revocationPublicKey: org.revocationPublicKey,
+      orgUid: org.uid,
     };
   },
 });

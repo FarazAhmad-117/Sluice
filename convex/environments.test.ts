@@ -73,6 +73,7 @@ async function seedOrg(
 ): Promise<Id<"orgs">> {
   return await t.mutation(api.orgs.createOrg, {
     sessionToken: actor.sessionToken,
+    orgUid: newId("org"),
     name: "Acme Rockets",
     slug,
     revocationPublicKey: "ab".repeat(32),

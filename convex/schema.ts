@@ -89,6 +89,13 @@ export default defineSchema({
   // revocation, so the grantee is typed as a user id rather than a string.
   revocationGrants: defineTable({
     orgId: v.id("orgs"),
+    // THE JOIN KEY, NOT THE BINDING. This is the `users` document id, typed as
+    // a real reference so a migration between cells remaps it with the row it
+    // points at. What the wrapped key is cryptographically bound to is
+    // different: the client seals it under associated data naming the
+    // grantee's permanent `usr_` uid, which it reads from the `users` row this
+    // column points to. Do not put the uid here, and do not put this id into
+    // the associated data.
     granteeId: v.id("users"),
     wrappedRevocationKey: v.string(),
     nonce: v.string(),

@@ -117,6 +117,7 @@ async function tenant(t: Harness, actor: Actor, slug: string) {
   const keys = mintToken({ environment: "revocation" });
   const orgId = await t.mutation(api.orgs.createOrg, {
     sessionToken: actor.sessionToken,
+    orgUid: newId("org"),
     name: "Acme Rockets",
     slug,
     revocationPublicKey: keys.upload.publicKey,
