@@ -78,6 +78,10 @@ describe("sealProjectEnvironments", () => {
     expect(new Set(payload.map((row) => row.environmentUid)).size).toBe(2);
     expect(toHex(keys[0]!.pdk)).not.toBe(toHex(keys[1]!.pdk));
 
+    // The payload is what goes to the server. No plaintext key may be in it.
+    const sent = JSON.stringify(payload);
+    for (const key of keys) expect(sent).not.toContain(toHex(key.pdk));
+
     for (const [index, row] of payload.entries()) {
       const key = keys[index]!;
       expect(row.environmentUid).toMatch(/^env_[0-9a-f]{32}$/);

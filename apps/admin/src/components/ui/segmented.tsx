@@ -39,6 +39,7 @@ export function Segmented<T extends string>({
   readonly idPrefix?: string;
 }) {
   const tabs = useRef<(HTMLButtonElement | null)[]>([]);
+  const hasSelection = options.some((option) => option.value === value);
 
   const move = (event: KeyboardEvent<HTMLDivElement>) => {
     const current = options.findIndex((option) => option.value === value);
@@ -78,6 +79,9 @@ export function Segmented<T extends string>({
     >
       {options.map((option, index) => {
         const selected = option.value === value;
+        // With no option matching `value`, the first tab takes the tab stop,
+        // so the group is never unreachable by keyboard.
+        const tabbable = selected || (index === 0 && !hasSelection);
         return (
           <button
             key={option.value}
@@ -89,7 +93,7 @@ export function Segmented<T extends string>({
             role="tab"
             aria-selected={selected}
             aria-controls={panelId}
-            tabIndex={selected ? 0 : -1}
+            tabIndex={tabbable ? 0 : -1}
             onClick={() => onChange(option.value)}
             className={`inline-flex min-h-11 shrink-0 cursor-pointer items-center gap-2 rounded-[7px] border px-3.5 text-sm transition-colors ${focusRing} ${
               selected

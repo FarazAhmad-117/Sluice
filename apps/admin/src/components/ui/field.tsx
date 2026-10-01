@@ -23,10 +23,19 @@ interface FieldChrome {
   readonly mono?: boolean;
 }
 
+/**
+ * Whether a hint or error renders anything. `{cond && "text"}` hands in
+ * `false` (or `""`), and an empty node named by `aria-describedby` would be
+ * an empty description, or for an error an empty alert.
+ */
+function present(node: ReactNode): boolean {
+  return node !== undefined && node !== null && node !== false && node !== true && node !== "";
+}
+
 function useDescribedBy(hint: ReactNode, error: ReactNode, own?: string) {
   const id = useId();
-  const hintId = hint === undefined || hint === null ? undefined : `${id}-hint`;
-  const errorId = error === undefined || error === null || error === false ? undefined : `${id}-error`;
+  const hintId = present(hint) ? `${id}-hint` : undefined;
+  const errorId = present(error) ? `${id}-error` : undefined;
   const describedBy = [own, hintId, errorId].filter(Boolean).join(" ") || undefined;
   return { id, hintId, errorId, describedBy };
 }

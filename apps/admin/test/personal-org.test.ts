@@ -65,4 +65,16 @@ describe("personalOrgPayload", () => {
       ),
     ).rejects.toBeInstanceOf(RevocationKeyUnwrapError);
   });
+
+  it("does not open when filed under another org", async () => {
+    const muk = fixedKey();
+    const payload = await personalOrgPayload(muk, USER_UID);
+    await expect(
+      unwrapRevocationKey(
+        muk,
+        { wrappedRevocationKey: payload.wrappedRevocationKey, nonce: payload.revocationKeyNonce },
+        { orgUid: newId("org"), granteeUid: USER_UID },
+      ),
+    ).rejects.toBeInstanceOf(RevocationKeyUnwrapError);
+  });
 });

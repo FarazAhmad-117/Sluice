@@ -25,10 +25,15 @@ const ENVIRONMENT_ID = "env-doc-1" as Id<"environments">;
 const ENVIRONMENT_UID = newId("env");
 const USER_UID = newId("usr");
 
+const INCONSISTENT =
+  "The server's answers about this environment did not agree with each other, so its key was not opened. Reload the page.";
+
 interface Fixture {
   environment?: Partial<{ environmentId: string; uid: string; pdkVersion: number }>;
   grant?: Partial<{ environmentId: string; pdkVersion: number; wrappedPDK: string }>;
   refuse?: string;
+  /** Thrown as-is, for a failure that is not a Convex refusal. */
+  crash?: unknown;
 }
 
 async function fakeClient(muk: MasterUnlockKey, fixture: Fixture = {}) {
@@ -42,6 +47,7 @@ async function fakeClient(muk: MasterUnlockKey, fixture: Fixture = {}) {
   const query = async (reference: unknown) => {
     const name = getFunctionName(reference as never);
     if (fixture.refuse !== undefined) throw new ConvexError(fixture.refuse);
+    if (fixture.crash !== undefined) throw fixture.crash;
     if (name === "environments:getEnvironment") {
       return {
         environmentId: ENVIRONMENT_ID,
@@ -105,12 +111,44 @@ describe("loadEnvironmentKey", () => {
       { grant: { environmentId: "other" } },
     ]) {
       const { client } = await fakeClient(muk, fixture);
-      const state = await loadEnvironmentKey(client, request(muk));
-      expect(state.status).toBe("failed");
+      expect(await loadEnvironmentKey(client, request(muk))).toEqual({
+        status: "failed",
+        message: INCONSISTENT,
+      });
     }
     const { client } = await fakeClient(muk);
-    const state = await loadEnvironmentKey(client, request(muk, newId("env")));
-    expect(state.status).toBe("failed");
+    expect(await loadEnvironmentKey(client, request(muk, newId("env")))).toEqual({
+      status: "failed",
+      message: INCONSISTENT,
+    });
+  });
+
+  it("skips the listing check when there is no listed uid", async () => {
+    const muk = fixedKey();
+    const { client } = await fakeClient(muk);
+    const state = await loadEnvironmentKey(client, request(muk, null));
+    expect(state.status).toBe("ready");
+  });
+
+  it("does not open a grant under an environment uid other than the one it was wrapped for", async () => {
+    // The server's answers agree with each other and name a uid the grant was
+    // never wrapped for. Agreement is not authenticity: the unwrap refuses.
+    const muk = fixedKey();
+    const otherUid = newId("env");
+    const { client } = await fakeClient(muk, { environment: { uid: otherUid } });
+    expect(await loadEnvironmentKey(client, request(muk, otherUid))).toEqual({
+      status: "failed",
+      message: "The project data key for this environment could not be opened.",
+    });
+  });
+
+  it("reports a failure that is not a Convex refusal with a generic sentence", async () => {
+    const muk = fixedKey();
+    const { client } = await fakeClient(muk, { crash: new Error("socket closed: ciphertext 00ff") });
+    expect(await loadEnvironmentKey(client, request(muk))).toEqual({
+      status: "failed",
+      message: "The key for this environment could not be fetched. Try again.",
+    });
   });
 
   it("carries the server's refusal through as its own sentence", async () => {
