@@ -126,7 +126,7 @@ function WriteFailureNotice({ failure }: { failure: WriteFailure }) {
           onClick={() => window.location.reload()}
           className={secondaryButton}
         >
-          Reload the page
+          Reload (you will need your password again)
         </button>
       ) : null}
     </div>

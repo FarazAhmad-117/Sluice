@@ -81,6 +81,7 @@ function keyNotice(keyState: ProjectDataKeyState): string | null {
       return "Your vault is locked, so names and values stay sealed. Unlock it in the right hand panel.";
     case "refused":
       return `This account holds no key for this environment, so its names and values stay sealed. Only the person who created an environment is given its key today, because nothing wraps an existing key to a second member yet. The server said: ${keyState.message}`;
+    case "rekeying":
     case "failed":
       return keyState.message;
   }

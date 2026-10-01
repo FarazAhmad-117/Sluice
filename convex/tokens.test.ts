@@ -23,6 +23,12 @@ import {
 import { listAuditEventsByActor } from "./repo/audit";
 import { insertOrgMember } from "./repo/orgs";
 import * as tokensModule from "./tokens";
+// The dashboard's mapping of refused writes, imported unchanged by relative
+// path as `secrets.test.ts` imports the dashboard. See the re-key test below.
+import {
+  STALE_ENVIRONMENT_KEY,
+  describeWriteFailure,
+} from "../apps/admin/src/lib/secrets/write-errors";
 
 export const modules = import.meta.glob("./**/*.ts");
 
@@ -394,6 +400,30 @@ describe("a token's wrapped project data key", () => {
         "This environment's key changed since you opened it. Reload and try again.",
       );
     }
+
+    // The dashboard recognises this exact refusal and offers a reload, so the
+    // token form that does not exist yet inherits the mapping the secret forms
+    // have. The sentence is not exported from `tokens.ts`, so it is pinned by
+    // provoking the real refusal and handing it to the real mapping: if either
+    // side rewords it, this fails instead of a future form swallowing it.
+    const refusal = await t
+      .mutation(api.tokens.createServiceToken, {
+        sessionToken: alice.sessionToken,
+        environmentId,
+        tokenId: minted.upload.tokenId,
+        publicKey: minted.upload.publicKey,
+        wrappedPDK: "cc".repeat(48),
+        pdkNonce: "0102030405060708090a0b0c",
+        pdkVersion: 1,
+      })
+      .then(
+        () => null,
+        (cause: unknown) => cause,
+      );
+    expect(describeWriteFailure(refusal)).toEqual({
+      message: STALE_ENVIRONMENT_KEY,
+      reload: true,
+    });
 
     const hash = tokenIdHash({ tokenId: minted.tokenId });
     expect(

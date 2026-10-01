@@ -23,11 +23,20 @@ import { ConvexError } from "convex/values";
  * generic "that did not work" would leave somebody pressing Save on a form
  * that can never succeed.
  *
+ * WHICH OF THE TWO THE DASHBOARD CAN HIT TODAY. Only the key one. The stale
+ * secret version comes from `updateSecret`, and nothing in this dashboard
+ * calls `updateSecret` yet: there is no edit form. `nextSecretSlot` in
+ * `seal.ts` is staged for that form, and the mapping is here so the form gets
+ * the right behaviour the day it exists rather than a generic "try again" on a
+ * write that can never succeed. Until then this branch is exercised only by
+ * tests.
+ *
  * MATCHED BY EXACT TEXT, which is a coupling, and it is pinned from the server
- * side: the end-to-end test in `convex/secrets.test.ts` provokes the stale
- * version refusal through the real mutation and asserts this module recognises
- * it. The sentences are not imported from `convex/` because that would pull
- * server modules into the browser bundle.
+ * side: `convex/secrets.test.ts` (end to end) provokes both refusals through
+ * the real secret mutations, and `convex/tokens.test.ts` provokes the key
+ * refusal through the real `createServiceToken`, each asserting this module
+ * recognises what came back. The sentences are not imported from `convex/`
+ * because that would pull server modules into the browser bundle.
  */
 
 /** `convex/secrets.ts`, `STALE_VERSION`. */

@@ -89,7 +89,14 @@ export function AppShell() {
    * It is refetched and reopened whenever the selection changes, and it is
    * dropped when the vault locks. Nothing persists it.
    */
-  const keyState = useProjectDataKey(environmentId);
+  // The listing's uid for the selected row, which the hook checks against
+  // `getEnvironment`'s answer. A consistency check, not a pin: both come from
+  // the same server. See `use-project-data-key.ts`.
+  const listedEnvironmentUid = useMemo(() => {
+    if (environments === undefined || environmentId === null) return null;
+    return environments.find((row) => row.environmentId === environmentId)?.uid ?? null;
+  }, [environments, environmentId]);
+  const keyState = useProjectDataKey(environmentId, listedEnvironmentUid);
   const environmentKey = keyState.status === "ready" ? keyState.key : null;
 
   // Names only. A value is decrypted at the moment somebody reveals it and not

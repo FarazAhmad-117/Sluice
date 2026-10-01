@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { ConvexError } from "convex/values";
-import { MasterUnlockKey, fromHex, newId, randomBytes, toHex } from "@sluice/crypto";
+import {
+  MasterUnlockKey,
+  fromHex,
+  newId,
+  pdkAssociatedData,
+  randomBytes,
+  seal,
+  toHex,
+} from "@sluice/crypto";
 import {
   PDK_BYTES,
   PdkUnwrapError,
@@ -172,6 +180,27 @@ describe("wrapProjectDataKey", () => {
         environmentUid: "j57abcenvironmentid0000000",
       }),
     ).rejects.toThrow(/environmentUid must be a well-formed env id/);
+  });
+
+  /**
+   * An AUTHENTIC grant whose plaintext is the wrong width: correctly sealed,
+   * under the right associated data, by somebody holding this master unlock
+   * key, around 16 bytes. AES-GCM accepts it without complaint and a 16 byte
+   * key imports silently as AES-128, so without a width check on the way out
+   * every secret sealed afterwards would be under a key no other client
+   * reconstructs. Built with the package's `seal` because `wrapProjectDataKey`
+   * refuses to produce one.
+   */
+  it("refuses an authentic grant that does not open to 32 bytes", async () => {
+    const muk = fixedKey();
+    const box = await seal(muk.bytes, randomBytes(16), pdkAssociatedData(USER));
+    await expect(
+      unwrapProjectDataKey(
+        muk,
+        { wrappedPDK: toHex(box.ciphertext), nonce: toHex(box.nonce) },
+        USER,
+      ),
+    ).rejects.toThrow(PdkUnwrapError);
   });
 
   it("refuses to wrap anything that is not a 32 byte key", async () => {

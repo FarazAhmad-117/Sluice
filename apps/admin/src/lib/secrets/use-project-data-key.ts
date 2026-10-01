@@ -29,12 +29,25 @@ import type { EnvironmentKey } from "./pdk";
  *                   which no grant is keyed by and `pdkAssociatedData` refuses
  *                   by shape.
  *
- * Every one of those arrived from the server and none is trusted on arrival.
- * They are trusted AFTER the unwrap succeeds, because only a grant wrapped for
- * exactly that environment, version and grantee opens. That is why the ready
- * state hands out an {@link EnvironmentKey} carrying the uid and version beside
- * the key: every secret sealed or opened from it is then bound to values that
- * have just been verified, and to no others.
+ * WHAT THE UNWRAP PROVES, SCOPED EXACTLY. Every input above except the grantee
+ * arrived from the server. A successful unwrap proves only that this user once
+ * wrapped this key for that uid, that version and this grantee: a uid the
+ * server invented, or a grant moved onto another environment's row, does not
+ * open. The ready state hands out an {@link EnvironmentKey} carrying that uid
+ * and version beside the key, so everything sealed or opened from it is bound
+ * to them and to no others.
+ *
+ * It does NOT prove that the uid is the environment the user SELECTED, or the
+ * one named on screen. A hostile server asked about "production" can answer
+ * with staging's uid and this user's genuine staging grant; the unwrap
+ * succeeds, the pane says production, and writes are sealed into staging. The
+ * checks below catch the server's answers DISAGREEING (with each other, with
+ * the selected id, with the listing the selection came from), which turns a
+ * server bug into a clean failure. They cannot catch a server that lies
+ * consistently, because every one of those answers is the server's word. See
+ * `pdk.ts` and "WHAT PINNING THE CONSTRUCTION DOES NOT PIN" in
+ * `packages/crypto/src/protocol.ts`; pinning name to uid on the client is
+ * follow-up work.
  *
  * WHY THIS IS A ONE-SHOT FETCH RATHER THAN `useQuery`, which is what every
  * other read in this dashboard uses. Two reasons, and the first is the one that
@@ -78,6 +91,14 @@ export type ProjectDataKeyState =
    * has expired.
    */
   | { readonly status: "refused"; readonly message: string }
+  /**
+   * The caller holds a grant, for a key generation the environment has moved
+   * past (or not yet reached). A state of its own rather than `refused`,
+   * because `refused` tells the user they hold no key, which is not what is
+   * happening, and rather than `failed`, because nothing is broken: waiting
+   * is the fix. No key is handed out, so no write form renders.
+   */
+  | { readonly status: "rekeying"; readonly message: string }
   /** The grant arrived and did not open, or the call did not complete. */
   | { readonly status: "failed"; readonly message: string };
 
@@ -91,8 +112,23 @@ interface Settled {
 const IDLE: ProjectDataKeyState = { status: "idle" };
 const LOADING: ProjectDataKeyState = { status: "loading" };
 
+/** The server's answers about one environment disagreed. See the check that uses it. */
+const INCONSISTENT =
+  "The server's answers about this environment did not agree with each other, so its key was not opened. Reload the page.";
+
+/** The grant and the environment are at different key generations. */
+const REKEYING = "This environment is being re-keyed. Try again shortly.";
+
+/**
+ * `listedEnvironmentUid` is the `uid` of the selected row in the
+ * `listEnvironments` result the selection was made from, or `null` when there
+ * is no such row yet. It is compared with what `getEnvironment` says, as one of
+ * the consistency checks in the effect. Both come from the same server; see
+ * the header for why that is a bug check and not a defence.
+ */
 export function useProjectDataKey(
   environmentId: Id<"environments"> | null,
+  listedEnvironmentUid: string | null,
 ): ProjectDataKeyState {
   const { session, muk, locked } = useAuth();
   const sessionToken = session?.sessionToken ?? null;
@@ -129,6 +165,34 @@ export function useProjectDataKey(
           client.query(api.environments.getEnvironment, { sessionToken, environmentId }),
           client.query(api.environments.getMyPdkGrant, { sessionToken, environmentId }),
         ]);
+
+        // THE SERVER'S ANSWERS MUST AGREE WITH EACH OTHER AND WITH THE
+        // SELECTION. Each is the server's word, so agreement proves nothing
+        // against a server that lies consistently (see the header); what it
+        // does is turn a server bug, or one answer for the wrong row, into a
+        // named failure instead of a key opened for one environment and shown
+        // under another. Checked before the unwrap, so a mismatch never gets
+        // as far as a key.
+        if (
+          environment.environmentId !== environmentId ||
+          grant.environmentId !== environmentId ||
+          (listedEnvironmentUid !== null && environment.uid !== listedEnvironmentUid)
+        ) {
+          settle({ status: "failed", message: INCONSISTENT });
+          return;
+        }
+
+        // MID RE-KEY. The grant is for one key generation and the environment
+        // is at another, so a key opened from this grant would seal writes the
+        // server refuses with "This environment's key changed since you opened
+        // it", and a reload would fetch the same pair and loop on that
+        // refusal. No key is handed out, so no form renders, and the state
+        // says what is happening instead.
+        if (environment.pdkVersion !== grant.pdkVersion) {
+          settle({ status: "rekeying", message: REKEYING });
+          return;
+        }
+
         const pdk = await unwrapProjectDataKey(
           muk,
           { wrappedPDK: grant.wrappedPDK, nonce: grant.nonce },
@@ -142,7 +206,8 @@ export function useProjectDataKey(
             granteeId: userUid,
           },
         );
-        // Verified by the unwrap above, and carried with the key from here on.
+        // The uid and version this grant was wrapped for, carried with the key
+        // from here on. See the header for what that does and does not prove.
         settle({
           status: "ready",
           key: { pdk, environmentUid: environment.uid, pdkVersion: grant.pdkVersion },
@@ -170,7 +235,7 @@ export function useProjectDataKey(
     return () => {
       cancelled = true;
     };
-  }, [fetchable, environmentId, sessionToken, userUid, muk]);
+  }, [fetchable, environmentId, listedEnvironmentUid, sessionToken, userUid, muk]);
 
   if (environmentId === null || sessionToken === null || userUid === null) return IDLE;
   if (muk === null) {

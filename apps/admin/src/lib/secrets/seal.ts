@@ -1,4 +1,5 @@
 import { newId, seal, secretAssociatedData, toHex, utf8 } from "@sluice/crypto";
+import type { SecretField } from "@sluice/crypto";
 import type { EnvironmentKey } from "./pdk";
 
 /**
@@ -111,7 +112,7 @@ export async function sealSecret(
   // Built outside any `try`, so a malformed uid or version is reported as the
   // argument error it is. The NAMED fields, not a joined string, so a diff
   // that swaps one id for another is visible at the call.
-  const bind = (field: "name" | "value") =>
+  const bind = (field: SecretField) =>
     secretAssociatedData({
       environmentUid: key.environmentUid,
       secretUid: secret.secretUid,

@@ -46,13 +46,31 @@ import type { MasterUnlockKey, PDKGranteeType } from "@sluice/crypto";
  * document id is still not bound and must never be: it is local to one
  * deployment and is re-minted when an org moves cells.
  *
- * A SUCCESSFUL UNWRAP AUTHENTICATES THE ENVIRONMENT UID. That is the property
- * the rest of this directory leans on. The uid a reader passes here comes from
- * `environments.getEnvironment`, which a hostile server could answer with any
- * well formed string; if it lies, the AEAD rejects and nothing opens. So once
- * a grant has opened under a uid, that uid is the one its wrapper bound it to,
- * and {@link EnvironmentKey} carries it beside the key so every secret sealed
- * or opened afterwards is bound to the same, now verified, value.
+ * WHAT A SUCCESSFUL UNWRAP PROVES, AND WHAT IT DOES NOT. It proves exactly one
+ * thing: that somebody holding this account's master unlock key (in practice,
+ * this user) once wrapped THIS key for THIS environment uid, at THIS key
+ * version, to THIS grantee. A uid the server simply made up does not open, and
+ * neither does a grant copied onto another environment's row. That is the
+ * property {@link EnvironmentKey} carries forward: every secret sealed or
+ * opened from it is bound to the uid the grant was wrapped for, and to no
+ * other.
+ *
+ * IT DOES NOT PROVE THAT THE UID BELONGS TO THE ENVIRONMENT THE USER SELECTED,
+ * or to the name on screen. The uid, the grant and the environment's name all
+ * come from the same server. A hostile server asked for "production" can
+ * answer `getEnvironment` with STAGING's uid and `getMyPdkGrant` with this
+ * user's genuine staging grant. The unwrap succeeds, because that grant really
+ * was wrapped for staging's uid by this user; the pane says "production"; the
+ * names and values shown are staging's; and every secret written there is
+ * sealed into staging, where everyone with a staging grant can read it.
+ * Nothing in this file can detect that, because the client holds no record of
+ * which uid a name maps to other than the server's word. Closing it needs the
+ * client to pin name to uid itself, which is follow-up work; see "WHAT PINNING
+ * THE CONSTRUCTION DOES NOT PIN" in `packages/crypto/src/protocol.ts`, which
+ * states the same limit for every reader of these rules.
+ * `use-project-data-key.ts` does check that the server's answers agree with
+ * each other and with the selection, which turns a server BUG into a clean
+ * failure; it cannot turn a server LIE into one.
  */
 
 /**
@@ -194,8 +212,9 @@ export async function unwrapProjectDataKey(
   // Outside the `try`, so that a malformed grantee is reported as the argument
   // error it is rather than being folded into the opaque AEAD failure.
   const aad = pdkAssociatedData(grantee);
+  let opened: Uint8Array;
   try {
-    return await unseal(
+    opened = await unseal(
       muk.bytes,
       { ciphertext: fromHex(grant.wrappedPDK), nonce: fromHex(grant.nonce) },
       aad,
@@ -203,4 +222,15 @@ export async function unwrapProjectDataKey(
   } catch {
     throw new PdkUnwrapError();
   }
+  // An authentic blob of the wrong width. Only a wrapper holding this master
+  // unlock key can produce one, so it is a client bug rather than an attack,
+  // but the consequence is the same as for a forgery: a 16 or 24 byte key
+  // imports silently as AES-128 or AES-192, and every secret sealed under it
+  // is under a key nobody else will reconstruct. It fails here, as the same
+  // opaque refusal, and the bytes are zeroed rather than handed back.
+  if (opened.length !== PDK_BYTES) {
+    opened.fill(0);
+    throw new PdkUnwrapError();
+  }
+  return opened;
 }
