@@ -6,10 +6,11 @@ export default defineSchema({
     // Permanent id, `usr_` + 32 lowercase hex: see
     // `packages/crypto/src/ids.ts`.
     // Minted by the client before the creating mutation, never changed, and
-    // used in every encryption binding and external reference instead of the
-    // Convex document id, which is local to this deployment. It arrives from a
-    // client, so it is attacker-chosen: the shape is checked on the way in and
-    // UNIQUENESS IS ENFORCED HERE, through `by_uid`, not assumed from entropy.
+    // used in every binding that names this row and every external reference
+    // instead of the Convex document id, which is local to this deployment. It
+    // arrives from a client, so it is attacker-chosen: the shape is checked on
+    // the way in and UNIQUENESS IS ENFORCED HERE, through `by_uid`, not
+    // assumed from entropy.
     uid: v.string(),
     email: v.string(),
     // The per-account salt `deriveMUK` takes: 16 random bytes, lowercase hex.
@@ -64,10 +65,11 @@ export default defineSchema({
     // Permanent id, `org_` + 32 lowercase hex: see
     // `packages/crypto/src/ids.ts`.
     // Minted by the client before the creating mutation, never changed, and
-    // used in every encryption binding and external reference instead of the
-    // Convex document id, which is local to this deployment. It arrives from a
-    // client, so it is attacker-chosen: the shape is checked on the way in and
-    // UNIQUENESS IS ENFORCED HERE, through `by_uid`, not assumed from entropy.
+    // used in every binding that names this row and every external reference
+    // instead of the Convex document id, which is local to this deployment. It
+    // arrives from a client, so it is attacker-chosen: the shape is checked on
+    // the way in and UNIQUENESS IS ENFORCED HERE, through `by_uid`, not
+    // assumed from entropy.
     uid: v.string(),
     name: v.string(),
     slug: v.string(),
@@ -123,10 +125,11 @@ export default defineSchema({
     // Permanent id, `env_` + 32 lowercase hex: see
     // `packages/crypto/src/ids.ts`.
     // Minted by the client before the creating mutation, never changed, and
-    // used in every encryption binding and external reference instead of the
-    // Convex document id, which is local to this deployment. It arrives from a
-    // client, so it is attacker-chosen: the shape is checked on the way in and
-    // UNIQUENESS IS ENFORCED HERE, through `by_uid`, not assumed from entropy.
+    // used in every binding that names this row and every external reference
+    // instead of the Convex document id, which is local to this deployment. It
+    // arrives from a client, so it is attacker-chosen: the shape is checked on
+    // the way in and UNIQUENESS IS ENFORCED HERE, through `by_uid`, not
+    // assumed from entropy.
     uid: v.string(),
     projectId: v.id("projects"),
     // The owning org, copied from a row the authorisation walk already

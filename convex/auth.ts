@@ -142,11 +142,38 @@ export const signup = mutation({
  *
  * The decoy is computed FIRST, before the lookup, for two reasons. A missing
  * or malformed pepper then fails loudly for every address, rather than only
- * for unknown ones, which would itself distinguish them. And both branches do
- * the same HMAC, so the known-address path is not measurably cheaper.
+ * for unknown ones, which would itself distinguish them. And the HMAC then
+ * runs on both paths, so it contributes no difference between them.
+ *
+ * WHAT STILL LEAKS, STATED RATHER THAN HOPED AWAY:
+ *
+ * - TIMING. The known-address path is measurably SLOWER, not equal: it
+ *   materialises a user document where the unknown path resolves an empty
+ *   index range. It is the same document-read difference SECURITY.md records
+ *   for `login` (0.08 to 0.15 ms), and here it is on a cheaper endpoint: a
+ *   query, with no verifier to supply and no Argon2 for the caller to run.
+ *   Far below network jitter for one sample, extractable with enough of them.
+ *
+ * - NO RATE LIMIT IS POSSIBLE HERE AS WRITTEN. A query cannot write, so a
+ *   limiter that counts attempts in a table cannot see it. If this endpoint
+ *   ever needs limiting it must become a mutation or an HTTP action first.
+ *
+ * - A SUBSCRIPTION IS A SIGNUP WATCH. Convex queries are reactive: a client
+ *   subscribed to `getLoginSalt(address)` is pushed the real salt the moment
+ *   that address signs up, because the `users` row it read changed. That is a
+ *   real-time notification of one address registering. It is no worse than
+ *   calling `signup` with the address on a loop, which works while account
+ *   existence is public, but it is cheaper and silent.
+ *
+ * - A PEPPER ROTATION SEPARATES DECOYS FROM REAL SALTS. Every decoy is keyed
+ *   under `AUTH_PEPPER` and every real salt is not, so after a rotation every
+ *   decoy changes and no real salt does. A prober holding answers from before
+ *   and after can tell which addresses have accounts. See the matching note
+ *   on the pepper in `lib/verifier.ts`.
  *
  * A query, not a mutation: it writes nothing, and caching by argument is
- * harmless because the answer for an address is fixed until it signs up.
+ * harmless because the answer for an address is fixed until it signs up (or
+ * until the pepper rotates, which changes only the decoys; see above).
  */
 export const getLoginSalt = query({
   args: { email: v.string() },

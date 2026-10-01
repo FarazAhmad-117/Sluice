@@ -339,6 +339,38 @@ describe("getLoginSalt", () => {
   });
 });
 
+describe("getLoginSalt with a malformed address", () => {
+  // A malformed address is refused with `normaliseEmail`'s own message, and
+  // the refusal must not depend on whether a registered address looks like
+  // it. The "registered-looking" input below is the real account's address
+  // with a space inserted, so a lookup that ran before validation would find
+  // something near it; the answer has to be the same either way.
+  it("answers with the normalisation error, identically whoever is registered", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(api.auth.signup, signupArgs());
+
+    const capture = async (email: string) => {
+      try {
+        await t.query(api.auth.getLoginSalt, { email });
+      } catch (error) {
+        return {
+          name: (error as Error).name,
+          data: (error as { data?: unknown }).data,
+        };
+      }
+      throw new Error("expected getLoginSalt to refuse the address");
+    };
+
+    const nearRegistered = await capture("ada @example.test");
+    const nearNobody = await capture("nobody @example.test");
+
+    expect(nearRegistered.data).toBe(
+      "email must be a single address with no spaces.",
+    );
+    expect(nearRegistered).toEqual(nearNobody);
+  });
+});
+
 describe("email identity", () => {
   // `getUserByEmail` uses `.unique()`, which throws when two rows match. For
   // an auth table that is the right failure mode: silently picking one of two

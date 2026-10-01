@@ -7,7 +7,13 @@ import {
 import { mutation } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { recordUserEvent } from "./lib/audit";
-import { sessionArg, NOT_PERMITTED, requireEnvironment, requireSession } from "./lib/authz";
+import {
+  sessionArg,
+  NOT_PERMITTED,
+  assertEnvironmentInOrg,
+  requireEnvironment,
+  requireSession,
+} from "./lib/authz";
 import { assertHexAtLeast, assertHexBytes } from "./lib/hex";
 import { getPDKGrant, insertPDKGrant } from "./repo/environments";
 import {
@@ -151,6 +157,10 @@ export const createServiceToken = mutation({
       args.sessionToken,
       args.environmentId,
     );
+
+    // `environment.orgId` is about to be copied onto the token and its grant,
+    // so it must be the org the walk authorised. See `authz.ts`.
+    assertEnvironmentInOrg(environment, org);
 
     // Before any validation and before the token id is hashed, so a caller with
     // no key cannot learn anything from the order in which their arguments were

@@ -55,6 +55,15 @@ export function assertCanonicalHex32(field: string, value: string): string {
  * stored verifier and locks everyone out of login; it does not expose a
  * secret, because a verifier is not a key to anything the server stores.
  *
+ * ROTATING THE PEPPER ALSO SEPARATES DECOY SALTS FROM REAL ONES. The login
+ * salt decoy (`lib/salt.ts`) is keyed under this pepper and a real account
+ * salt is not, so after a rotation every unknown address's answer from
+ * `getLoginSalt` changes and every known address's answer stays the same. A
+ * prober who recorded answers before the rotation and asks again after it
+ * learns which addresses have accounts. Account existence is already public
+ * through signup, so this adds no new fact, but a rotation is not neutral for
+ * that endpoint and should not be treated as one.
+ *
  * EXPORTED FOR ONE OTHER READER, `lib/salt.ts`, which keys the login-salt
  * decoy under the same pepper. Exported rather than re-read there so the
  * presence and shape checks below are the only ones: a second reader of

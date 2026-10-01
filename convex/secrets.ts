@@ -7,6 +7,7 @@ import { recordUserEvent } from "./lib/audit";
 import {
   sessionArg,
   NOT_PERMITTED,
+  assertEnvironmentInOrg,
   requireEnvironment,
   requireSecret,
 } from "./lib/authz";
@@ -298,6 +299,9 @@ export const createSecret = mutation({
       args.sessionToken,
       args.environmentId,
     );
+    // The copy of the org on the environment is about to be written onto the
+    // new row, so it must be the org the walk authorised. See `authz.ts`.
+    assertEnvironmentInOrg(environment, org);
     // Before any validation and before the lineage is minted, so a caller with
     // no key cannot consume a lineage id or learn anything from the order in
     // which their arguments were rejected.

@@ -17,6 +17,7 @@ import {
 import {
   getPDKGrant,
   listPDKGrantsByEnvironment,
+  patchEnvironment,
 } from "./repo/environments";
 import { listAuditEventsByActor } from "./repo/audit";
 import { insertOrgMember } from "./repo/orgs";
@@ -261,6 +262,36 @@ describe("a token's wrapped project data key", () => {
    */
   // Off the environment row the authorisation walk loaded, on both rows the
   // mutation writes, and not an argument a caller could set.
+  // The same invariant `createSecret` enforces: the copied org must be the
+  // walked org, or nothing is written.
+  it("refuses to register a token when the environment's org link is corrupt", async () => {
+    const t = convexTest(schema, modules);
+    const alice = await seedUser(t, "alice@example.test");
+    const mallory = await seedUser(t, "mallory@example.test");
+    const { environmentId } = await tenant(t, alice, "acme");
+    const other = await tenant(t, mallory, "other");
+    await t.run(async (ctx) =>
+      patchEnvironment(ctx, environmentId, { orgId: other.orgId }),
+    );
+
+    const minted = mintToken({ environment: "production" });
+    await expect(
+      t.mutation(api.tokens.createServiceToken, {
+        sessionToken: alice.sessionToken,
+        environmentId,
+        tokenId: minted.upload.tokenId,
+        publicKey: minted.upload.publicKey,
+        wrappedPDK: "cc".repeat(48),
+        pdkNonce: "0102030405060708090a0b0c",
+      }),
+    ).rejects.toThrow("This environment's organisation link is inconsistent. Nothing was written.");
+
+    const grants = await t.run(async (ctx) =>
+      listPDKGrantsByEnvironment(ctx, environmentId),
+    );
+    expect(grants.map((g) => g.granteeType)).toEqual(["user"]);
+  });
+
   it("records the environment's org on the token row and on its grant", async () => {
     const t = convexTest(schema, modules);
     const alice = await seedUser(t, "alice@example.test");

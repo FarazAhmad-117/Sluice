@@ -21,6 +21,7 @@ import {
   getPDKGrant,
   insertPDKGrant as insertPDKGrantRow,
   listPDKGrantsByEnvironment,
+  patchEnvironment,
 } from "./repo/environments";
 import { getUser as getUserRow } from "./repo/users";
 import * as secretsModule from "./secrets";
@@ -747,6 +748,31 @@ describe("the ciphertext-only surface", () => {
       );
       expect(fieldNames(args)).not.toContain("orgId");
     }
+  });
+
+  /**
+   * `environments.orgId` is a denormalised copy that the authorisation walk
+   * does not read. Corrupted, it would file the new row under an org the
+   * caller was never authorised for. The handler compares it with the walked
+   * org and refuses, writing nothing.
+   */
+  it("refuses to write when the environment's org link disagrees with the walk", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, a, b } = await world(t);
+    await t.run(async (ctx) =>
+      patchEnvironment(ctx, a.production, { orgId: b.orgId }),
+    );
+
+    await expect(
+      t.mutation(api.secrets.createSecret, secretArgs(alice, a.production)),
+    ).rejects.toThrow("This environment's organisation link is inconsistent. Nothing was written.");
+
+    expect(
+      await t.query(api.secrets.listSecrets, {
+        sessionToken: alice.sessionToken,
+        environmentId: a.production,
+      }),
+    ).toEqual([]);
   });
 
   it("takes pdkVersion from the environment, not from the caller", async () => {

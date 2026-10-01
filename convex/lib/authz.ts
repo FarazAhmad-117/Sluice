@@ -220,6 +220,32 @@ export async function requireEnvironment(
   );
 }
 
+/**
+ * THE DENORMALISED ORG MUST AGREE WITH THE WALKED ONE.
+ *
+ * `environments.orgId` is a copy, kept so an org can be lifted between cells
+ * and counted in one indexed read. The authorisation walk never reads it: it
+ * goes environment -> project -> org, and that is the org membership was
+ * checked against. A handler that then files a new row under
+ * `environment.orgId` is trusting the copy. If the copy were ever corrupted
+ * -- by a bad migration, a buggy import, a hand edit -- the row would be
+ * written under an org the caller was never authorised for, with no error.
+ *
+ * So every write that copies `orgId` off the environment checks it first and
+ * refuses loudly. The message is fixed and names no id: it is reachable only
+ * by a member of the walked org, but it is still about a row they cannot see
+ * into.
+ */
+export const ORG_LINK_CORRUPT =
+  "This environment's organisation link is inconsistent. Nothing was written.";
+
+export function assertEnvironmentInOrg(
+  environment: Doc<"environments">,
+  org: Doc<"orgs">,
+): void {
+  if (environment.orgId !== org._id) throw new ConvexError(ORG_LINK_CORRUPT);
+}
+
 export async function requireSecret(
   ctx: QueryCtx,
   sessionToken: string,
