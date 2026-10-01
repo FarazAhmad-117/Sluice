@@ -30,3 +30,6 @@ Thumbs.db
 *.mp4
 *.mov
 references/
+
+# Agent worktrees: full checkouts of this repo, never content of it.
+.claude/worktrees/
