@@ -63,8 +63,9 @@ export const ACCOUNT_SALT_BYTES = 16;
  * The salt is PUBLIC. It is not a secret and needs no protection beyond
  * integrity: the server hands it to anyone who asks to log in as the account.
  * Its job is uniqueness, not secrecy -- it makes every account's Argon2id a
- * different function, so an attacker cannot precompute one table of common
- * passwords and run it against every stolen bundle at once.
+ * different function, so one table of guessed passwords cannot be run against
+ * every account at once. It does NOT hide anything from a targeted attacker;
+ * see {@link mukSalt} for exactly what it does and does not buy.
  *
  * NEVER CHANGE AN ACCOUNT'S SALT. The MUK is a function of it, so a new salt is
  * a new key and every private key wrapped under the old one becomes
@@ -77,13 +78,27 @@ export function newAccountSalt(): Uint8Array {
 /**
  * Turns an account salt into the Argon2id salt.
  *
- * WHY THE SALT IS RANDOM, NOT THE ADDRESS. v1 derived the salt from the
- * account's email, which had two costs. The salt was fully predictable, so an
- * attacker could precompute guesses against a known target before ever stealing
- * anything. And the key was welded to the address: changing an account's email
- * would have changed its MUK and orphaned every key it holds. A random value
- * minted at signup has neither problem. It adds real entropy against
- * precomputation, and the email becomes an ordinary mutable field.
+ * WHAT THE RANDOM SALT BUYS, STATED EXACTLY. v1 derived the salt from the
+ * account's email. v2 uses a random value minted at signup. That buys three
+ * things and no more:
+ *
+ * 1. An email change no longer changes the key. v1 welded the MUK to the
+ *    address, so changing it would have orphaned every key the account holds.
+ *    The email is now an ordinary mutable field.
+ * 2. Precomputation needs the server. v1's salt could be computed offline from
+ *    a public address, so an attacker holding a mailing list could build
+ *    guess tables for every address on it without ever contacting us. v2's
+ *    salt must be fetched per account, and the server can rate-limit that.
+ * 3. No table carries over between deployments. Two Sluice installations with
+ *    the same user's address no longer share a salt, so work done against one
+ *    is worthless against the other.
+ *
+ * WHAT IT DOES NOT BUY. The salt is public: the server's login-salt endpoint
+ * returns it to anyone who asks to log in as the account (only an UNKNOWN
+ * address gets a decoy). A targeted attacker who can query the server gets the
+ * real salt and can precompute against that one account before any breach. The
+ * salt is not secret entropy. THE PASSWORD REMAINS THE ONLY SECRET INPUT, and
+ * the Argon2id cost in {@link ARGON2_PARAMS} is the only thing slowing a guess.
  *
  * WHY IT IS STILL HASHED WITH A LABEL, when the input is already sixteen random
  * bytes. Not for width: the account salt is a fixed 16 bytes and comfortably
@@ -254,9 +269,17 @@ export async function deriveMUK(
   // string -- the email -- and a JavaScript caller or a cast still written
   // against it must fail here rather than derive the key it was meant to stop
   // deriving.
+  // `instanceof Uint8Array` is realm-sensitive: an array built in another realm
+  // (an iframe, a `vm` context, jsdom) fails it. If that ever becomes a real
+  // caller, the fallback is `ArrayBuffer.isView` plus the
+  // `Object.prototype.toString` tag "[object Uint8Array]".
   if (!(accountSalt instanceof Uint8Array) || accountSalt.length !== ACCOUNT_SALT_BYTES) {
     throw new Error(`accountSalt must be ${ACCOUNT_SALT_BYTES} bytes`);
   }
+  // Built NOW, not after the await below. The caller's buffer may be mutated or
+  // detached across the await (transferred to a Worker, say), so the bytes are
+  // captured at the moment they are validated; `concat` copies them.
+  const salt = mukSalt(accountSalt);
 
   // NFC, per RFC 8265 (PRECIS OpaqueString), and the choice is permanent.
   // "café" and "café" are the same word to the user and to the
@@ -283,7 +306,7 @@ export async function deriveMUK(
   // every subsequent derivation in the process will read.
   const params: Argon2Params = Object.freeze({ ...ARGON2_PARAMS });
 
-  const out = await backend(utf8.encode(password.normalize("NFC")), mukSalt(accountSalt), params);
+  const out = await backend(utf8.encode(password.normalize("NFC")), salt, params);
 
   // Re-checked at the seam, not merely by the constructor. The constructor
   // says "32 bytes"; this says which component broke, which is the difference

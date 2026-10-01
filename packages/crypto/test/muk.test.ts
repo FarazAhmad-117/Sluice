@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
+import type { Argon2Backend } from "../src/argon2";
 import { fromHex, toHex } from "../src/bytes";
 import {
   ACCOUNT_SALT_BYTES,
@@ -65,6 +66,22 @@ const KAT_MUK_V2 = "633977bb9b6fec724f6574028da06c834895735198e653c3f8a95cb28d70
 
 /** A second account, differing from `ACCOUNT_SALT` in its last byte only. */
 const OTHER_ACCOUNT_SALT = fromHex("303132333435363738393a3b3c3d3e40");
+
+/**
+ * A backend that records whether it was ever called. `deriveMUK` runs the
+ * conformance check -- which calls the backend -- before the real derivation,
+ * so `called` staying false proves a rejection happened before ANY Argon2 work,
+ * not merely before the expensive part. That is a structural proof; a
+ * wall-clock bound would only be a guess that passes on a fast machine.
+ */
+function spyBackend(): { backend: Argon2Backend; wasCalled: () => boolean } {
+  let called = false;
+  const backend: Argon2Backend = (_pw, _s, p) => {
+    called = true;
+    return new Uint8Array(p.dkLen);
+  };
+  return { backend, wasCalled: () => called };
+}
 
 /** Same glyphs, different code points. A user can type either one. */
 const CAFE_NFC = "café latte";
@@ -247,12 +264,14 @@ describe("deriveMUK v2", () => {
   it("matches the independent vector", async () => {
     const muk = await deriveMUK("correct horse battery staple, v2", ACCOUNT_SALT);
     expect(toHex(muk.bytes)).toBe(KAT_MUK_V2);
-  }, 60_000);
+  }, DERIVE_BUDGET_MS);
 
   it("rejects a salt of the wrong width before doing any work", async () => {
-    await expect(deriveMUK("pw", new Uint8Array(15))).rejects.toThrow(
+    const spy = spyBackend();
+    await expect(deriveMUK("pw", new Uint8Array(15), { argon2: spy.backend })).rejects.toThrow(
       `accountSalt must be ${ACCOUNT_SALT_BYTES} bytes`,
     );
+    expect(spy.wasCalled()).toBe(false);
   });
 
   /**
@@ -263,7 +282,11 @@ describe("deriveMUK v2", () => {
    * to the address -- exactly what this version removes.
    */
   it("rejects a string where bytes belong", async () => {
-    await expect(deriveMUK("pw", "user@example.com" as unknown as Uint8Array)).rejects.toThrow();
+    const spy = spyBackend();
+    await expect(
+      deriveMUK("pw", "user@example.com" as unknown as Uint8Array, { argon2: spy.backend }),
+    ).rejects.toThrow(`accountSalt must be ${ACCOUNT_SALT_BYTES} bytes`);
+    expect(spy.wasCalled()).toBe(false);
   });
 });
 
@@ -280,18 +303,23 @@ describe("deriveMUK input validation", () => {
   });
 
   it("rejects an empty account salt", async () => {
-    await expect(deriveMUK(KAT_PASSWORD, new Uint8Array(0))).rejects.toThrow(/accountSalt/);
+    const spy = spyBackend();
+    await expect(
+      deriveMUK(KAT_PASSWORD, new Uint8Array(0), { argon2: spy.backend }),
+    ).rejects.toThrow(`accountSalt must be ${ACCOUNT_SALT_BYTES} bytes`);
+    expect(spy.wasCalled()).toBe(false);
   });
 
   /**
    * Validation must happen BEFORE the seven-second grind, not after. If an
    * empty password reached Argon2id, every rejected signup attempt would cost a
    * full derivation -- a free denial-of-service against the user's own device.
+   * Proved with a spy rather than a stopwatch: the backend is never reached.
    */
   it("rejects invalid input without paying for a derivation", async () => {
-    const started = Date.now();
-    await expect(deriveMUK("", new Uint8Array(0))).rejects.toThrow();
-    expect(Date.now() - started).toBeLessThan(1000);
+    const spy = spyBackend();
+    await expect(deriveMUK("", new Uint8Array(0), { argon2: spy.backend })).rejects.toThrow();
+    expect(spy.wasCalled()).toBe(false);
   });
 });
 
