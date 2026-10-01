@@ -5,7 +5,8 @@ import { MAX_CLOCK_STEP_MS, NO_PERSISTED_FLOOR, SluiceCore } from "@sluice/sdk";
 import { toHex } from "@sluice/crypto";
 import type { RawBundle } from "../src/bundle";
 import { fatalHandler, FATAL_EXIT_CODE } from "../src/run";
-import { Shell, ShellFatalError } from "../src/shell";
+import { ShellFatalError } from "../src/errors";
+import { Shell } from "../src/shell";
 import {
   ENVIRONMENT_UID,
   FakeChild,
@@ -874,6 +875,47 @@ describe("Shell: the shutdown logic itself failing fails CLOSED", () => {
     await h.tick(MAX_CLOCK_STEP_MS * 3);
     expect(h.exits).toEqual([FATAL_EXIT_CODE]);
     expect(h.child.signals).toEqual(["SIGKILL"]);
+  });
+
+  it("persists a floor the core raised before it threw, so a restart refuses the replay", async () => {
+    // The real core verifies the genuine notice and raises the floor, and only
+    // THEN fails. The normal persist after `handle` never runs, so without
+    // the persist in the catch the floor would be lost and a restart would
+    // accept this same notice once more.
+    const h = await booted({ drainMs: 0, fatal: true });
+    const original = h.core.handle.bind(h.core);
+    (h.core as { handle: SluiceCore["handle"] }).handle = (event) => {
+      const decisions = original(event);
+      if (event.type === "revocation") throw new Error("failed after raising the floor");
+      return decisions;
+    };
+    const before = h.floor.saved.length;
+    h.source.emit({
+      ...withNoSecrets(),
+      revocationNotice: signedNotice(org, fixture.identity, { epoch: 3 }),
+    });
+    await flush(() => h.shell.busy);
+    expect(h.core.epochFloor).toBe(3);
+    expect(h.floor.saved.slice(before)).toEqual([3]);
+    expect(h.child.signals).toEqual(["SIGKILL"]);
+    expect(h.exits).toEqual([FATAL_EXIT_CODE]);
+  });
+
+  it("still reaches onFatal when the broken core cannot even report its floor", async () => {
+    const h = await booted({ drainMs: 0, fatal: true });
+    breakCore(h, "revocation");
+    Object.defineProperty(h.core, "epochFloor", {
+      get() {
+        throw new Error("floor unreadable");
+      },
+    });
+    h.source.emit({
+      ...withNoSecrets(),
+      revocationNotice: signedNotice(org, fixture.identity, { epoch: 3 }),
+    });
+    await flush(() => h.shell.busy);
+    expect(h.child.signals).toEqual(["SIGKILL"]);
+    expect(h.exits).toEqual([FATAL_EXIT_CODE]);
   });
 
   it("has the identical outcome when the same failure arrives on a timer tick", async () => {

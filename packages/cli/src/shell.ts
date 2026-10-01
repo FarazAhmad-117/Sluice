@@ -11,6 +11,7 @@ import {
 } from "@sluice/sdk";
 import { BundleDecryptError, decryptSecrets, readRevocation, type RawBundle } from "./bundle";
 import type { TokenIdentity } from "./config";
+import { ShellFatalError } from "./errors";
 import type { EpochFloorStore } from "./floor";
 import type { BundleCredential, Handshaker } from "./handshake";
 import type {
@@ -109,17 +110,6 @@ const BASE_BACKOFF_MS = 1_000;
 /** The ceiling on backoff. Longer than this and a revocation waits too long. */
 const MAX_BACKOFF_MS = 30_000;
 
-/**
- * The shutdown logic failed and no `onFatal` was supplied. Thrown by `#pump`
- * so the failure reaches a process-level hook, and recognised by both
- * transport guards so it is never logged and dropped on the way.
- */
-export class ShellFatalError extends Error {
-  constructor(cause: unknown) {
-    super("the Sluice shutdown logic failed", { cause });
-    this.name = "ShellFatalError";
-  }
-}
 
 export interface ShellOptions {
   readonly core: SluiceCore;
@@ -378,7 +368,22 @@ export class Shell {
       // third. Routing it here makes it the same fatal outcome from all of
       // them, without depending on a process-level hook being installed.
       //
-      // The shell stops first, so nothing queued behind the failure runs and
+      // THE FLOOR FIRST, before anything else here. If `core.handle` raised the
+      // floor for a genuine revocation and then threw, the normal persist
+      // above never ran, and after a restart a replay of that same notice
+      // would be accepted once more. Persisting is safe even mid-failure: the
+      // core only raises the floor after a notice has passed signature and
+      // token verification, so whatever value it holds was earned. The call
+      // is wrapped once more because the floor getter belongs to the core
+      // that just failed, and nothing here may stand between the failure and
+      // `onFatal`; `#persistFloor` already contains a failing store itself.
+      try {
+        this.#persistFloor();
+      } catch {
+        // The core cannot even report its floor. Fatal regardless.
+      }
+
+      // The shell stops next, so nothing queued behind the failure runs and
       // no later event can reach a core in an unknown state.
       this.#queue = [];
       this.#phase = "stopped";

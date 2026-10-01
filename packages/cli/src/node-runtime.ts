@@ -3,7 +3,7 @@ import { ConvexClient } from "convex/browser";
 import { makeFunctionReference } from "convex/server";
 import { sanitiseForLog } from "@sluice/sdk";
 import type { RawBundle } from "./bundle";
-import { ShellFatalError } from "./shell";
+import { ShellFatalError } from "./errors";
 import type {
   BundleSource,
   ChildProcessSupervisor,
