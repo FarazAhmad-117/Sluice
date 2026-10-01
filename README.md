@@ -88,7 +88,7 @@ currently holds:
 | `email.ts` | The one email normalisation rule both ends use as the account lookup key |
 
 **1,142 tests** across the workspace, run with Vitest: 305 in
-`packages/crypto`, 405 for the backend, 173 in `packages/cli`, 158 in
+`packages/crypto`, 406 for the backend, 172 in `packages/cli`, 158 in
 `apps/admin`, 93 in `packages/sdk` and 8 in `apps/web`. The crypto suite pins
 exact bytes against vectors computed outside the package rather than checking
 the module against itself, so a change to a domain separator fails a test

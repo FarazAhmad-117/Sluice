@@ -67,8 +67,10 @@ import type { TokenIdentity } from "./config";
  * unbound display id when the row carried one. That let whoever shapes the
  * bundle choose the name an operator sees in an error, pointing them at the
  * wrong secret during an incident, with nothing tying the label to the row's
- * ciphertext. The `secretUid` is at least the id the row's ciphertext is
- * bound to: a row that lies about it does not open.
+ * ciphertext. The label is authenticated only in errors raised after the row
+ * opens (a bad or duplicate name): a row that lies about its `secretUid` does
+ * not open. In an error raised because the row did not open, the label is the
+ * row's own unauthenticated claim, and may be another secret's well-formed id.
  */
 export interface RawSecretRow {
   readonly secretUid: string;
