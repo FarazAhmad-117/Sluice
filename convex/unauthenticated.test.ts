@@ -263,6 +263,9 @@ const CALLS: Record<
 > = {
   "orgs.createOrg": (_w, sessionToken) => ({
     sessionToken,
+    // Fresh per call, like the slug below, so the valid call is not refused
+    // as a duplicate of an earlier refused one.
+    orgUid: newId("org"),
     name: "Second Org",
     // A slug the world fixture has not used, so the valid call below is not
     // refused for being a duplicate.
@@ -293,6 +296,7 @@ const CALLS: Record<
   }),
   "environments.createEnvironment": (w, sessionToken) => ({
     sessionToken,
+    environmentUid: newId("env"),
     projectId: w.projectId,
     name: "staging",
     ...WRAP,

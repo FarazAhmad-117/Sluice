@@ -130,21 +130,31 @@ async function tenant(t: Harness, actor: Actor, slug: string) {
     name: "API",
     slug: "api",
   });
+  const productionUid = newId("env");
+  const stagingUid = newId("env");
   const production = await t.mutation(api.environments.createEnvironment, {
     sessionToken: actor.sessionToken,
-    environmentUid: newId("env"),
+    environmentUid: productionUid,
     projectId,
     name: "production",
     ...WRAP,
   });
   const staging = await t.mutation(api.environments.createEnvironment, {
     sessionToken: actor.sessionToken,
-    environmentUid: newId("env"),
+    environmentUid: stagingUid,
     projectId,
     name: "staging",
     ...WRAP,
   });
-  return { keys, orgId, projectId, production, staging };
+  return {
+    keys,
+    orgId,
+    projectId,
+    production,
+    staging,
+    productionUid,
+    stagingUid,
+  };
 }
 
 let nonceCounter = 0;
@@ -237,7 +247,7 @@ describe("the bundle", () => {
     const { bundleToken } = await issueAndHandshake(t, alice, acme.production);
     const bundle = await t.query(api.bundle.getBundle, { token: bundleToken });
 
-    expect(bundle.environmentId).toBe(acme.production);
+    expect(bundle.environmentUid).toBe(acme.productionUid);
     expect(bundle.secrets.map((secret) => secret.secretId)).toEqual([
       mine.secretId,
     ]);
@@ -245,6 +255,7 @@ describe("the bundle", () => {
     // environment or the other tenant appears anywhere in the payload.
     const serialised = JSON.stringify(bundle);
     expect(serialised).not.toContain(acme.staging);
+    expect(serialised).not.toContain(acme.stagingUid);
     expect(serialised).not.toContain("22".repeat(40));
     expect(serialised).not.toContain("33".repeat(40));
   });
@@ -547,6 +558,7 @@ describe("the bundle", () => {
     const serviceTokenId = await t.run(async (ctx) =>
       insertServiceToken(ctx, {
         environmentId: acme.production,
+        orgId: acme.orgId,
         tokenIdHash: hash,
         publicKey: minted.upload.publicKey,
         epoch: 0,
@@ -596,7 +608,7 @@ describe("the bundle", () => {
     ) as { value: Record<string, { fieldType: { value?: Record<string, unknown> } }> };
 
     expect(Object.keys(returns.value).sort()).toEqual([
-      "environmentId",
+      "environmentUid",
       "epoch",
       "pdkNonce",
       "pdkVersion",
@@ -609,6 +621,35 @@ describe("the bundle", () => {
       expect(Object.keys(returns.value)).not.toContain(field);
       expect(Object.keys(bundle.secrets[0] ?? {})).not.toContain(field);
     }
+  });
+
+  /**
+   * THE PERMANENT ID REPLACES THE DOCUMENT ID, IT DOES NOT JOIN IT.
+   *
+   * The client builds the secret associated data from whatever environment
+   * identifier the bundle hands it. Handing it the Convex id as well would
+   * leave the deployment-local value one typo away from being bound into
+   * ciphertext, so the declared return type must not carry it and the payload
+   * must not contain it anywhere.
+   */
+  it("serves the environment's permanent id and never its Convex id", async () => {
+    const t = convexTest(schema, modules);
+    const alice = await seedUser(t, "alice@example.test");
+    const acme = await tenant(t, alice, "acme");
+    await addSecret(t, alice, acme.production);
+    const { bundleToken } = await issueAndHandshake(t, alice, acme.production);
+
+    const bundle = await t.query(api.bundle.getBundle, { token: bundleToken });
+
+    expect(bundle.environmentUid).toBe(acme.productionUid);
+    expect(Object.keys(bundle)).not.toContain("environmentId");
+    expect(JSON.stringify(bundle)).not.toContain(acme.production);
+
+    const returns = JSON.parse(
+      (bundleModule.getBundle as unknown as { exportReturns: () => string }).exportReturns(),
+    ) as { value: Record<string, unknown> };
+    expect(Object.keys(returns.value)).not.toContain("environmentId");
+    expect(Object.keys(returns.value)).toContain("environmentUid");
   });
 
   it("refuses a token issued for a different service token", async () => {
@@ -626,7 +667,7 @@ describe("the bundle", () => {
     const bundle = await t.query(api.bundle.getBundle, {
       token: second.bundleToken,
     });
-    expect(bundle.environmentId).toBe(acme.staging);
+    expect(bundle.environmentUid).toBe(acme.stagingUid);
     expect(bundle.secrets).toEqual([]);
 
     const own = await t.query(api.bundle.getBundle, {

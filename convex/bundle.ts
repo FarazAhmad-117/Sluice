@@ -115,10 +115,19 @@ export const getBundle = query({
   // One argument, and it is the credential. See THREE above.
   args: { token: v.string() },
   returns: v.object({
-    // The client needs this to compute the secret associated data. See
-    // `secretAssociatedData` in `@sluice/crypto`, which is the one definition
-    // of that rule.
-    environmentId: v.id("environments"),
+    // The environment's PERMANENT id, which the client needs to compute the
+    // secret and grant associated data. See `secretAssociatedData` and
+    // `pdkAssociatedData` in `@sluice/crypto`, the one definition of each
+    // rule.
+    //
+    // The Convex `environmentId` is deliberately NOT returned any more. It
+    // used to be the associated-data input, and a client still holding it
+    // would bind ciphertext to a value local to this deployment, which stops
+    // opening the day the org moves cells. The SDK has no other use for it:
+    // this query takes no environment argument, so there is nothing to send
+    // it back to. Not returning it makes the wrong input unavailable rather
+    // than merely discouraged.
+    environmentUid: v.string(),
     epoch: v.number(),
     // THE THREE KEY FIELDS ARE OPTIONAL, AND THAT IS RULE ONE APPLIED TO A
     // MISSING GRANT RATHER THAN TO A REVOCATION.
@@ -181,7 +190,7 @@ export const getBundle = query({
         : [];
 
     return {
-      environmentId: environment._id,
+      environmentUid: environment.uid,
       // The ENVIRONMENT's epoch, which is the counter that moves when the
       // project data key is re-keyed, and the one `SecretBundle.epoch` in
       // `packages/sdk` is defined as. It is NOT the revocation epoch, which

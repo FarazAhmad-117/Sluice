@@ -547,6 +547,7 @@ describe("the creator's project data key grant", () => {
 
     const good = {
       sessionToken: alice.sessionToken,
+      environmentUid: newId("env"),
       projectId: projectA,
       name: "production",
       ...wrap,

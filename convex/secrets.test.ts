@@ -381,7 +381,7 @@ describe("a write from a caller who holds no project data key", () => {
 
     // And no grant.
     const grant = await t.run(async (ctx) =>
-      getPDKGrant(ctx, a.production, "user", bob.userId),
+      getPDKGrant(ctx, a.production, "user", bob.uid),
     );
     expect(grant).toBeNull();
   });
@@ -468,8 +468,9 @@ describe("a write from a caller who holds no project data key", () => {
     await t.run(async (ctx) =>
       insertPDKGrantRow(ctx, {
         environmentId: a.staging,
+        orgId: a.orgId,
         granteeType: "user",
-        granteeId: bob.userId,
+        granteeId: bob.uid,
         wrappedPDK: WRAP.wrappedPDK,
         nonce: WRAP.pdkNonce,
         pdkVersion: 1,
@@ -490,7 +491,7 @@ describe("a write from a caller who holds no project data key", () => {
   /**
    * A TOKEN'S grant is not a user's. `granteeType` separates two namespaces of
    * opaque strings, and a check that ignored it would accept a `tokenIdHash`
-   * that happened to equal a user id, and more realistically would be one
+   * that happened to equal a user's uid, and more realistically would be one
    * refactor away from doing so.
    */
   it("does not accept a token grant as a user's", async () => {
@@ -501,7 +502,37 @@ describe("a write from a caller who holds no project data key", () => {
     await t.run(async (ctx) =>
       insertPDKGrantRow(ctx, {
         environmentId: a.production,
+        orgId: a.orgId,
         granteeType: "token",
+        granteeId: bob.uid,
+        wrappedPDK: WRAP.wrappedPDK,
+        nonce: WRAP.pdkNonce,
+        pdkVersion: 1,
+      }),
+    );
+
+    await expect(
+      t.mutation(api.secrets.createSecret, secretArgs(bob, a.production)),
+    ).rejects.toThrow(NO_GRANT);
+  });
+
+  /**
+   * A user grant is keyed by the PERMANENT uid. One keyed by the Convex
+   * document id is a row from before that rule, or from a writer that forgot
+   * it, and it must not authorise anything: the client's associated data names
+   * the uid, so a blob filed under the document id is one the lookup and the
+   * binding disagree about.
+   */
+  it("does not accept a user grant keyed by the Convex user id", async () => {
+    const t = convexTest(schema, modules);
+    const { a } = await world(t);
+    const bob = await memberWithoutGrant(t, a.orgId, "bob@example.test");
+
+    await t.run(async (ctx) =>
+      insertPDKGrantRow(ctx, {
+        environmentId: a.production,
+        orgId: a.orgId,
+        granteeType: "user",
         granteeId: bob.userId,
         wrappedPDK: WRAP.wrappedPDK,
         nonce: WRAP.pdkNonce,
@@ -522,8 +553,9 @@ describe("a write from a caller who holds no project data key", () => {
     await t.run(async (ctx) =>
       insertPDKGrantRow(ctx, {
         environmentId: a.production,
+        orgId: a.orgId,
         granteeType: "user",
-        granteeId: bob.userId,
+        granteeId: bob.uid,
         wrappedPDK: WRAP.wrappedPDK,
         nonce: WRAP.pdkNonce,
         pdkVersion: 1,
@@ -679,6 +711,44 @@ describe("the ciphertext-only surface", () => {
    * nobody can decrypt, and it stores, lists and syncs perfectly until the day
    * someone needs to read it.
    */
+  /**
+   * Every secret row carries its org, for the cell-move and quota reads, and
+   * it is copied off the environment row (on create) or off the row being
+   * replaced (on update), never accepted. The validator assertion is what
+   * makes "never from a caller" true rather than merely true today.
+   */
+  it("records the environment's org on every version, and takes no orgId", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, a, b } = await world(t);
+    const first = await t.mutation(
+      api.secrets.createSecret,
+      secretArgs(alice, a.production),
+    );
+    const second = await t.mutation(api.secrets.updateSecret, {
+      sessionToken: alice.sessionToken,
+      secretId: first.secretId,
+      nameCiphertext: "cc".repeat(24),
+      nameNonce: "333333333333333333333333",
+      valueCiphertext: "dd".repeat(40),
+      valueNonce: "444444444444444444444444",
+    });
+
+    for (const secretId of [first.secretId, second.secretId]) {
+      const row = await t.run(async (ctx) => getSecretRow(ctx, secretId));
+      expect(row?.orgId).toBe(a.orgId);
+      expect(row?.orgId).not.toBe(b.orgId);
+    }
+
+    for (const name of ["createSecret", "updateSecret"] as const) {
+      const args = JSON.parse(
+        (
+          secretsModule[name] as unknown as { exportArgs: () => string }
+        ).exportArgs(),
+      );
+      expect(fieldNames(args)).not.toContain("orgId");
+    }
+  });
+
   it("takes pdkVersion from the environment, not from the caller", async () => {
     const t = convexTest(schema, modules);
     const { alice, a } = await world(t);
@@ -838,6 +908,7 @@ describe("versioning", () => {
     const impostor = await t.run(async (ctx) =>
       insertSecretRow(ctx, {
         environmentId: a.production,
+        orgId: a.orgId,
         lineageId: original.lineageId,
         nameCiphertext: "cc".repeat(24),
         nameNonce: "111111111111111111111111",
@@ -872,6 +943,7 @@ describe("versioning", () => {
     await t.run(async (ctx) =>
       insertSecretRow(ctx, {
         environmentId: a.staging,
+        orgId: a.orgId,
         lineageId: original.lineageId,
         nameCiphertext: "cc".repeat(24),
         nameNonce: "111111111111111111111111",
@@ -1203,6 +1275,12 @@ describe("end to end", () => {
       const authVerifier = deriveAuthVerifier(muk);
 
       const signedUpUserId = await t.mutation(api.auth.signup, {
+        // Placeholders so this call matches the signup arguments. The salt must
+        // become the one the MUK above is derived under, which is the dashboard
+        // change this test is still waiting on; until then it fails at
+        // `deriveMUK`, before reaching here.
+        uid: newId("usr"),
+        accountSalt: "30".repeat(16),
         email: salt,
         authVerifier,
         publicKey: wrapped.publicKey,

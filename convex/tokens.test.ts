@@ -259,6 +259,35 @@ describe("a token's wrapped project data key", () => {
    * build the associated data it wraps under, before the document exists: it
    * mints the token, so it can compute the hash and cannot know the id.
    */
+  // Off the environment row the authorisation walk loaded, on both rows the
+  // mutation writes, and not an argument a caller could set.
+  it("records the environment's org on the token row and on its grant", async () => {
+    const t = convexTest(schema, modules);
+    const alice = await seedUser(t, "alice@example.test");
+    const mallory = await seedUser(t, "mallory@example.test");
+    const { orgId, environmentId } = await tenant(t, alice, "acme");
+    const other = await tenant(t, mallory, "other");
+    const { minted, serviceTokenId } = await issue(t, alice, environmentId);
+
+    const row = await t.run(async (ctx) => getServiceToken(ctx, serviceTokenId));
+    expect(row?.orgId).toBe(orgId);
+    expect(row?.orgId).not.toBe(other.orgId);
+
+    const grant = await t.run(async (ctx) =>
+      getPDKGrant(ctx, environmentId, "token", tokenIdHash({ tokenId: minted.tokenId })),
+    );
+    expect(grant?.orgId).toBe(orgId);
+
+    const args = JSON.parse(
+      (
+        tokensModule.createServiceToken as unknown as {
+          exportArgs: () => string;
+        }
+      ).exportArgs(),
+    ) as { value: Record<string, unknown> };
+    expect(Object.keys(args.value)).not.toContain("orgId");
+  });
+
   it("is keyed by tokenIdHash, the one identifier both ends can compute", async () => {
     const t = convexTest(schema, modules);
     const alice = await seedUser(t, "alice@example.test");
@@ -469,6 +498,29 @@ describe("revokeServiceToken", () => {
 
     const row = await t.run(async (ctx) => getServiceToken(ctx, serviceTokenId));
     expect(row?.status).toBe("revoked");
+  });
+
+  // Copied off the token row, so the revocation stays findable by org and
+  // attributable to its environment without a walk through the token.
+  it("records the token's org and environment on the revocation row", async () => {
+    const t = convexTest(schema, modules);
+    const alice = await seedUser(t, "alice@example.test");
+    const { keys, orgId, environmentId } = await tenant(t, alice, "acme");
+    const { minted } = await issue(t, alice, environmentId);
+
+    const payload = notice(minted.upload.tokenId);
+    await t.mutation(api.tokens.revokeServiceToken, {
+      sessionToken: alice.sessionToken,
+      ...payload,
+      signature: toHex(signRevocation(keys.authSeed, payload)),
+    });
+
+    const rows = await t.run(async (ctx) =>
+      listRevocationsByTokenIdHash(ctx, tokenIdHash({ tokenId: minted.tokenId })),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.orgId).toBe(orgId);
+    expect(rows[0]?.environmentId).toBe(environmentId);
   });
 
   it("refuses a notice this organisation did not sign", async () => {

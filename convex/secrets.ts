@@ -36,8 +36,10 @@ import {
  *
  *   1. An environment id is accepted only when a row is CREATED. No mutation
  *      accepts one for a row that already exists, so a secret cannot be moved
- *      between environments through this API and its associated data can never
- *      disagree with the column it is bound to.
+ *      between environments through this API, and the environment its
+ *      associated data names -- by permanent uid, read off the environment
+ *      row, never by this document id -- is always the one its column points
+ *      at.
  *   2. `pdkVersion` is copied from the environment rather than accepted from
  *      the caller, so a row cannot claim a key version that never existed.
  */
@@ -129,9 +131,10 @@ function refuse(): never {
  * and, in exchange, a person gets a sentence they can act on instead of "not
  * found" about an environment they are looking at.
  *
- * `granteeType` is pinned to `"user"` and is not a parameter. A user id and a
+ * `granteeType` is pinned to `"user"` and is not a parameter. A user uid and a
  * `tokenIdHash` are both opaque strings in one index, and the type column is
- * the only thing keeping the two namespaces apart.
+ * the only thing keeping the two namespaces apart. The user is looked up by
+ * their permanent `usr_` uid, because that is what a user grant stores.
  */
 const NO_GRANT =
   "You hold no key for this environment, so nothing you wrote here could ever be read.";
@@ -139,9 +142,9 @@ const NO_GRANT =
 async function requirePDKGrant(
   ctx: QueryCtx,
   environmentId: Id<"environments">,
-  userId: Id<"users">,
+  userUid: string,
 ): Promise<void> {
-  const grant = await getPDKGrant(ctx, environmentId, "user", userId);
+  const grant = await getPDKGrant(ctx, environmentId, "user", userUid);
   if (grant === null) throw new ConvexError(NO_GRANT);
 }
 
@@ -298,12 +301,15 @@ export const createSecret = mutation({
     // Before any validation and before the lineage is minted, so a caller with
     // no key cannot consume a lineage id or learn anything from the order in
     // which their arguments were rejected.
-    await requirePDKGrant(ctx, environment._id, user._id);
+    await requirePDKGrant(ctx, environment._id, user.uid);
     assertSealed(args);
 
     const lineageId = await mintLineageId(ctx);
     const secretId = await insertSecret(ctx, {
       environmentId: environment._id,
+      // Off the environment row the authorisation walk loaded. There is no
+      // orgId argument, so a caller cannot file a secret under another org.
+      orgId: environment.orgId,
       lineageId,
       nameCiphertext: args.nameCiphertext,
       nameNonce: args.nameNonce,
@@ -354,7 +360,7 @@ export const updateSecret = mutation({
     // from an argument. A grant on some other environment is not a key for
     // this one, and `updateSecret` takes no environment id precisely so that
     // the two can never disagree.
-    await requirePDKGrant(ctx, secret.environmentId, user._id);
+    await requirePDKGrant(ctx, secret.environmentId, user.uid);
 
     const { versions, current } = await lineageOf(ctx, secret);
 
@@ -370,10 +376,11 @@ export const updateSecret = mutation({
     assertNoncesAreNew(versions, environment.pdkVersion, args);
 
     const secretId = await insertSecret(ctx, {
-      // Both read from the row being replaced. Neither is an argument, which
-      // is what stops an update relabelling a secret into another environment
-      // or another lineage.
+      // All three read from the row being replaced. None is an argument, which
+      // is what stops an update relabelling a secret into another environment,
+      // another org or another lineage.
       environmentId: secret.environmentId,
+      orgId: secret.orgId,
       lineageId: secret.lineageId,
       nameCiphertext: args.nameCiphertext,
       nameNonce: args.nameNonce,

@@ -158,9 +158,10 @@ export const createServiceToken = mutation({
     // position, for the same reason, as in `secrets.createSecret`.
     //
     // `granteeType` is pinned to `"user"`: this is the CALLER'S grant, and the
-    // caller is a person. A `tokenIdHash` and a `users` id are both opaque
-    // strings in one index, and the type column is all that separates them.
-    if ((await getPDKGrant(ctx, environment._id, "user", user._id)) === null) {
+    // caller is a person. A `tokenIdHash` and a user's `usr_` uid are both
+    // opaque strings in one index, and the type column is all that separates
+    // them. Looked up by the permanent uid, which is what a user grant stores.
+    if ((await getPDKGrant(ctx, environment._id, "user", user.uid)) === null) {
       throw new ConvexError(NO_GRANT);
     }
 
@@ -185,6 +186,9 @@ export const createServiceToken = mutation({
 
     const serviceTokenId = await insertServiceToken(ctx, {
       environmentId: environment._id,
+      // Off the environment row the authorisation walk loaded, as on every
+      // tenant row. There is no orgId argument.
+      orgId: environment.orgId,
       tokenIdHash: hash,
       publicKey: args.publicKey,
       // From the environment, never from the caller. This is the token's
@@ -207,6 +211,7 @@ export const createServiceToken = mutation({
     // this document existed. A document id satisfies neither.
     await insertPDKGrant(ctx, {
       environmentId: environment._id,
+      orgId: environment.orgId,
       granteeType: "token",
       granteeId: hash,
       wrappedPDK: args.wrappedPDK,
@@ -310,6 +315,12 @@ export const revokeServiceToken = mutation({
     const revocationId = await insertRevocation(ctx, {
       tokenId: args.tokenId,
       tokenIdHash: hash,
+      // Both off the token row loaded above by its hash, never from the
+      // caller. Not signed, and not needed by the bundle join, which goes
+      // through `tokenIdHash`; they make the row findable by org and keep it
+      // attributable after the token row itself is gone.
+      orgId: token.orgId,
+      environmentId: token.environmentId,
       epoch: args.epoch,
       signature: args.signature,
       signedBy: user._id,
