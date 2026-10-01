@@ -38,11 +38,15 @@ import {
  * known-answer vectors, because the CLI has to reproduce all three byte for
  * byte to open an account the browser created. This file keeps only what is
  * specific to the dashboard: generating the keypairs and composing the
- * package's pieces into a signup and a login. `deriveAuthVerifier` and
- * `WrappedKeyFormatError` are re-exported so existing importers keep one entry
- * point for the account identity.
+ * package's pieces into a signup and a login.
+ *
+ * `deriveAuthVerifier` is re-exported because two modules import it from here
+ * (`auth-context.tsx` and the end-to-end test in `convex/secrets.test.ts`), and
+ * signup and login read better with the whole identity behind one import.
+ * `WrappedKeyFormatError` is deliberately not re-exported: nothing imports it,
+ * and `messageForUser` recognises it by `name`, not by class.
  */
-export { deriveAuthVerifier, WrappedKeyFormatError } from "@sluice/crypto";
+export { deriveAuthVerifier } from "@sluice/crypto";
 
 /** The public half of an account identity, in the exact shape `signup` takes. */
 export interface PublicIdentity {

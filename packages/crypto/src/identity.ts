@@ -33,12 +33,21 @@ import type { MasterUnlockKey } from "./muk";
  * string and validates only that it is non-empty; every constraint on it is
  * enforced here, at both ends of the round trip.
  *
- * The nonce is exactly 12 bytes (24 hex), the AES-GCM nonce `seal` produces.
- * The ciphertext is at least 16 bytes (32 hex), because the GCM tag alone is
- * 16 bytes and anything shorter cannot be a real ciphertext.
+ * BOTH WIDTHS ARE EXACT, NOT MINIMUMS. The nonce is 12 bytes (24 hex), the
+ * AES-GCM nonce `seal` produces. The ciphertext is 48 bytes (96 hex): both
+ * wrapped keys are 32-byte secrets (the X25519 private scalar and the Ed25519
+ * seed), and AES-GCM adds a 16-byte tag and nothing else, so a `k1` blob can
+ * have no other length. Pinning it exactly means a truncated, padded or
+ * odd-length field is reported as `WrappedKeyFormatError` here rather than
+ * surfacing as a bare hex-parsing error or an opaque AEAD rejection later. A
+ * key type with a different plaintext width is a new `k2` version, never a
+ * loosening of this one. The Rust CLI reproduces this grammar character for
+ * character, so it is a protocol constant, not a validation detail.
  */
 const BLOB_VERSION = "sluice.k1";
-const BLOB_PATTERN = /^sluice\.k1\.([0-9a-f]{24})\.([0-9a-f]{32,})$/;
+const NONCE_BYTES = 12;
+const CIPHERTEXT_BYTES = 48;
+const BLOB_PATTERN = /^sluice\.k1\.([0-9a-f]{24})\.([0-9a-f]{96})$/;
 
 /**
  * Associated data for the two wrapped keys.
@@ -52,10 +61,14 @@ const BLOB_PATTERN = /^sluice\.k1\.([0-9a-f]{24})\.([0-9a-f]{32,})$/;
  * The purpose label is what stops the two blobs being swapped: a database
  * operator who writes the X25519 blob into `wrappedSigningKey` produces a row
  * that FAILS to decrypt rather than one that yields a signing key which is
- * really an agreement key. The account's own email is deliberately NOT bound in
- * here, because the MUK is already unique per account (the salt is derived per
- * account) so a cross-account swap already fails, and binding it would add a
- * second thing an email change would have to migrate.
+ * really an agreement key.
+ *
+ * Nothing identifying the account is bound in here, and that is deliberate.
+ * The MUK is already unique per account, because its Argon2id salt is a random
+ * per-account value (see `mukSalt` in `muk.ts`), so a blob moved to another
+ * account's row already fails to open. The email in particular is NOT bound,
+ * because it is mutable: binding it would make every address change a re-wrap
+ * of both keys, for no protection the per-account MUK does not already give.
  */
 const KEY_AAD_PREFIX = "sluice/user-key/v1|";
 
@@ -63,6 +76,12 @@ const KEY_AAD_PREFIX = "sluice/user-key/v1|";
 export type KeyPurpose = "x25519" | "ed25519";
 
 export function userKeyAssociatedData(purpose: KeyPurpose): Uint8Array {
+  // The type already says this, but a caller in plain JS (or behind a cast)
+  // could pass "X25519" and get associated data that silently matches nothing
+  // the other clients produce. Refusing is cheaper than that failure.
+  if (purpose !== "x25519" && purpose !== "ed25519") {
+    throw new Error("purpose must be x25519 or ed25519");
+  }
   return utf8.encode(KEY_AAD_PREFIX + purpose);
 }
 
@@ -117,8 +136,21 @@ export class WrappedKeyFormatError extends Error {
   }
 }
 
-/** Serialises a sealed private key into the ratified `sluice.k1` blob. */
+/**
+ * Serialises a sealed private key into the ratified `sluice.k1` blob.
+ *
+ * It enforces exactly what `decodeWrappedKey` enforces, so this function can
+ * never emit a blob its own counterpart (or the CLI) would refuse. A wrong
+ * width here means the caller sealed something other than a 32-byte key, and
+ * finding that out at signup beats finding it out at the next login.
+ */
 export function encodeWrappedKey(box: SealedBox): string {
+  if (box.nonce.length !== NONCE_BYTES || box.ciphertext.length !== CIPHERTEXT_BYTES) {
+    // Lengths only; the bytes themselves never go into the message.
+    throw new WrappedKeyFormatError(
+      `A k1 wrapped key needs a ${NONCE_BYTES}-byte nonce and a ${CIPHERTEXT_BYTES}-byte ciphertext.`,
+    );
+  }
   return `${BLOB_VERSION}.${toHex(box.nonce)}.${toHex(box.ciphertext)}`;
 }
 
