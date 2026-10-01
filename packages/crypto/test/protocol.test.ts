@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { toHex, utf8 } from "../src/bytes";
+import { userKeyAssociatedData } from "../src/identity";
 import {
   pdkAssociatedData,
   revocationKeyAssociatedData,
@@ -303,6 +304,29 @@ describe("pdkAssociatedData v2", () => {
     ).toThrow(/^granteeId must be a token id hash$/);
   });
 
+  /**
+   * The token hash is the one grantee shape that is not a permanent id, so it
+   * has its own guard and needs its own edges pinned. The trailing newline is
+   * the case a port to PCRE or Python would get wrong (`$` there also matches
+   * before a final `\n`); the off-by-one lengths and the non-hex `g` are the
+   * cases a hand-rolled byte check would get wrong.
+   */
+  it("rejects every near miss of a token hash", () => {
+    for (const bad of [
+      `${TOKEN_HASH}\n`,
+      TOKEN_HASH.slice(0, 63),
+      `${TOKEN_HASH}0`,
+      `g${TOKEN_HASH.slice(1)}`,
+      TOKEN_HASH.toUpperCase(),
+      `A${TOKEN_HASH.slice(1)}`,
+      "",
+    ]) {
+      expect(() =>
+        pdkAssociatedData({ environmentUid: ENV, granteeType: "token", granteeId: bad }),
+      ).toThrow(/^granteeId must be a token id hash$/);
+    }
+  });
+
   it("rejects a non-string grantee id of either type", () => {
     for (const bad of NOT_STRINGS) {
       expect(() =>
@@ -403,6 +427,14 @@ describe("revocationKeyAssociatedData v2", () => {
     }
   });
 
+  it("rejects a non-string grantee uid", () => {
+    for (const bad of NOT_STRINGS) {
+      expect(() =>
+        revocationKeyAssociatedData({ orgUid: ORG, granteeUid: bad as unknown as string }),
+      ).toThrow(/^granteeUid must be a well-formed usr id$/);
+    }
+  });
+
   it("binds the pinned prefix", () => {
     expect([...utf8.encode("sluice/revocation-key/v2|")]).toEqual([
       115, 108, 117, 105, 99, 101, 47, 114, 101, 118, 111, 99, 97, 116, 105, 111, 110, 45, 107,
@@ -412,16 +444,59 @@ describe("revocationKeyAssociatedData v2", () => {
 });
 
 /**
- * THREE CONSTRUCTIONS, THREE DOMAINS.
+ * FOUR AEAD DOMAINS, AND THREE OF THEM SHARE ONE KEY.
  *
- * Not hypothetical: a `pdkGrants.wrappedPDK` and a
- * `revocationGrants.wrappedRevocationKey` are sealed under the SAME master
- * unlock key, so the only thing keeping one from opening as the other is that
- * their associated data differ. Distinct is not enough on its own -- if one
- * vector were a prefix of another, a future field appended to the shorter one
- * could make them equal -- so prefix-freedom is checked too.
+ * Not hypothetical: a `pdkGrants.wrappedPDK`, a
+ * `revocationGrants.wrappedRevocationKey` and the account's two wrapped private
+ * keys (`sluice/user-key/…`, `identity.ts`) are all sealed under the SAME master
+ * unlock key, so their associated data is what stops one being written into
+ * another's column and opened as the wrong kind of key. Secrets are the fourth
+ * domain, under a project data key. Distinct is not enough on its own -- if one
+ * were a prefix of another, a future field appended to the shorter one could
+ * make them equal -- so prefix-freedom is checked too, both over the full
+ * vectors and over the bare labels, whatever follows them.
  */
 describe("no two constructions share bytes", () => {
+  /**
+   * The labels as they must be spelled, hard-coded here, and the labels as the
+   * functions actually emit them, read back by encoding a valid input and
+   * slicing up to and including the first separator. Both are checked so a
+   * relabel in the source cannot slip past by also editing an expectation
+   * computed from it.
+   */
+  const EXPECTED_LABELS = [
+    "sluice/secret/v2|",
+    "sluice/pdk/v2|",
+    "sluice/revocation-key/v2|",
+    "sluice/user-key/v1|",
+  ];
+
+  const labelOf = (bytes: Uint8Array): string => {
+    const text = new TextDecoder().decode(bytes);
+    return text.slice(0, text.indexOf("|") + 1);
+  };
+
+  it("emits exactly the four expected labels", () => {
+    expect([
+      labelOf(secretAssociatedData({ environmentUid: ENV })),
+      labelOf(pdkAssociatedData({ environmentUid: ENV, granteeType: "user", granteeId: USR })),
+      labelOf(revocationKeyAssociatedData({ orgUid: ORG, granteeUid: USR })),
+      labelOf(userKeyAssociatedData("x25519")),
+    ]).toEqual(EXPECTED_LABELS);
+    expect(labelOf(userKeyAssociatedData("ed25519"))).toBe("sluice/user-key/v1|");
+  });
+
+  it("no label is a prefix of another", () => {
+    expect(new Set(EXPECTED_LABELS).size).toBe(EXPECTED_LABELS.length);
+    for (const a of EXPECTED_LABELS) {
+      for (const b of EXPECTED_LABELS) {
+        if (a !== b) expect(`${b} starts with ${a}: ${String(b.startsWith(a))}`).toBe(
+          `${b} starts with ${a}: false`,
+        );
+      }
+    }
+  });
+
   it("every v2 vector is distinct and none is a prefix of another", () => {
     const all = [SECRET_AAD, PDK_AAD_USER, PDK_AAD_TOKEN, REVOCATION_AAD];
     expect(new Set(all).size).toBe(all.length);

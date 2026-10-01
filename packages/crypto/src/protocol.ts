@@ -47,6 +47,20 @@ import { assertId } from "./ids";
  * client the AAD of a different environment and undo the environment binding
  * entirely, which is the one thing that binding exists to prevent.
  *
+ * WHAT PINNING THE CONSTRUCTION DOES NOT PIN: THE INPUTS. The rule is fixed in
+ * client code, but the environment uid fed into it is not -- today it comes
+ * from the server (`getBundle` returns `environmentUid`, and the dashboard reads
+ * it off the environment row). So the binding stops a row being MOVED between
+ * environments in the database: a blob copied from `dev` into `prod` names
+ * `dev` and will not open as `prod`. It does NOT stop a malicious server lying
+ * about which uid a NAME maps to: told that "prod" is `env_…` of some other
+ * environment whose grant the caller also holds, a client will faithfully open
+ * that environment's secrets and believe they are prod's. Closing that needs the
+ * client to pin name -> uid itself rather than trusting the server's answer each
+ * time. That is follow-up work; the planned single-string service token is
+ * minted client-side and can carry the environment uid, which pins it for the
+ * SDK at the moment the token is issued.
+ *
  * WHY THE ASSOCIATED DATA IS `/v2` AND THERE IS NO `/v1` PATH BESIDE IT.
  *
  * v1 bound a secret to the Convex document id of its environment, and could not
@@ -143,6 +157,15 @@ const TOKEN_ID_BYTES = 16;
  * No flags: `$` without `m` matches only at end of input, so a trailing
  * newline is rejected, and without `g` there is no `lastIndex` to carry
  * between calls.
+ *
+ * FOR A PORT (the Rust SDK, or anything else): these shape checks, and the ones
+ * in `ids.ts`, are BYTE RULES, not regexes. Exact length; every character in
+ * the lowercase hex alphabet `0-9a-f`; for a permanent id, the literal kind
+ * prefix (`env_`, `usr_`, `org_`) first. Implement them as byte comparisons. A
+ * regex is only safe where `$` means end of input, which is true in JavaScript
+ * and in Rust's `regex` crate but NOT in PCRE or Python, where `$` also matches
+ * just before a trailing newline -- so a ported `^[0-9a-f]{64}$` would accept
+ * `hash + "\n"` and seal a second, different AAD for the same grantee.
  */
 const TOKEN_HASH_PATTERN = /^[0-9a-f]{64}$/;
 
@@ -239,12 +262,19 @@ export function secretAssociatedData(params: { environmentUid: string }): Uint8A
  * The permanent id removes the constraint without touching the transaction:
  * the client mints `env_…` first, wraps under it, and passes both into the
  * same single mutation. So v2 binds it, and a grant blob copied into another
- * environment's row by someone with database write access now FAILS TO OPEN,
- * instead of opening to a key that merely fails against that environment's
- * secrets. The old argument that the binding was unnecessary -- a project data
- * key opens nothing but its own environment's ciphertext -- still holds as a
- * second line; it is no longer the only one, and a row that lies about where
- * it belongs now says so at the first unwrap rather than at the first secret.
+ * environment's row by someone with database write access now FAILS TO OPEN.
+ *
+ * THE STRONGEST REASON IS ON WRITES, NOT READS, and it is why v1's claim that
+ * the binding was "not needed" was wrong. v1 reasoned that a grant moved from
+ * environment A into B's row yields A's key, which opens none of B's existing
+ * secrets -- a read that fails, loudly, and no harm done. But a client does not
+ * only read with the key a grant gives it; it also SEALS with it. Handed A's
+ * key under B's row, a v1 client would encrypt every NEW secret it wrote to B
+ * under A's project data key, and those secrets would then be readable by
+ * everyone who holds a grant in A -- a confidentiality failure on the write
+ * path, silent, with nothing on B's side ever failing to open. Binding the
+ * environment into the grant makes the swapped row refuse to unwrap at all, so
+ * no client ever holds a key for B that is really A's.
  *
  * WHY THE GRANTEE IS IN HERE. `granteeType` and `granteeId` are COLUMNS, and a
  * column is not authenticated. Naming the grantee inside the associated data is
@@ -355,11 +385,20 @@ export function pdkAssociatedData(params: {
  * could sign its own revocation would be a kill switch the compromised party
  * holds.
  *
- * THE DOMAIN IS WHAT KEEPS THIS BLOB AND A PROJECT DATA KEY APART, and that
- * matters more here than domain separation usually does: both are sealed under
- * the SAME master unlock key, so the prefix is the only reason a
- * `pdkGrants.wrappedPDK` cannot be written into `revocationGrants` and opened
- * as a signing key.
+ * THE DOMAIN IS WHAT KEEPS THIS BLOB APART FROM EVERYTHING ELSE UNDER THE SAME
+ * KEY, and that matters more here than domain separation usually does. Three
+ * kinds of blob are sealed directly under one master unlock key: this one, a
+ * `pdkGrants.wrappedPDK` (`sluice/pdk/…`), and the account's own two private
+ * keys (`sluice/user-key/…`, in `identity.ts`). The label is the first and most
+ * general thing keeping any one of them from being written into another's
+ * column and opened as the wrong kind of key -- a project data key opened as a
+ * signing seed, or this seed opened as the account's X25519 key. In v2 the
+ * kind-prefixed ids after the label differ too, but that is a second line, not
+ * a substitute. Secrets (`sluice/secret/…`) are the fourth AEAD domain; they
+ * sit under a project data key rather than the MUK, but a key that is
+ * mislabelled once can sit anywhere, so the test suite asserts all FOUR labels
+ * are pairwise non-prefix, and no future field appended to one can make it
+ * collide with another.
  *
  * THE ARGUMENT IS AN OBJECT, and the two fields are ids of DIFFERENT kinds, so
  * a call site that passes them the wrong way round fails at the call rather

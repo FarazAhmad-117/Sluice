@@ -15,6 +15,18 @@ import { describe, expect, it } from "vitest";
 
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
 
+/**
+ * Any hand-written domain label owned by `@sluice/crypto`, at any version.
+ * Built from split strings so this file, which has to describe the pattern,
+ * cannot match it -- harmless today because only `src/` is scanned, but it
+ * keeps the rule correct if the scan ever widens to `test/`.
+ */
+const OWNED_LABEL = new RegExp(
+  "sluice" +
+    "/(secret|pdk|revocation-key|user-key|token-id|revocation|auth|unwrap)/v" +
+    "\\d",
+);
+
 function sources(): { name: string; text: string }[] {
   return readdirSync(SRC)
     .filter((name) => name.endsWith(".ts"))
@@ -66,22 +78,27 @@ describe("the source of this package", () => {
     expect(counted).toEqual({ "shell.ts": 2, "run.ts": 1 });
   });
 
-  it("never re-derives an associated data rule by hand", () => {
+  it("never re-derives an associated data rule or a domain label by hand", () => {
     // The whole failure class `packages/crypto/src/protocol.ts` exists to
     // close: a hand-copied literal that drifts by one character and produces
     // ciphertext nobody can read, with no error until somebody tries.
+    //
+    // Version-agnostic: a copy written today would spell the current version,
+    // a stale copy an old one, and a future version is banned before it
+    // exists. Every label here belongs to `@sluice/crypto` and is reached only
+    // through its functions.
     for (const file of sources()) {
-      for (const literal of [
-        "sluice/secret/v1",
-        "sluice/pdk/v1",
-        "sluice/token-id/v1",
-        "sluice/revocation/v1",
-        "sluice/auth/v1",
-        "sluice/unwrap/v1",
-      ]) {
-        expect(`${file.name} ${literal} ${String(file.text.includes(`"${literal}`))}`).toBe(
-          `${file.name} ${literal} false`,
-        );
+      const found = OWNED_LABEL.exec(file.text);
+      expect(found === null ? `${file.name} clean` : `${file.name}: ${found[0]}`).toBe(
+        `${file.name} clean`,
+      );
+    }
+  });
+
+  it("bans the labels it means to, at any version", () => {
+    for (const domain of ["secret", "pdk", "revocation-key", "user-key", "token-id"]) {
+      for (const version of ["1", "2", "9"]) {
+        expect(OWNED_LABEL.test(`${"sluice"}/${domain}/v${version}|`)).toBe(true);
       }
     }
   });
