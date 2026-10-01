@@ -18,10 +18,15 @@ import {
   type RawSecretRow,
 } from "../src/bundle";
 
-const ENVIRONMENT_ID = "k17abcdefghijklmnopqrstuvwxyz01";
+const ENVIRONMENT_UID = "env_000102030405060708090a0b0c0d0e0f";
+const OTHER_ENVIRONMENT_UID = "env_f0e0d0c0b0a090807060504030201000";
 
 async function fixture(
   entries: Record<string, string> = { DATABASE_URL: "postgres://real", API_KEY: "sk-live-xyz" },
+  // The environment the ROWS are sealed under. Defaults to the one the bundle
+  // names and the grant is wrapped under; set it to another to build a bundle
+  // whose key opens but whose rows were copied in from a different environment.
+  rowEnvironmentUid: string = ENVIRONMENT_UID,
 ) {
   const minted = mintToken({ environment: "prod" });
   const identity = TokenIdentity.fromToken(minted.token);
@@ -31,12 +36,13 @@ async function fixture(
     identity.unwrapKey,
     pdk,
     pdkAssociatedData({
+      environmentUid: ENVIRONMENT_UID,
       granteeType: "token",
       granteeId: tokenIdHash({ tokenId: minted.tokenId }),
     }),
   );
 
-  const aad = secretAssociatedData({ environmentId: ENVIRONMENT_ID });
+  const aad = secretAssociatedData({ environmentUid: rowEnvironmentUid });
   const secrets: RawSecretRow[] = [];
   let index = 0;
   for (const [name, value] of Object.entries(entries)) {
@@ -56,7 +62,7 @@ async function fixture(
   }
 
   const raw: RawBundle = {
-    environmentId: ENVIRONMENT_ID,
+    environmentUid: ENVIRONMENT_UID,
     epoch: 4,
     pdkVersion: 1,
     wrappedPDK: toHex(wrapped.ciphertext),
@@ -97,12 +103,71 @@ describe("decryptSecrets", () => {
   });
 
   it("refuses a secret sealed for another environment", async () => {
+    // The grant is genuine and opens; only the rows were sealed elsewhere. This
+    // is a `dev` row copied into `prod` by someone with database write access.
+    const { identity, raw } = await fixture(undefined, OTHER_ENVIRONMENT_UID);
+    const error = await decryptSecrets(identity, raw).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(BundleDecryptError);
+    expect((error as BundleDecryptError).code).toBe("row-open");
+  });
+
+  it("delivers nothing when the bundle names another environment than the one it was sealed under", async () => {
+    // v2 binds the environment into the grant as well as the rows, so a bundle
+    // relabelled to another environment fails at the first unwrap.
     const { identity, raw } = await fixture();
     const error = await decryptSecrets(identity, {
       ...raw,
-      environmentId: "k17zzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+      environmentUid: OTHER_ENVIRONMENT_UID,
     }).catch((e: unknown) => e);
-    expect((error as BundleDecryptError).code).toBe("row-open");
+    expect(error).toBeInstanceOf(BundleDecryptError);
+    expect((error as BundleDecryptError).code).toBe("pdk-unwrap");
+  });
+
+  it("refuses a bundle with no environmentUid as malformed, never as a raw exception", async () => {
+    const { identity, raw } = await fixture();
+    const { environmentUid: _dropped, ...withoutUid } = raw;
+    const error = await decryptSecrets(identity, withoutUid as unknown as RawBundle).catch(
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(BundleDecryptError);
+    expect((error as BundleDecryptError).code).toBe("malformed");
+  });
+
+  it("refuses the environment's Convex document id in place of its permanent id", async () => {
+    // The v1 field, still arriving from a backend that has not moved, must be
+    // read as "no permanent id" and not quietly bound into the associated data.
+    const { identity, raw } = await fixture();
+    const { environmentUid: _dropped, ...withoutUid } = raw;
+    const error = await decryptSecrets(identity, {
+      ...withoutUid,
+      environmentId: "k17dn9q2x4m8p3v6b0zc5t7wgh",
+    } as unknown as RawBundle).catch((e: unknown) => e);
+    expect((error as BundleDecryptError).code).toBe("malformed");
+  });
+
+  it("turns a malformed environmentUid into a named refusal, not the crypto layer's throw", async () => {
+    // `secretAssociatedData` and `pdkAssociatedData` THROW a plain Error on a
+    // malformed id. Every one of these must surface as a BundleDecryptError so
+    // the shell logs it by code and holds the last known good set.
+    const { identity, raw } = await fixture();
+    const malformed = [
+      "k17dn9q2x4m8p3v6b0zc5t7wgh",
+      "env_000102030405060708090A0B0C0D0E0F",
+      "env_0001",
+      "",
+      "usr_000102030405060708090a0b0c0d0e0f",
+    ];
+    for (const environmentUid of malformed) {
+      const error = await decryptSecrets(identity, { ...raw, environmentUid }).catch(
+        (e: unknown) => e,
+      );
+      expect(error).toBeInstanceOf(BundleDecryptError);
+      expect((error as BundleDecryptError).code).toBe("malformed");
+      // The rejected id is never echoed: it arrived from an untrusted row.
+      if (environmentUid !== "") {
+        expect((error as Error).message).not.toContain(environmentUid);
+      }
+    }
   });
 
   it("refuses the whole bundle when one row is at another key version", async () => {
@@ -206,6 +271,28 @@ describe("readRevocation", () => {
     ).toBeUndefined();
   });
 
+  it("reads the notice off a bundle whose environmentUid is missing or malformed", async () => {
+    // The notice does not depend on the environment, and a bundle whose
+    // environment id cannot be used must still be able to revoke the token.
+    const { identity, raw } = await fixture();
+    const notice = {
+      tokenId: identity.tokenIdHex,
+      epoch: 3,
+      revokedAt: 1,
+      reason: "x",
+      signature: "0".repeat(128),
+    };
+    const { environmentUid: _dropped, ...withoutUid } = raw;
+    for (const bundle of [
+      { ...withoutUid, revocationNotice: notice },
+      { ...raw, environmentUid: "k17dn9q2x4m8p3v6b0zc5t7wgh", revocationNotice: notice },
+      { ...raw, environmentUid: "env_000102030405060708090A0B0C0D0E0F", revocationNotice: notice },
+    ]) {
+      expect(() => readRevocation(bundle as unknown as RawBundle)).not.toThrow();
+      expect(readRevocation(bundle as unknown as RawBundle)?.notice.epoch).toBe(3);
+    }
+  });
+
   it("never throws, whatever the server sends down the subscription", () => {
     const hostile: unknown[] = [
       null,
@@ -214,6 +301,8 @@ describe("readRevocation", () => {
       { revocationNotice: null },
       { revocationNotice: { signature: 42 } },
       { revocationNotice: { tokenId: 1, epoch: "x", revokedAt: null, reason: {}, signature: "" } },
+      { environmentUid: 42, revocationNotice: {} },
+      { environmentUid: "k17dn9q2x4m8p3v6b0zc5t7wgh", secrets: [] },
     ];
     for (const value of hostile) {
       expect(() => readRevocation(value as RawBundle)).not.toThrow();

@@ -57,7 +57,18 @@ export interface RawRevocationNotice {
 
 /** Exactly the shape `convex/bundle.ts` returns. Nothing here reads anything else. */
 export interface RawBundle {
-  readonly environmentId: string;
+  /**
+   * The environment's PERMANENT id, `env_` plus 32 lowercase hex, minted by the
+   * client that created the environment. Both associated data rules bind it.
+   *
+   * Never the Convex document id. That id is local to one deployment and is
+   * re-minted when an org moves cells, so ciphertext bound to it would stop
+   * opening on the day of the move, and no server could repair it because no
+   * server holds a key. A bundle that still carries only `environmentId` is a
+   * bundle from a backend this build does not speak to, and is refused as
+   * malformed rather than guessed at.
+   */
+  readonly environmentUid: string;
   readonly epoch: number;
   readonly pdkVersion?: number | undefined;
   readonly wrappedPDK?: string | undefined;
@@ -179,7 +190,7 @@ export async function decryptSecrets(
   if (
     typeof raw !== "object" ||
     raw === null ||
-    typeof raw.environmentId !== "string" ||
+    typeof raw.environmentUid !== "string" ||
     typeof raw.epoch !== "number" ||
     !Number.isSafeInteger(raw.epoch) ||
     raw.epoch < 0 ||
@@ -188,6 +199,48 @@ export async function decryptSecrets(
     throw new BundleDecryptError(
       "malformed",
       "The Sluice bundle did not have the shape this build understands.",
+    );
+  }
+
+  // BOTH ASSOCIATED DATA VALUES ARE BUILT HERE, UP FRONT, AND INSIDE A GUARD.
+  //
+  // `pdkAssociatedData` and `secretAssociatedData` validate the id they are
+  // given and THROW a plain `Error` when it is not a well formed `env_` id. The
+  // value comes straight off a subscription that anyone with database write
+  // access can shape, so a malformed one is an ordinary hostile input, not a
+  // bug, and it must fail exactly like every other bundle that will not open:
+  // as a named `BundleDecryptError` that the shell logs by code while holding
+  // the last known good set. Letting the crypto layer's throw out unconverted
+  // would make a malformed bundle an anonymous exception on the same code path
+  // that, one bundle later, has to deliver a shutdown. A malformed bundle must
+  // never become an exception on the path to a shutdown.
+  //
+  // The guard is this narrow on purpose. It wraps only the two pure functions
+  // whose throw is a statement about the input; it does not wrap `unseal` or
+  // the row loop, which have their own named failures below. The message does
+  // not repeat the offending id, for the same reason `safeId` exists.
+  //
+  // Built before the grant check so that a bundle with a usable grant and an
+  // unusable environment id is reported as what it is, malformed, rather than
+  // as a missing grant that sends an operator to the dashboard for nothing.
+  let pdkAAD: Uint8Array;
+  let secretAAD: Uint8Array;
+  try {
+    // Pinned in client code and NEVER taken from the server beyond the id the
+    // bundle names. A deployment that could choose these bytes could hand this
+    // process the associated data of a different grant.
+    pdkAAD = pdkAssociatedData({
+      environmentUid: raw.environmentUid,
+      granteeType: "token",
+      granteeId: identity.tokenIdHashHex,
+    });
+    secretAAD = secretAssociatedData({ environmentUid: raw.environmentUid });
+  } catch {
+    throw new BundleDecryptError(
+      "malformed",
+      "The Sluice bundle named its environment with an id that is not a permanent " +
+        "environment id, so none of its secrets can be bound to it. Sluice is holding the " +
+        "last known good secrets.",
     );
   }
 
@@ -213,21 +266,20 @@ export async function decryptSecrets(
     pdk = await unseal(
       identity.unwrapKey,
       { ciphertext: fromHex(raw.wrappedPDK), nonce: fromHex(raw.pdkNonce) },
-      // Pinned in client code and NEVER taken from the server. A deployment
-      // that could choose these bytes could hand this process the associated
-      // data of a different grant.
-      pdkAssociatedData({ granteeType: "token", granteeId: identity.tokenIdHashHex }),
+      // Bound to the environment as well as to this token since v2, so a grant
+      // copied into another environment's row fails HERE, at the first unwrap.
+      pdkAAD,
     );
   } catch {
     throw new BundleDecryptError(
       "pdk-unwrap",
       "The project data key in this bundle could not be opened with this token's unwrap key. " +
         "The bundle is not authentic for this token, or the grant was wrapped to a different " +
-        "grantee.",
+        "grantee or for a different environment.",
     );
   }
 
-  const associatedData = secretAssociatedData({ environmentId: raw.environmentId });
+  const associatedData = secretAAD;
   const secrets: Record<string, string> = {};
   try {
     for (const row of raw.secrets) {

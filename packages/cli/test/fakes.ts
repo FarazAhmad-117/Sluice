@@ -264,7 +264,7 @@ export function orgKeyPair(): Org {
   return { privateKey, publicKeyHex: toHex(ed25519.getPublicKey(privateKey)) };
 }
 
-export const ENVIRONMENT_ID = "k17abcdefghijklmnopqrstuvwxyz01";
+export const ENVIRONMENT_UID = "env_000102030405060708090a0b0c0d0e0f";
 
 export interface Fixture {
   readonly identity: TokenIdentity;
@@ -281,11 +281,12 @@ export async function tokenFixture(): Promise<Fixture> {
     identity.unwrapKey,
     pdk,
     pdkAssociatedData({
+      environmentUid: ENVIRONMENT_UID,
       granteeType: "token",
       granteeId: tokenIdHash({ tokenId: minted.tokenId }),
     }),
   );
-  const aad = secretAssociatedData({ environmentId: ENVIRONMENT_ID });
+  const aad = secretAssociatedData({ environmentUid: ENVIRONMENT_UID });
 
   return {
     identity,
@@ -310,7 +311,7 @@ export async function tokenFixture(): Promise<Fixture> {
         index += 1;
       }
       return {
-        environmentId: ENVIRONMENT_ID,
+        environmentUid: ENVIRONMENT_UID,
         epoch,
         pdkVersion: 1,
         wrappedPDK: toHex(wrapped.ciphertext),

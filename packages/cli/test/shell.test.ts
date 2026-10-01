@@ -5,6 +5,7 @@ import { MAX_CLOCK_STEP_MS, NO_PERSISTED_FLOOR, SluiceCore } from "@sluice/sdk";
 import { toHex } from "@sluice/crypto";
 import { Shell } from "../src/shell";
 import {
+  ENVIRONMENT_UID,
   FakeChild,
   FakeFloorStore,
   FakeHandshaker,
@@ -557,7 +558,40 @@ describe("Shell: availability, section 4.3", () => {
   it("delivers a notice even when the grant has vanished, which is the point of the split", async () => {
     const h = await booted({ drainMs: 0 });
     h.source.emit({
-      environmentId: "k17abcdefghijklmnopqrstuvwxyz01",
+      environmentUid: ENVIRONMENT_UID,
+      epoch: 1,
+      secrets: [],
+      revocationNotice: signedNotice(org, fixture.identity, { epoch: 3 }),
+    });
+    await flush(() => h.shell.busy);
+    expect(h.exits).toEqual([1]);
+  });
+
+  it("does not exit on a bundle whose environmentUid is malformed, and keeps the last good set", async () => {
+    // The crypto layer throws on a malformed id. That throw must land as a
+    // logged, unreadable bundle and never as a shutdown or an escaped exception.
+    const h = await booted();
+    const good = await fixture.bundleWith({ A: "b" }, 2);
+    for (const environmentUid of ["k17dn9q2x4m8p3v6b0zc5t7wgh", ENVIRONMENT_UID.toUpperCase()]) {
+      h.source.emit({ ...good, environmentUid });
+      await flush(() => h.shell.busy);
+    }
+    const { environmentUid: _dropped, ...withoutUid } = good;
+    h.source.emit(withoutUid as typeof good);
+    await flush(() => h.shell.busy);
+    await h.tick(MAX_CLOCK_STEP_MS * 3);
+    expect(h.exits).toEqual([]);
+    expect(h.child.signals).toEqual([]);
+    expect(h.child.spawnedEnv?.DATABASE_URL).toBe("postgres://real");
+    expect(h.logger.has("bundle-unreadable")).toBe(true);
+    // Logged by the bundle layer's own code, not as an anonymous exception.
+    expect(h.logger.text).toContain("malformed");
+  });
+
+  it("still delivers a notice carried on a bundle whose environmentUid is malformed", async () => {
+    const h = await booted({ drainMs: 0 });
+    h.source.emit({
+      environmentUid: "k17dn9q2x4m8p3v6b0zc5t7wgh",
       epoch: 1,
       secrets: [],
       revocationNotice: signedNotice(org, fixture.identity, { epoch: 3 }),
