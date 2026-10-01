@@ -1187,7 +1187,7 @@ describe("end to end", () => {
       const salt = normaliseWebEmail(email);
       const muk = await deriveMUK(password, salt);
       const { wrapped, pub } = await createIdentity(muk);
-      const authVerifier = await deriveAuthVerifier(muk);
+      const authVerifier = deriveAuthVerifier(muk);
 
       const signedUpUserId = await t.mutation(api.auth.signup, {
         email: salt,

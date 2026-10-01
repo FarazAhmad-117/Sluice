@@ -312,7 +312,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         setPhase("generating-keys");
         const { wrapped, pub } = await createIdentity(muk);
-        const authVerifier = await deriveAuthVerifier(muk);
+        const authVerifier = deriveAuthVerifier(muk);
 
         setPhase("contacting-server");
         // Only public material, two opaque blobs and a verifier. No password,
@@ -373,7 +373,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
         const salt = normaliseEmail(email);
         const muk = await derive(password, salt);
-        const authVerifier = await deriveAuthVerifier(muk);
+        const authVerifier = deriveAuthVerifier(muk);
 
         setPhase("contacting-server");
         const result = await client.mutation(api.auth.login, { email: salt, authVerifier });

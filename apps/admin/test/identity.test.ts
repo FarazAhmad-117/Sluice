@@ -6,7 +6,12 @@ import {
   identityMatches,
   unwrapIdentity,
 } from "../src/lib/auth/identity";
-import { normaliseEmail } from "../src/lib/auth/email";
+import {
+  EmailFormatError,
+  emailLocalPart,
+  isValidEmail,
+  normaliseEmail,
+} from "../src/lib/auth/email";
 import { openSecret } from "../src/lib/secrets/decrypt";
 
 /**
@@ -35,31 +40,25 @@ describe("deriveAuthVerifier", () => {
     // `assertCanonicalHex32` on the server rejects anything else, including
     // uppercase hex and base64, and its message names only the field. This is
     // the check that stops that being discovered at signup.
-    return deriveAuthVerifier(fixedKey()).then((verifier) => {
-      expect(verifier).toMatch(CANONICAL_HEX_32);
-    });
+    expect(deriveAuthVerifier(fixedKey())).toMatch(CANONICAL_HEX_32);
   });
 
-  it("is deterministic for one key", async () => {
-    const [first, second] = await Promise.all([
-      deriveAuthVerifier(fixedKey()),
-      deriveAuthVerifier(fixedKey()),
-    ]);
-    expect(first).toBe(second);
+  it("is deterministic for one key", () => {
+    expect(deriveAuthVerifier(fixedKey())).toBe(deriveAuthVerifier(fixedKey()));
   });
 
-  it("is not the master unlock key, nor any prefix of it", async () => {
+  it("is not the master unlock key, nor any prefix of it", () => {
     // The single property this construction has to have: the server learns the
     // verifier and must not thereby learn the key that unwraps everything.
     const key = fixedKey();
-    const verifier = await deriveAuthVerifier(key);
+    const verifier = deriveAuthVerifier(key);
     expect(verifier).not.toBe(toHex(key.bytes));
     expect(toHex(key.bytes).startsWith(verifier.slice(0, 16))).toBe(false);
   });
 
-  it("differs for different keys", async () => {
-    const a = await deriveAuthVerifier(new MasterUnlockKey(new Uint8Array(32).fill(1)));
-    const b = await deriveAuthVerifier(new MasterUnlockKey(new Uint8Array(32).fill(2)));
+  it("differs for different keys", () => {
+    const a = deriveAuthVerifier(new MasterUnlockKey(new Uint8Array(32).fill(1)));
+    const b = deriveAuthVerifier(new MasterUnlockKey(new Uint8Array(32).fill(2)));
     expect(a).not.toBe(b);
   });
 });
@@ -125,17 +124,49 @@ describe("createIdentity and unwrapIdentity", () => {
   });
 });
 
-describe("normaliseEmail", () => {
-  it("agrees with the server: trimmed and lowercased", () => {
+/**
+ * The rule itself is tested once, in `@sluice/crypto`. What is tested here is
+ * only what the dashboard wrapper adds: form copy in place of the server's
+ * field-named messages, on an error `messageForUser` still recognises.
+ */
+describe("normaliseEmail (dashboard copy)", () => {
+  it("returns the package's canonical form unchanged", () => {
     expect(normaliseEmail("  Faraz@Example.COM ")).toBe("faraz@example.com");
   });
 
-  it("rejects an address with whitespace inside it", () => {
-    expect(() => normaliseEmail("a b@example.com")).toThrow();
+  it("phrases a shape failure as an instruction, without echoing the input", () => {
+    expect(() => normaliseEmail("a b@example.com")).toThrow(
+      "Enter a single email address with no spaces.",
+    );
+    expect(() => normaliseEmail("a@b@example.com")).toThrow(EmailFormatError);
   });
 
-  it("rejects an address with two at signs", () => {
-    expect(() => normaliseEmail("a@b@example.com")).toThrow();
+  it("phrases a length failure as an instruction", () => {
+    expect(() => normaliseEmail("   ")).toThrow(
+      "Enter an email address between 1 and 254 characters.",
+    );
+  });
+
+  it("keeps the error name auth-context matches on", () => {
+    try {
+      normaliseEmail("");
+    } catch (error) {
+      expect((error as Error).name).toBe("EmailFormatError");
+      return;
+    }
+    throw new Error("expected normaliseEmail to throw");
+  });
+});
+
+describe("isValidEmail and emailLocalPart", () => {
+  it("never throws", () => {
+    expect(isValidEmail("a b@c.d")).toBe(false);
+    expect(isValidEmail("ada@example.com")).toBe(true);
+  });
+
+  it("extracts the lowercased local part", () => {
+    expect(emailLocalPart(" Ada@Example.com")).toBe("ada");
+    expect(emailLocalPart("no-at-sign")).toBe("");
   });
 });
 

@@ -59,7 +59,16 @@ import * as api from "../src/index";
  *
  * `PDKGranteeType` is absent from the list below and that is not an oversight:
  * it is an interface-like type alias, erased at compile time, so `Object.keys`
- * cannot see it and only `tsc` guards it.
+ * cannot see it and only `tsc` guards it. The same is true of `KeyPurpose` and
+ * `EmailFormatReason`.
+ *
+ * `deriveAuthVerifier`, `encodeWrappedKey`, `decodeWrappedKey`,
+ * `userKeyAssociatedData` and `normaliseEmail` ARE here, for the same reason as
+ * the four above: the dashboard and the CLI must compute them identically for
+ * one account to work from both. `AUTH_VERIFIER_LABEL`, `KEY_AAD_PREFIX` and
+ * `BLOB_PATTERN` stay private on the same principle as the protocol prefixes.
+ * `WrappedKeyFormatError` and `EmailFormatError` are classes so that callers
+ * can `instanceof` them to decide how to report a failure.
  *
  * `mukSalt`, `handshakeMessage`, `encode`, `assertValidNotice`, `importKey` and
  * the `*_INFO` / `*_PATTERN` / `*_BYTES` / `*_LABEL` constants stay private.
@@ -68,15 +77,21 @@ import * as api from "../src/index";
  */
 const PUBLIC_SURFACE = [
   "ARGON2_PARAMS",
+  "EmailFormatError",
   "MasterUnlockKey",
   "MintedToken",
   "VERSION",
+  "WrappedKeyFormatError",
   "assertConformantArgon2",
   "constantTimeEqual",
+  "decodeWrappedKey",
+  "deriveAuthVerifier",
   "deriveMUK",
   "deriveTokenKeys",
+  "encodeWrappedKey",
   "fromHex",
   "mintToken",
+  "normaliseEmail",
   "parseToken",
   "pdkAssociatedData",
   "randomBytes",
@@ -88,6 +103,7 @@ const PUBLIC_SURFACE = [
   "toHex",
   "tokenIdHash",
   "unseal",
+  "userKeyAssociatedData",
   "utf8",
   "verifyHandshake",
   "verifyRevocation",

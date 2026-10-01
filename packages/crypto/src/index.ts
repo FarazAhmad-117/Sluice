@@ -109,3 +109,31 @@ export {
   tokenIdHash,
 } from "./protocol";
 export type { PDKGranteeType } from "./protocol";
+
+/**
+ * The account identity's wire formats: the auth verifier, the wrapped key blob
+ * and the associated data binding each blob to its purpose.
+ *
+ * These moved here from the dashboard for the same reason as the four above,
+ * with a different second party: not the SDK but the CLI, which must log in to
+ * an account the browser created and open the keys the browser wrapped. The
+ * labels (`AUTH_VERIFIER_LABEL`, `KEY_AAD_PREFIX`) and the blob pattern stay
+ * private for the reason given above -- reaching them means calling the
+ * function that binds them.
+ */
+export {
+  decodeWrappedKey,
+  deriveAuthVerifier,
+  encodeWrappedKey,
+  userKeyAssociatedData,
+  WrappedKeyFormatError,
+} from "./identity";
+export type { KeyPurpose } from "./identity";
+
+/**
+ * Email canonicalisation. Not cryptography, but an input to it, and the server
+ * index and the client key derivation both break silently if two sides
+ * canonicalise one address differently. One definition, here.
+ */
+export { EmailFormatError, normaliseEmail } from "./email";
+export type { EmailFormatReason } from "./email";
