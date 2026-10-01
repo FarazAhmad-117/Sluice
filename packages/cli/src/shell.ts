@@ -110,7 +110,6 @@ const BASE_BACKOFF_MS = 1_000;
 /** The ceiling on backoff. Longer than this and a revocation waits too long. */
 const MAX_BACKOFF_MS = 30_000;
 
-
 export interface ShellOptions {
   readonly core: SluiceCore;
   readonly identity: TokenIdentity;
