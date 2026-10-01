@@ -1,6 +1,6 @@
 import { useId, useState } from "react";
 import { useMutation } from "convex/react";
-import { ConvexError } from "convex/values";
+import { newId } from "@sluice/crypto";
 import type { ReactNode } from "react";
 import { api } from "@convex/_generated/api";
 import type { Id } from "@convex/_generated/dataModel";
@@ -10,12 +10,16 @@ import {
   inputControl,
   primaryButton,
   quietButton,
+  secondaryButton,
 } from "@/components/app/controls";
 import { useAuth } from "@/lib/auth/auth-context";
 import { SLUG_HINT, isSlug } from "@/lib/naming";
 import { createRevocationKeypair, wrapRevocationKey } from "@/lib/orgs/revocation-key";
 import { createProjectDataKey, wrapProjectDataKey } from "@/lib/secrets/pdk";
-import { sealSecret } from "@/lib/secrets/seal";
+import type { EnvironmentKey } from "@/lib/secrets/pdk";
+import { newSecretSlot, sealSecret } from "@/lib/secrets/seal";
+import { describeWriteFailure } from "@/lib/secrets/write-errors";
+import type { WriteFailure } from "@/lib/secrets/write-errors";
 
 /**
  * CREATING THE THINGS THIS DASHBOARD READS.
@@ -29,8 +33,19 @@ import { sealSecret } from "@/lib/secrets/seal";
  *                that first grant in ONE transaction, so an environment whose
  *                secrets nobody can open cannot exist.
  *   secret       the name and the value are sealed here under the project data
- *                key for the environment, bound to that environment id by the
- *                associated data. The mutation takes four hex strings.
+ *                key for the environment, each bound by its own associated
+ *                data to the environment's permanent uid, the secret's
+ *                permanent uid (minted here), its version and its field. The
+ *                mutation takes four hex strings and the uid and version they
+ *                were sealed for.
+ *
+ * EVERY PERMANENT ID IS MINTED HERE, BEFORE THE WRAP OR SEAL THAT BINDS IT.
+ * `org_`, `env_` and `sec_` ids come from `newId` in this browser and are sent
+ * as arguments, because the associated data names them and must be computed
+ * before the row exists. The grantee of every wrap is `session.userUid`, the
+ * account's permanent `usr_` id, and NEVER `session.userId`: the Convex document
+ * id is local to one deployment, is refused by the associated data rules by
+ * shape, and is not what any grant is keyed by.
  *
  * EVERY FORM BODY IS ITS OWN COMPONENT, MOUNTED ONLY WHILE THE FORM IS OPEN,
  * and that is a decision about plaintext rather than about tidiness. If the
@@ -91,19 +106,31 @@ function Disclosure({
 }
 
 /**
- * Turns anything a mutation throws into a sentence.
+ * A refused write, as a sentence, with a reload control when only a reload can
+ * fix it.
  *
- * `ConvexError.data` carries the server's own message, which is already written
- * for a person and deliberately says nothing it should not. Everything else
- * gets a generic line: a raw transport error is noise, and a thrown value on
- * these paths can carry ciphertext.
+ * The mapping lives in `write-errors.ts`, which says why the two stale-slot
+ * refusals are shown exactly as the server wrote them. Reload is a full page
+ * load on purpose: the project data key and the version this tab holds were
+ * fetched once, and a page load is the one route that refetches both. It locks
+ * the vault, which is the stated cost: the key is never persisted, so the
+ * password is asked for again.
  */
-function messageFor(cause: unknown): string {
-  if (cause instanceof ConvexError && typeof cause.data === "string" && cause.data.length > 0) {
-    return cause.data;
-  }
-  if (cause instanceof Error && cause.name === "PdkUnwrapError") return cause.message;
-  return "That did not work. Try again.";
+function WriteFailureNotice({ failure }: { failure: WriteFailure }) {
+  return (
+    <div className="flex flex-col gap-2">
+      <FormError>{failure.message}</FormError>
+      {failure.reload ? (
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
+          className={secondaryButton}
+        >
+          Reload the page
+        </button>
+      ) : null}
+    </div>
+  );
 }
 
 function OrgFields({
@@ -119,7 +146,7 @@ function OrgFields({
   const slugId = useId();
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<WriteFailure | null>(null);
   const [busy, setBusy] = useState(false);
 
   const ready = name.trim().length > 0 && isSlug(slug) && !busy && session !== null && muk !== null;
@@ -148,13 +175,21 @@ function OrgFields({
              * means one of them retries under another name. A form that reused
              * a keypair across attempts would be a form that could pair a wrap
              * with the wrong attempt's state. A fresh pair per submit cannot.
+             *
+             * The org's permanent uid is minted per attempt too, and BEFORE
+             * the wrap, because the wrap's associated data names it: the grant
+             * opens only for this org and this grantee. One uid per attempt
+             * also means a refused attempt cannot leave a uid half used.
              */
+            const orgUid = newId("org");
             const keypair = createRevocationKeypair();
             const wrapped = await wrapRevocationKey(muk, keypair.privateKey, {
-              granteeId: session.userId,
+              orgUid,
+              granteeUid: session.userUid,
             });
             const orgId = await createOrg({
               sessionToken: session.sessionToken,
+              orgUid,
               name: name.trim(),
               slug,
               revocationPublicKey: keypair.revocationPublicKey,
@@ -163,7 +198,7 @@ function OrgFields({
             onCreated(orgId);
             close();
           } catch (cause) {
-            setError(messageFor(cause));
+            setError(describeWriteFailure(cause));
             setBusy(false);
           }
         })();
@@ -192,7 +227,7 @@ function OrgFields({
         A revocation signing key is generated in this browser and wrapped to your account. It is
         the only thing that can kill a stolen token, and the server never sees it.
       </p>
-      {error === null ? null : <FormError>{error}</FormError>}
+      {error === null ? null : <WriteFailureNotice failure={error} />}
       <button type="submit" className={primaryButton} disabled={!ready}>
         {busy ? "Creating" : "Create organisation"}
       </button>
@@ -242,7 +277,7 @@ function ProjectFields({
   const slugId = useId();
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<WriteFailure | null>(null);
   const [busy, setBusy] = useState(false);
 
   const ready = name.trim().length > 0 && isSlug(slug) && !busy;
@@ -266,7 +301,7 @@ function ProjectFields({
             close();
           })
           .catch((cause: unknown) => {
-            setError(messageFor(cause));
+            setError(describeWriteFailure(cause));
             setBusy(false);
           });
       }}
@@ -293,7 +328,7 @@ function ProjectFields({
           spellCheck={false}
         />
       </Field>
-      {error === null ? null : <FormError>{error}</FormError>}
+      {error === null ? null : <WriteFailureNotice failure={error} />}
       <button type="submit" className={primaryButton} disabled={!ready}>
         {busy ? "Creating" : "Create project"}
       </button>
@@ -328,7 +363,7 @@ function EnvironmentFields({
   const createEnvironment = useMutation(api.environments.createEnvironment);
   const nameId = useId();
   const [name, setName] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<WriteFailure | null>(null);
   const [busy, setBusy] = useState(false);
 
   // `name` is the last segment of the address the SDK resolves a config by, so
@@ -348,13 +383,25 @@ function EnvironmentFields({
             // MINTED HERE. This 32 byte key is the only thing that will ever
             // open this environment's secrets, and this browser is the only
             // place it exists in plaintext.
+            //
+            // The environment's permanent uid is minted here as well, before
+            // the wrap that names it, and the key version is 1 because that is
+            // the only version a new environment has. Both go into the grant's
+            // associated data and both are stated to the server, which refuses
+            // a version other than 1 and a uid that is already taken.
+            const environmentUid = newId("env");
+            const pdkVersion = 1;
             const pdk = createProjectDataKey();
             const wrapped = await wrapProjectDataKey(muk, pdk, {
+              environmentUid,
+              pdkVersion,
               granteeType: "user",
-              granteeId: session.userId,
+              granteeId: session.userUid,
             });
             const environmentId = await createEnvironment({
               sessionToken: session.sessionToken,
+              environmentUid,
+              pdkVersion,
               projectId,
               name,
               ...wrapped,
@@ -362,7 +409,7 @@ function EnvironmentFields({
             onCreated(environmentId);
             close();
           } catch (cause) {
-            setError(messageFor(cause));
+            setError(describeWriteFailure(cause));
             setBusy(false);
           }
         })();
@@ -383,7 +430,7 @@ function EnvironmentFields({
         A new encryption key is generated in this browser and wrapped to your account. The server
         never sees it.
       </p>
-      {error === null ? null : <FormError>{error}</FormError>}
+      {error === null ? null : <WriteFailureNotice failure={error} />}
       <button type="submit" className={primaryButton} disabled={!ready}>
         {busy ? "Creating" : "Create environment"}
       </button>
@@ -427,11 +474,11 @@ export function NewEnvironmentForm({
 
 function SecretFields({
   environmentId,
-  pdk,
+  environmentKey,
   close,
 }: {
   environmentId: Id<"environments">;
-  pdk: Uint8Array;
+  environmentKey: EnvironmentKey;
   close(): void;
 }) {
   const { session } = useAuth();
@@ -445,7 +492,7 @@ function SecretFields({
    * parent, writes it to storage, puts it in a query argument or logs it.
    */
   const [value, setValue] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<WriteFailure | null>(null);
   const [busy, setBusy] = useState(false);
 
   const ready = name.trim().length > 0 && value.length > 0 && !busy;
@@ -460,22 +507,32 @@ function SecretFields({
         setError(null);
         void (async () => {
           try {
-            // Sealed BEFORE anything is sent. What crosses the wire is four hex
-            // strings, bound to this environment id by the associated data,
-            // under a key the server has never held.
-            const sealed = await sealSecret(pdk, {
-              environmentId,
+            // Sealed BEFORE anything is sent, for one exact slot: a fresh
+            // permanent secret id at version 1, in the environment whose uid
+            // the key was verified under. What crosses the wire is four hex
+            // strings under a key the server has never held, plus the uid,
+            // the version and the key generation they were sealed for, which
+            // the server stores as stated or refuses.
+            //
+            // A fresh slot per attempt, like the org form's keypair: a refused
+            // attempt never leaves a minted id to be reused by the next one.
+            const slot = newSecretSlot();
+            const sealed = await sealSecret(environmentKey, {
+              ...slot,
               name: name.trim(),
               value,
             });
             await createSecret({
               sessionToken: session.sessionToken,
               environmentId,
+              secretUid: slot.secretUid,
+              version: slot.version,
+              pdkVersion: environmentKey.pdkVersion,
               ...sealed,
             });
             close();
           } catch (cause) {
-            setError(messageFor(cause));
+            setError(describeWriteFailure(cause));
             setBusy(false);
           }
         })();
@@ -508,7 +565,7 @@ function SecretFields({
       <p className="text-base text-text-muted">
         The name and the value are encrypted in this browser before anything is sent.
       </p>
-      {error === null ? null : <FormError>{error}</FormError>}
+      {error === null ? null : <WriteFailureNotice failure={error} />}
       <button type="submit" className={primaryButton} disabled={!ready}>
         {busy ? "Saving" : "Save secret"}
       </button>
@@ -519,21 +576,28 @@ function SecretFields({
 /**
  * THE FORM THAT SEALS A SECRET.
  *
- * `pdk` is required rather than optional: without a project data key there is
- * nothing to seal under, and a form that accepted input it could not encrypt
- * would be a form that loses what somebody typed. The caller renders it only
- * when a key is in hand.
+ * `environmentKey` is required rather than optional: without a project data
+ * key there is nothing to seal under, and a form that accepted input it could
+ * not encrypt would be a form that loses what somebody typed. The caller
+ * renders it only when a key is in hand. It is the key AND the environment uid
+ * and key version its grant was verified under; see `EnvironmentKey`.
  */
 export function NewSecretForm({
   environmentId,
-  pdk,
+  environmentKey,
 }: {
   environmentId: Id<"environments">;
-  pdk: Uint8Array;
+  environmentKey: EnvironmentKey;
 }) {
   return (
     <Disclosure label="New secret">
-      {(close) => <SecretFields environmentId={environmentId} pdk={pdk} close={close} />}
+      {(close) => (
+        <SecretFields
+          environmentId={environmentId}
+          environmentKey={environmentKey}
+          close={close}
+        />
+      )}
     </Disclosure>
   );
 }

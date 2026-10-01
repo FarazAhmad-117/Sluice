@@ -90,11 +90,11 @@ export function AppShell() {
    * dropped when the vault locks. Nothing persists it.
    */
   const keyState = useProjectDataKey(environmentId);
-  const pdk = keyState.status === "ready" ? keyState.pdk : null;
+  const environmentKey = keyState.status === "ready" ? keyState.key : null;
 
   // Names only. A value is decrypted at the moment somebody reveals it and not
   // before; see `secrets-pane.tsx`.
-  const names = useSecretNames(pdk, secrets);
+  const names = useSecretNames(environmentKey, secrets);
 
   const environmentName = useMemo(() => {
     if (environments === undefined || environmentId === null) return null;
@@ -171,7 +171,7 @@ export function AppShell() {
             environmentName={environmentName}
             rows={secrets}
             names={names}
-            pdk={pdk}
+            environmentKey={environmentKey}
             keyState={keyState}
             locked={locked}
             selectedSecretId={secretId}

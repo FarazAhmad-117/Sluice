@@ -3,10 +3,12 @@ import { emailLocalPart } from "./email";
 /**
  * THE PASSWORD STRENGTH GATE.
  *
- * WHY THIS IS A SECURITY CONTROL AND NOT A NICETY. The Argon2id salt is
- * `SHA-256("sluice/muk-salt/v2" || accountSalt)`, where the account salt is 16
- * random bytes minted at signup. Random is not secret: the server returns that
- * salt to anyone who asks to log in as the account, decoy or not, so an
+ * WHY THIS IS A SECURITY CONTROL AND NOT A NICETY. The Argon2id salt is a
+ * domain-separated SHA-256 of the account salt, built by `deriveMUK` in
+ * `@sluice/crypto` (whose label is defined there and only there), where the
+ * account salt is 16 random bytes minted at signup. Random is not secret: the
+ * server returns that salt to anyone who asks to log in as the account, decoy
+ * or not, so an
  * attacker targeting one account can fetch its salt before any breach and
  * precompute against it at leisure. The salt therefore contributes NOTHING to
  * the difficulty of guessing a particular account's key. It only stops one

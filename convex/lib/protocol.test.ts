@@ -41,12 +41,31 @@ const CONVEX_DIR = fileURLToPath(new URL("..", import.meta.url));
 /** Every source extension Convex will bundle, not just TypeScript. */
 const SOURCE_EXTENSIONS = [".ts", ".js", ".mjs"];
 
-function walk(dir: string, out: string[] = []): string[] {
+/**
+ * THE DASHBOARD'S SOURCE, which is the other client that seals and opens
+ * against these rules. It is scanned from here rather than from a test of its
+ * own because this file is where the pattern and its self-tests live: a second
+ * copy of the pattern in `apps/admin` would be one more list to keep in step
+ * by hand, which `packages/cli/test/discipline.test.ts` already shows is a
+ * list that drifts. `apps/admin/src/lib/secrets/decrypt.ts` used to quote the
+ * secret prefix in a comment, a whole version after the rule had moved on; a
+ * reader cannot tell a stale quotation from a definition, so neither may exist.
+ *
+ * `src` only, not `test`: a test may spell a label out as the specification
+ * it checks a known-answer vector against, and that is a deliberate,
+ * independent second derivation rather than a copy the code depends on.
+ */
+const ADMIN_SRC = fileURLToPath(new URL("../../apps/admin/src", import.meta.url));
+
+/** What the dashboard ships: TypeScript, TSX, and anything Vite would bundle. */
+const ADMIN_SOURCE_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs"];
+
+function walk(dir: string, out: string[] = [], extensions = SOURCE_EXTENSIONS): string[] {
   for (const entry of readdirSync(dir)) {
     const full = join(dir, entry);
     if (statSync(full).isDirectory()) {
-      if (entry !== "_generated" && entry !== "node_modules") walk(full, out);
-    } else if (SOURCE_EXTENSIONS.some((ext) => entry.endsWith(ext))) out.push(full);
+      if (entry !== "_generated" && entry !== "node_modules") walk(full, out, extensions);
+    } else if (extensions.some((ext) => entry.endsWith(ext))) out.push(full);
   }
   return out;
 }
@@ -130,6 +149,20 @@ describe("the secret associated data rule", () => {
     // A scan that read nothing proves nothing. This file is itself under the
     // root, so not finding it means the root resolved to the wrong place.
     expect(files.some((file) => file.endsWith("protocol.test.ts"))).toBe(true);
+    const offenders = files.filter((file) => OWNED_LABEL.test(readFileSync(file, "utf8")));
+    expect(offenders).toEqual([]);
+  });
+
+  it("is defined nowhere under apps/admin/src either, in code or in a comment", () => {
+    const files = walk(ADMIN_SRC, [], ADMIN_SOURCE_EXTENSIONS);
+    // Not vacuous: the files that call every one of these rules must have been
+    // read, or the root resolved somewhere else.
+    const callers = ["decrypt.ts", "seal.ts", "pdk.ts", "revocation-key.ts", "create-forms.tsx"];
+    for (const expected of callers) {
+      expect(`${expected} ${String(files.some((file) => file.endsWith(expected)))}`).toBe(
+        `${expected} true`,
+      );
+    }
     const offenders = files.filter((file) => OWNED_LABEL.test(readFileSync(file, "utf8")));
     expect(offenders).toEqual([]);
   });

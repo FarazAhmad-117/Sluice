@@ -4,6 +4,7 @@ import { Eyebrow, StatusPill, focusRing, quietButton } from "@/components/app/co
 import { NewSecretForm } from "@/components/app/create-forms";
 import { VALUE_MASK, openSecretValue } from "@/lib/secrets/decrypt";
 import type { SealedSecretRow } from "@/lib/secrets/decrypt";
+import type { EnvironmentKey } from "@/lib/secrets/pdk";
 import type { ProjectDataKeyState } from "@/lib/secrets/use-project-data-key";
 
 /**
@@ -45,7 +46,7 @@ export interface SecretsPaneProps {
   /** Opened NAME by `secretId`. A row that did not open is absent. */
   readonly names: ReadonlyMap<string, string>;
   /** The project data key, when this client holds one for this environment. */
-  readonly pdk: Uint8Array | null;
+  readonly environmentKey: EnvironmentKey | null;
   readonly keyState: ProjectDataKeyState;
   readonly locked: boolean;
   readonly selectedSecretId: string | null;
@@ -54,9 +55,13 @@ export interface SecretsPaneProps {
 
 const EMPTY_VALUES: ReadonlyMap<string, string> = new Map();
 
-/** Enough of a lineage id to tell two rows apart, without the full 32. */
-function shortLineage(lineageId: string): string {
-  return lineageId.slice(0, 12);
+/**
+ * Enough of a secret's permanent uid to tell two sealed rows apart: the `sec_`
+ * prefix and the first eight hex of the 32. A uid is a label, not a secret, and
+ * it is the identifier an operator would search for.
+ */
+function shortSecretUid(secretUid: string): string {
+  return secretUid.slice(0, 12);
 }
 
 /**
@@ -86,7 +91,7 @@ export function SecretsPane({
   environmentName,
   rows,
   names,
-  pdk,
+  environmentKey,
   keyState,
   locked,
   selectedSecretId,
@@ -107,17 +112,17 @@ export function SecretsPane({
    * vault, and the map is not returned at all.
    */
   const [held, setHeld] = useState<{
-    pdk: Uint8Array;
+    key: EnvironmentKey;
     environmentId: Id<"environments">;
     values: ReadonlyMap<string, string>;
     error: string | null;
   } | null>(null);
 
   const current =
-    pdk !== null &&
+    environmentKey !== null &&
     environmentId !== null &&
     held !== null &&
-    held.pdk === pdk &&
+    held.key === environmentKey &&
     held.environmentId === environmentId
       ? held
       : null;
@@ -134,18 +139,19 @@ export function SecretsPane({
   };
 
   const reveal = (row: SealedSecretRow) => {
-    if (pdk === null || environmentId === null) return;
-    void openSecretValue(pdk, row)
+    if (environmentKey === null || environmentId === null) return;
+    const key = environmentKey;
+    void openSecretValue(key, row)
       .then((value) => {
         setHeld((previous) => {
           const base =
             previous !== null &&
-            previous.pdk === pdk &&
+            previous.key === key &&
             previous.environmentId === environmentId
               ? previous.values
               : EMPTY_VALUES;
           return {
-            pdk,
+            key,
             environmentId,
             values: new Map(base).set(row.secretId, value),
             error: null,
@@ -156,11 +162,11 @@ export function SecretsPane({
         // `SecretOpenError` and nothing else reaches here, and it deliberately
         // carries no detail. The value is not shown and nothing is logged.
         setHeld((previous) => ({
-          pdk,
+          key,
           environmentId,
           values:
             previous !== null &&
-            previous.pdk === pdk &&
+            previous.key === key &&
             previous.environmentId === environmentId
               ? previous.values
               : EMPTY_VALUES,
@@ -184,8 +190,8 @@ export function SecretsPane({
         </div>
         <div className="flex items-center gap-3">
           {locked ? <StatusPill tone="warning">vault locked</StatusPill> : null}
-          {environmentId !== null && pdk !== null ? (
-            <NewSecretForm environmentId={environmentId} pdk={pdk} />
+          {environmentId !== null && environmentKey !== null ? (
+            <NewSecretForm environmentId={environmentId} environmentKey={environmentKey} />
           ) : null}
         </div>
       </header>
@@ -210,7 +216,7 @@ export function SecretsPane({
           <div className="flex flex-col gap-2 px-4 py-6">
             <Eyebrow>Empty</Eyebrow>
             <p className="text-base text-text-muted">
-              {pdk === null
+              {environmentKey === null
                 ? "This environment has no secrets. Adding one needs the key for this environment."
                 : "This environment has no secrets. Add one with the control above."}
             </p>
@@ -222,7 +228,7 @@ export function SecretsPane({
               const value = revealed.get(row.secretId);
               const isRevealed = value !== undefined;
               const selected = row.secretId === selectedSecretId;
-              const openable = pdk !== null && name !== undefined;
+              const openable = environmentKey !== null && name !== undefined;
 
               return (
                 <li key={row.secretId}>
@@ -245,7 +251,7 @@ export function SecretsPane({
                           name === undefined ? "text-text-muted italic" : "text-text-primary"
                         }`}
                       >
-                        {name ?? `sealed:${shortLineage(row.lineageId)}`}
+                        {name ?? `sealed:${shortSecretUid(row.secretUid)}`}
                       </span>
                       <span className="w-full min-w-0 truncate font-mono text-base text-text-muted sm:flex-1">
                         {isRevealed ? value : VALUE_MASK}

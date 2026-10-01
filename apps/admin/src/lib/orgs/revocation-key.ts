@@ -27,23 +27,30 @@ import type { MasterUnlockKey } from "@sluice/crypto";
  * with the backend and the SDK, and the prefix it joins is deliberately not
  * exported, so the only way to obtain those bytes is to call it.
  *
- * WHAT IT BINDS, AND WHAT IT CANNOT. The wrap names the GRANTEE, because
- * `revocationGrants.granteeId` is a database column and a column is not
- * authenticated: a row whose grantee was edited must stop opening rather than
- * claim to belong to somebody it does not. It does NOT name the org, and that
- * is not an oversight. The grant is written in the same transaction that
- * creates its org, so at wrap time the org has no id and no client can predict
- * the one Convex will mint; the only alternative is splitting creation in two,
- * and the state between those two mutations is an org whose revocation key
- * nobody can ever open. The full argument is on `revocationKeyAssociatedData`.
+ * WHAT IT BINDS: THE ORG AND THE GRANTEE. Both `revocationGrants.orgId` and
+ * `revocationGrants.granteeId` are database columns, and a column is not
+ * authenticated. The wrap names the org's permanent `org_` uid and the
+ * grantee's permanent `usr_` uid, so a grant moved onto another org, or
+ * re-filed under another member, stops opening rather than handing that org's
+ * signer somebody else's kill switch.
  *
- * WHAT CLOSES THE GAP THAT LEAVES is {@link revocationKeyMatches}, which is why
- * it is in this file rather than in a component. The associated data cannot
- * bind `orgs.revocationPublicKey`, so a caller that has just unwrapped a seed
+ * An earlier revision could not bind the org: the grant is written in the same
+ * transaction that creates its org, and the Convex document id did not exist at
+ * wrap time. The permanent uid is minted by this client with `newId("org")`
+ * BEFORE the wrap and sent to `createOrg` as `orgUid`, so the value the grant
+ * is bound to is known when it is sealed. The Convex document id is still not
+ * bound and must never be: it is local to one deployment and is re-minted when
+ * an org moves cells.
+ *
+ * WHAT THE ASSOCIATED DATA STILL CANNOT BIND is `orgs.revocationPublicKey`,
+ * the column the server publishes and every SDK verifies notices against.
+ * {@link revocationKeyMatches} closes that gap, which is why it is in this
+ * file rather than in a component: a caller that has just unwrapped a seed
  * must check it against the public key the org actually publishes. That is the
  * same call `identity.ts` makes with `identityMatches`, for the same reason:
- * AEAD proves the blob was not tampered with, and says nothing about whether
- * the blob and the public column belong together.
+ * AEAD proves the blob was not tampered with and was filed under this org and
+ * this grantee, and says nothing about whether the blob and the public column
+ * belong together.
  */
 
 /**
@@ -56,8 +63,14 @@ export const REVOCATION_KEY_BYTES = 32;
 
 /** Who a grant is wrapped to, in the exact shape `revocationKeyAssociatedData` takes. */
 export interface RevocationGrantee {
-  /** The `users` document id, spelled exactly as the server stores it. */
-  readonly granteeId: string;
+  /** The org's permanent `org_` uid. Never the Convex `orgId`. */
+  readonly orgUid: string;
+  /**
+   * The grantee's permanent `usr_` uid, `session.userUid`. Never the Convex
+   * `users` document id, `session.userId`, which `revocationKeyAssociatedData`
+   * refuses by shape.
+   */
+  readonly granteeUid: string;
 }
 
 /**
@@ -161,7 +174,9 @@ export async function wrapRevocationKey(
  *
  * `grantee` must be the CALLER'S OWN identity, because the only grant anybody
  * can read is their own: that query takes no grantee argument at all, which is
- * its authorisation.
+ * its authorisation. `orgUid` is the one `getMyRevocationGrant` returns; it is
+ * untrusted on arrival and authenticated by this call, because a grant filed
+ * under another org does not open.
  *
  * A rejection means the data is not authentic and the undecrypted bytes are
  * never used. It must not be swallowed and it must not be retried against a
@@ -193,14 +208,15 @@ export async function unwrapRevocationKey(
  * Checks that an unwrapped seed really is the private half of the public key
  * the organisation publishes.
  *
- * THIS IS THE CHECK THE ASSOCIATED DATA CANNOT MAKE, and it is cheap. The org
- * id is not bindable at wrap time, so nothing cryptographic ties a
- * `revocationGrants` row to the `orgs` row it sits under: an operator who moves
- * a grant between orgs, or who edits `orgs.revocationPublicKey` on its own,
- * produces a seed that unwraps perfectly and signs notices this deployment and
- * every SDK reject. Without this, that surfaces as "this revocation notice is
- * not signed by the organisation's revocation key" at the moment somebody is
- * trying to kill a stolen token.
+ * THIS IS THE CHECK THE ASSOCIATED DATA CANNOT MAKE, and it is cheap. The
+ * associated data binds the org's uid and the grantee's uid, and it cannot
+ * bind `orgs.revocationPublicKey`: the public key is a column the server
+ * publishes, not an input to the wrap. An operator who edits that column on
+ * its own, or replaces it with a key they hold, leaves a seed that unwraps
+ * perfectly and signs notices this deployment and every SDK pinned to the
+ * edited key would judge differently. Without this, that surfaces as "this
+ * revocation notice is not signed by the organisation's revocation key" at
+ * the moment somebody is trying to kill a stolen token.
  *
  * Returns `false` rather than throwing, matching `verifyRevocation`: `fromHex`
  * throws on non-hex input and a caller deciding whether to trust a key should

@@ -193,8 +193,11 @@ export function RightPanel({ secret, keyState }: RightPanelProps) {
             {[
               ["Version", `v${secret.version}`],
               ["Key version", `pdk v${secret.pdkVersion}`],
-              ["Lineage", secret.lineageId],
-              ["Secret id", secret.secretId],
+              // The permanent uid first: it is what every version of this
+              // secret shares and what its ciphertext is bound to. The row id
+              // below it is this deployment's handle for one version.
+              ["Secret uid", secret.secretUid],
+              ["Row id", secret.secretId],
               ["Environment", secret.environmentId],
             ].map(([label, value]) => (
               <div key={label} className="flex flex-col gap-0.5">

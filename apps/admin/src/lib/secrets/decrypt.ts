@@ -1,4 +1,6 @@
 import { fromHex, secretAssociatedData, unseal } from "@sluice/crypto";
+import type { SecretField } from "@sluice/crypto";
+import type { EnvironmentKey } from "./pdk";
 
 /**
  * CLIENT SIDE DECRYPTION OF A SECRET ROW.
@@ -11,13 +13,6 @@ import { fromHex, secretAssociatedData, unseal } from "@sluice/crypto";
  * the caller's own grant and no one else's, `unwrapProjectDataKey` in `pdk.ts`
  * opens it, and the functions here open the rows.
  *
- * That chain is complete and these functions run against real rows. An earlier
- * revision of this comment said the opposite, and said it correctly at the
- * time: `createEnvironment` then took a project and a name, no Convex function
- * read or wrote `pdkGrants`, and every secret in the product was ciphertext
- * under a key no client could obtain. `createEnvironment` now mints the
- * creator's grant in the same transaction that creates the environment.
- *
  * WHAT IS STILL MISSING, STATED PLAINLY BECAUSE IT DETERMINES WHAT THIS PAGE
  * CAN SHOW. Nothing wraps an existing project data key to a SECOND member of an
  * org. `createEnvironment` mints exactly one grant, to its creator, so every
@@ -26,20 +21,38 @@ import { fromHex, secretAssociatedData, unseal } from "@sluice/crypto";
  * the surface above must treat that as "no key for this environment" rather
  * than as an error, because it is the normal state of a colleague.
  *
- * ASSOCIATED DATA COMES FROM `@sluice/crypto`, NEVER FROM THE SERVER. The rule
- * is `utf8("sluice/secret/v1|" + environmentId)`, it is defined once on
- * `secretAssociatedData`, and the prefix it joins is deliberately not exported
- * so that the only way to obtain those bytes is to call the function. A client
- * must pin it rather than fetch it: a server that could choose the associated
- * data could hand a client the associated data of a different environment and
- * undo the environment binding entirely, which is the one property that binding
- * exists to provide. `convex/lib/aad.ts` used to carry a second, laxer copy of
- * this rule and has been deleted; the package is the only authority.
+ * EACH CIPHERTEXT OPENS ONLY IN THE SLOT IT WAS SEALED FOR. The associated
+ * data names the environment's permanent uid, the secret's permanent uid, the
+ * version and the field (`"name"` or `"value"`); `seal.ts` sets out what each
+ * one stops. The environment uid comes from the {@link EnvironmentKey}, the
+ * value the grant was verified under, and is never read off the row: a row's
+ * `environmentId` is a Convex document id, which is not bound and must not be,
+ * and the row's columns are exactly what an attacker with write access edits.
+ * The row's `secretUid` and `version` ARE read off it, and that is safe for
+ * the opposite reason: they are claims the ciphertext is checked against, so
+ * an edited column produces a rejection rather than a wrong plaintext.
+ *
+ * ASSOCIATED DATA COMES FROM `@sluice/crypto`, NEVER FROM THE SERVER.
+ * `secretAssociatedData` is the one definition of the rule, and the prefix it
+ * joins is deliberately not exported, so the only way to obtain those bytes is
+ * to call the function. This file used to quote that prefix in a comment, and
+ * the quotation outlived the rule it described by a whole version. It is gone,
+ * and `convex/lib/protocol.test.ts` now fails if any file under
+ * `apps/admin/src` spells a crypto-owned label by hand. A client must pin the
+ * rule rather than fetch it: a server that could choose the associated data
+ * could hand a client the associated data of a different slot and undo the
+ * binding entirely.
  */
 
-/** The fields an open needs. Nothing here reads anything else off a row. */
+/**
+ * The fields an open needs. Nothing here reads anything else off a row, and in
+ * particular nothing reads an environment from it.
+ */
 export interface OpenableSecretRow {
-  readonly environmentId: string;
+  /** The secret's permanent `sec_` id, as the server stored it. */
+  readonly secretUid: string;
+  /** The version this row claims to be. */
+  readonly version: number;
   readonly nameCiphertext: string;
   readonly nameNonce: string;
   readonly valueCiphertext: string;
@@ -48,9 +61,10 @@ export interface OpenableSecretRow {
 
 /** A row exactly as `secrets.listSecrets` returns it. */
 export interface SealedSecretRow extends OpenableSecretRow {
+  /** The Convex document id. Addresses the row in mutations; bound into nothing. */
   readonly secretId: string;
-  readonly lineageId: string;
-  readonly version: number;
+  /** The Convex id of the row's environment. Display only; bound into nothing. */
+  readonly environmentId: string;
   readonly pdkVersion: number;
   readonly supersededAt?: number;
 }
@@ -79,37 +93,46 @@ export class SecretOpenError extends Error {
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
 /**
- * The associated data for one row.
+ * The associated data for one field of one row.
  *
- * The environment id comes from the ROW, not from an argument beside it. Taking
- * it separately would let a caller pass the wrong one and silently bind the
- * wrong associated data, which fails as an opaque rejection at some later date.
+ * The environment uid comes from the KEY, the secret uid and the version from
+ * the ROW, and the field from the caller. The NAMED fields, not a joined
+ * string, so that a diff which swaps one id for another is visible.
  *
- * The NAMED field, not a bare string: `secretAssociatedData` takes an object so
- * that a diff which swaps a project id for an environment id is visible.
+ * It throws on a malformed uid or version, which a hostile row can supply, so
+ * it is called INSIDE the `try` below: a row this client did not write fails
+ * as "not authentic" like every other such row, rather than as an argument
+ * error describing the offending column.
  */
-function aadFor(row: OpenableSecretRow): Uint8Array {
-  return secretAssociatedData({ environmentId: row.environmentId });
+function aadFor(key: EnvironmentKey, row: OpenableSecretRow, field: SecretField): Uint8Array {
+  return secretAssociatedData({
+    environmentUid: key.environmentUid,
+    secretUid: row.secretUid,
+    version: row.version,
+    field,
+  });
 }
 
 async function open(
-  pdk: Uint8Array,
-  aad: Uint8Array,
-  ciphertext: string,
-  nonce: string,
+  key: EnvironmentKey,
+  row: OpenableSecretRow,
+  field: SecretField,
 ): Promise<string> {
+  const ciphertext = field === "name" ? row.nameCiphertext : row.valueCiphertext;
+  const nonce = field === "name" ? row.nameNonce : row.valueNonce;
   try {
     const plaintext = await unseal(
-      pdk,
+      key.pdk,
       { ciphertext: fromHex(ciphertext), nonce: fromHex(nonce) },
-      aad,
+      aadFor(key, row, field),
     );
     return decoder.decode(plaintext);
   } catch {
-    // `fromHex` and `decoder.decode` are inside the `try` on purpose. A row
-    // that is not hex, and a plaintext that is not UTF-8, are both rows this
-    // client did not write, and both must fail as "not authentic" rather than
-    // as a parse error carrying the offending bytes in its message.
+    // `aadFor`, `fromHex` and `decoder.decode` are inside the `try` on purpose.
+    // A row whose uid or version is malformed, a row that is not hex, and a
+    // plaintext that is not UTF-8 are all rows this client did not write, and
+    // all must fail as "not authentic" rather than as an error carrying the
+    // offending bytes in its message.
     throw new SecretOpenError();
   }
 }
@@ -121,21 +144,29 @@ async function open(
  * a convenience. The dashboard lists every name and reveals a value only when
  * somebody asks. If a name could only be had by opening the whole row, every
  * value in the environment would be decrypted into memory to render a list
- * nobody asked to reveal, and would live for as long as that list did.
+ * nobody asked to reveal, and would live for as long as that list did. The two
+ * fields are also sealed under different associated data, so a value moved
+ * into the name slot, where this list would show it unasked, does not open.
  *
- * `pdk` is 32 raw bytes. It is NOT logged, NOT stored, and is held only in
+ * `key.pdk` is 32 raw bytes. It is NOT logged, NOT stored, and is held only in
  * memory for as long as the vault is unlocked.
  */
-export async function openSecretName(pdk: Uint8Array, row: OpenableSecretRow): Promise<string> {
-  return await open(pdk, aadFor(row), row.nameCiphertext, row.nameNonce);
+export async function openSecretName(
+  key: EnvironmentKey,
+  row: OpenableSecretRow,
+): Promise<string> {
+  return await open(key, row, "name");
 }
 
 /**
  * Opens one row's VALUE. Call it at the moment a value is revealed and let the
  * result go out of scope when it is hidden again.
  */
-export async function openSecretValue(pdk: Uint8Array, row: OpenableSecretRow): Promise<string> {
-  return await open(pdk, aadFor(row), row.valueCiphertext, row.valueNonce);
+export async function openSecretValue(
+  key: EnvironmentKey,
+  row: OpenableSecretRow,
+): Promise<string> {
+  return await open(key, row, "value");
 }
 
 /**
@@ -146,14 +177,10 @@ export async function openSecretValue(pdk: Uint8Array, row: OpenableSecretRow): 
  * decrypted only when it is asked for.
  */
 export async function openSecret(
-  pdk: Uint8Array,
+  key: EnvironmentKey,
   row: OpenableSecretRow,
 ): Promise<OpenedSecret> {
-  const aad = aadFor(row);
-  const [name, value] = await Promise.all([
-    open(pdk, aad, row.nameCiphertext, row.nameNonce),
-    open(pdk, aad, row.valueCiphertext, row.valueNonce),
-  ]);
+  const [name, value] = await Promise.all([open(key, row, "name"), open(key, row, "value")]);
   return { name, value };
 }
 

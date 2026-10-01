@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { openSecretName } from "./decrypt";
 import type { SealedSecretRow } from "./decrypt";
+import type { EnvironmentKey } from "./pdk";
 
 /**
  * THE OPENED NAME OF EVERY ROW ON SCREEN, AND NOT ONE VALUE.
@@ -14,7 +15,10 @@ import type { SealedSecretRow } from "./decrypt";
  * A row that does not open is ABSENT from the map rather than present with a
  * placeholder. The caller renders it as sealed, which is what it is. That case
  * is real: a row written under an earlier project data key version does not
- * open under the current one, and there is no re-key yet.
+ * open under the current one, and there is no re-key yet. So is a row whose
+ * ciphertext was moved out of the slot it was sealed for (another secret's
+ * row, another version, the value's half), which is meant to look sealed and
+ * not like a name.
  */
 
 const EMPTY: ReadonlyMap<string, string> = new Map();
@@ -29,13 +33,13 @@ const EMPTY: ReadonlyMap<string, string> = new Map();
  * against another environment's rows.
  */
 interface OpenedNames {
-  readonly pdk: Uint8Array;
+  readonly key: EnvironmentKey;
   readonly rowKey: string;
   readonly names: ReadonlyMap<string, string>;
 }
 
 export function useSecretNames(
-  pdk: Uint8Array | null,
+  key: EnvironmentKey | null,
   rows: readonly SealedSecretRow[] | undefined,
 ): ReadonlyMap<string, string> {
   const [opened, setOpened] = useState<OpenedNames | null>(null);
@@ -51,7 +55,7 @@ export function useSecretNames(
     // No `setState` in the effect body, deliberately: the "nothing to do" cases
     // are handled by the match below, during render, so there is nothing to
     // clear here and no cascading render to cause.
-    if (pdk === null || rows === undefined || rowKey === null) return;
+    if (key === null || rows === undefined || rowKey === null) return;
 
     // A result that lands after the environment has changed must never be
     // written into state. The tag would reject it anyway; cancelling avoids the
@@ -63,7 +67,7 @@ export function useSecretNames(
       await Promise.all(
         rows.map(async (row) => {
           try {
-            names.set(row.secretId, await openSecretName(pdk, row));
+            names.set(row.secretId, await openSecretName(key, row));
           } catch {
             // Swallowed on purpose, and it is the only swallow in this surface.
             // `SecretOpenError` carries no detail by design, one unopenable row
@@ -73,18 +77,18 @@ export function useSecretNames(
           }
         }),
       );
-      if (!cancelled) setOpened({ pdk, rowKey, names });
+      if (!cancelled) setOpened({ key, rowKey, names });
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [pdk, rows, rowKey]);
+  }, [key, rows, rowKey]);
 
-  if (pdk === null || rowKey === null) return EMPTY;
-  // Reference equality on `pdk` is the point. Locking and unlocking the vault
+  if (key === null || rowKey === null) return EMPTY;
+  // Reference equality on `key` is the point. Locking and unlocking the vault
   // produces a different key object, so names opened under the old one are not
   // served across the lock.
-  if (opened === null || opened.pdk !== pdk || opened.rowKey !== rowKey) return EMPTY;
+  if (opened === null || opened.key !== key || opened.rowKey !== rowKey) return EMPTY;
   return opened.names;
 }

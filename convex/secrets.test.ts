@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { convexTest } from "convex-test";
-import { deriveMUK, newId, signRevocation, toHex, verifyRevocation } from "@sluice/crypto";
+import {
+  deriveMUK,
+  fromHex,
+  newAccountSalt,
+  newId,
+  signRevocation,
+  toHex,
+  verifyRevocation,
+} from "@sluice/crypto";
 import schema from "./schema";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -45,6 +53,7 @@ import {
 } from "../apps/admin/src/lib/auth/identity";
 import { normaliseEmail as normaliseWebEmail } from "../apps/admin/src/lib/auth/email";
 import {
+  RevocationKeyUnwrapError,
   createRevocationKeypair,
   revocationKeyMatches,
   unwrapRevocationKey,
@@ -55,8 +64,23 @@ import {
   unwrapProjectDataKey,
   wrapProjectDataKey,
 } from "../apps/admin/src/lib/secrets/pdk";
-import { sealSecret } from "../apps/admin/src/lib/secrets/seal";
-import { SecretOpenError, openSecret } from "../apps/admin/src/lib/secrets/decrypt";
+import type { EnvironmentKey } from "../apps/admin/src/lib/secrets/pdk";
+import {
+  newSecretSlot,
+  nextSecretSlot,
+  sealSecret,
+} from "../apps/admin/src/lib/secrets/seal";
+import {
+  SecretOpenError,
+  openSecret,
+  openSecretName,
+  openSecretValue,
+} from "../apps/admin/src/lib/secrets/decrypt";
+import {
+  STALE_ENVIRONMENT_KEY,
+  STALE_SECRET_VERSION,
+  describeWriteFailure,
+} from "../apps/admin/src/lib/secrets/write-errors";
 
 export const modules = import.meta.glob("./**/*.ts");
 
@@ -1795,18 +1819,18 @@ describe("the audit log", () => {
  *
  * WHAT IT WOULD HAVE CAUGHT, had it existed earlier: an environment created
  * with no grant, so that its secrets were ciphertext under a key no client
- * could obtain, with nothing erroring at any point.
+ * could obtain, with nothing erroring at any point. And, in the revision before
+ * this one, a signup that sent a placeholder salt while deriving the key under
+ * another, so that the account could never log in again: the salt below is
+ * minted, derived under, and sent, exactly as `auth-flows.ts` does it.
  *
- * THE LINK THAT USED TO BE MISSING, AND NOW IS NOT. `createOrg`'s
- * `wrappedRevocationKey` was passed as an opaque placeholder, because the
- * associated data for that wrap was defined nowhere and inventing a literal
- * here would have pinned bytes the SDK and the backend later had to match by
- * coincidence. `revocationKeyAssociatedData` now defines it in
- * `@sluice/crypto`, so step 3 below performs a REAL wrap through the
- * dashboard's own module, step 4 reads the grant back, opens it, and signs a
- * notice that `verifyRevocation` accepts under the public key the server
- * stored. That chain is the product's wedge, and until now nothing exercised
- * it end to end.
+ * EVERY WRAP AND SEAL IS FOR AN EXACT SLOT, and every slot input is minted by
+ * the client before the row exists: the org's and the environment's permanent
+ * uids, the secret's permanent uid and its version, the key version, and the
+ * grantee's permanent `usr_` uid. Steps 3, 6 and 8 mint them; steps 4, 7 and 9
+ * read them back from the server and open under them; steps 10 to 12 show the
+ * binding refusing a slot the ciphertext was not sealed for, and the server
+ * refusing a stale write with the sentence the dashboard shows as written.
  */
 describe("end to end", () => {
   // A throwaway pepper. Set on `process.env` directly, because that is what the
@@ -1841,22 +1865,22 @@ describe("end to end", () => {
       const email = "founder@example.test";
       const password = "correct horse battery staple";
 
-      // ---- 1. Signup, exactly as `auth-context.tsx` performs it. -----------
-      // Normalised FIRST, because this exact string is the Argon2id salt input
-      // and the server normalises the address the same way.
-      const salt = normaliseWebEmail(email);
-      const muk = await deriveMUK(password, salt);
+      // ---- 1. Signup, exactly as `auth-flows.ts` performs it. --------------
+      // The salt is RANDOM, minted here, and the key is derived under exactly
+      // these bytes. The same bytes, hex encoded, are what the server stores
+      // and what `getLoginSalt` hands back at every later login; sending any
+      // other value would make this account's key underivable.
+      const normalised = normaliseWebEmail(email);
+      const accountSalt = newAccountSalt();
+      const userUid = newId("usr");
+      const muk = await deriveMUK(password, accountSalt);
       const { wrapped, pub } = await createIdentity(muk);
       const authVerifier = deriveAuthVerifier(muk);
 
       const signedUpUserId = await t.mutation(api.auth.signup, {
-        // Placeholders so this call matches the signup arguments. The salt must
-        // become the one the MUK above is derived under, which is the dashboard
-        // change this test is still waiting on; until then it fails at
-        // `deriveMUK`, before reaching here.
-        uid: newId("usr"),
-        accountSalt: "30".repeat(16),
-        email: salt,
+        uid: userUid,
+        accountSalt: toHex(accountSalt),
+        email: normalised,
         authVerifier,
         publicKey: wrapped.publicKey,
         verifyKey: wrapped.verifyKey,
@@ -1872,24 +1896,38 @@ describe("end to end", () => {
       expect(userDump).not.toContain(password);
       expect(userDump).not.toContain(toHex(muk.bytes));
 
-      // ---- 2. Login and unwrap, which is what yields a session. ------------
-      const session = await t.mutation(api.auth.login, { email: salt, authVerifier });
+      // ---- 2. Login, from the salt the server hands back. ------------------
+      // The salt a later login derives under is `getLoginSalt`'s answer, so it
+      // must be byte for byte the salt the key above was derived under, or the
+      // account is locked out at its first real login. Compared as bytes
+      // rather than re-derived: Argon2id is deterministic, the same salt gives
+      // the same key, and a second 64 MiB derivation here would only double
+      // this test's run time.
+      const loginSalt = await t.query(api.auth.getLoginSalt, { email: normalised });
+      expect(toHex(fromHex(loginSalt.accountSalt))).toBe(toHex(accountSalt));
+
+      const session = await t.mutation(api.auth.login, { email: normalised, authVerifier });
       const sessionToken = session.sessionToken;
       const restored = await unwrapIdentity(muk, session);
       expect(identityMatches(restored, pub)).toBe(true);
       expect(session.userId).toBe(signedUpUserId);
+      // The permanent uid every grant below is addressed to.
+      expect(session.userUid).toBe(userUid);
 
       // ---- 3. An organisation, whose revocation key is minted HERE. -------
       // This is the product's wedge. The seed below is the only thing that can
       // sign a notice any SDK will honour, it is generated in the client, and
-      // this deployment has never held it.
+      // this deployment has never held it. The org's permanent uid is minted
+      // first, because the wrap is bound to it.
+      const orgUid = newId("org");
       const revocationKeypair = createRevocationKeypair();
       const wrappedRevocation = await wrapRevocationKey(muk, revocationKeypair.privateKey, {
-        granteeId: signedUpUserId,
+        orgUid,
+        granteeUid: session.userUid,
       });
       const orgId = await t.mutation(api.orgs.createOrg, {
         sessionToken,
-        orgUid: newId("org"),
+        orgUid,
         name: "Acme Rockets",
         slug: "acme-rockets",
         revocationPublicKey: revocationKeypair.revocationPublicKey,
@@ -1906,6 +1944,7 @@ describe("end to end", () => {
         sessionToken,
         orgId,
       });
+      expect(revocationGrant.orgUid).toBe(orgUid);
       // The server stores the wrap and the public half; the seed is in neither.
       const grantDump = JSON.stringify(
         await t.run(async (ctx) => getRevocationGrantRow(ctx, orgId, signedUpUserId)),
@@ -1913,20 +1952,35 @@ describe("end to end", () => {
       expect(grantDump).not.toContain(toHex(revocationKeypair.privateKey));
       expect(grantDump).not.toContain(toHex(muk.bytes));
 
+      // Opened under the org uid the SERVER returned, which the unwrap then
+      // authenticates: a grant filed under another org would not open.
       const recoveredKey = await unwrapRevocationKey(
         muk,
         {
           wrappedRevocationKey: revocationGrant.wrappedRevocationKey,
           nonce: revocationGrant.nonce,
         },
-        { granteeId: signedUpUserId },
+        { orgUid: revocationGrant.orgUid, granteeUid: session.userUid },
       );
       expect(toHex(recoveredKey)).toBe(toHex(revocationKeypair.privateKey));
 
-      // The seed and the column the org publishes belong together. Nothing
-      // cryptographic ties them, because the org id does not exist at wrap time
-      // and so cannot be in the associated data; this is the check that stands
-      // in for it.
+      // The same blob under another org's uid must not open, or the org
+      // binding is decoration.
+      await expect(
+        unwrapRevocationKey(
+          muk,
+          {
+            wrappedRevocationKey: revocationGrant.wrappedRevocationKey,
+            nonce: revocationGrant.nonce,
+          },
+          { orgUid: newId("org"), granteeUid: session.userUid },
+        ),
+      ).rejects.toThrow(RevocationKeyUnwrapError);
+
+      // The seed and the column the org publishes belong together. The
+      // associated data binds the org and the grantee and cannot bind the
+      // public key, which is a column the server publishes; this is the check
+      // that stands in for it.
       const storedOrg = await t.query(api.orgs.getOrg, { sessionToken, orgId });
       expect(revocationKeyMatches(recoveredKey, storedOrg.revocationPublicKey)).toBe(true);
 
@@ -1964,25 +2018,36 @@ describe("end to end", () => {
       // ---- 6. An environment, whose project data key is minted HERE. -------
       // The server has never held the plaintext of this key and cannot: it
       // arrives wrapped, under associated data this deployment computes
-      // nowhere.
+      // nowhere, bound to the environment uid and key version minted here.
+      const environmentUid = newId("env");
       const pdk = createProjectDataKey();
       const wrappedPdk = await wrapProjectDataKey(muk, pdk, {
+        environmentUid,
+        pdkVersion: 1,
         granteeType: "user",
-        granteeId: session.userId,
+        granteeId: session.userUid,
       });
       const environmentId = await t.mutation(api.environments.createEnvironment, {
         sessionToken,
-        environmentUid: newId("env"),
+        environmentUid,
         projectId,
         name: "production",
         ...wrappedPdk,
         pdkVersion: 1,
       });
 
-      // ---- 7. Fetch the grant back and open it. ---------------------------
-      // From this line on the test uses `openedPdk`, NOT `pdk`. Using the local
-      // copy would let a grant that round trips incorrectly pass unnoticed,
-      // which is exactly the failure this whole chain exists to catch.
+      // ---- 7. Fetch the environment and the grant back, and open it. ------
+      // Exactly as `use-project-data-key.ts` does: the uid from the
+      // ENVIRONMENT, the version from the GRANT, the grantee from the session.
+      // From this line on the test uses `key`, built from what the server
+      // returned, NOT `pdk` or `environmentUid`. Using the local copies would
+      // let a round trip that came back wrong pass unnoticed, which is exactly
+      // the failure this whole chain exists to catch.
+      const environment = await t.query(api.environments.getEnvironment, {
+        sessionToken,
+        environmentId,
+      });
+      expect(environment.uid).toBe(environmentUid);
       const grant = await t.query(api.environments.getMyPdkGrant, {
         sessionToken,
         environmentId,
@@ -1993,27 +2058,35 @@ describe("end to end", () => {
       const openedPdk = await unwrapProjectDataKey(
         muk,
         { wrappedPDK: grant.wrappedPDK, nonce: grant.nonce },
-        { granteeType: "user", granteeId: session.userId },
+        {
+          environmentUid: environment.uid,
+          pdkVersion: grant.pdkVersion,
+          granteeType: "user",
+          granteeId: session.userUid,
+        },
       );
       expect(toHex(openedPdk)).toBe(toHex(pdk));
+      const key: EnvironmentKey = {
+        pdk: openedPdk,
+        environmentUid: environment.uid,
+        pdkVersion: grant.pdkVersion,
+      };
 
-      // ---- 8. Seal a secret and write it. ---------------------------------
+      // ---- 8. Seal a secret for a fresh slot and write it. ----------------
       const NAME = "DATABASE_URL";
       const VALUE = "postgres://app:hunter2@db.internal:5432/production";
 
-      const sealed = await sealSecret(openedPdk, {
-        environmentId,
-        name: NAME,
-        value: VALUE,
-      });
+      const slot = newSecretSlot();
+      const sealed = await sealSecret(key, { ...slot, name: NAME, value: VALUE });
       const created = await t.mutation(api.secrets.createSecret, {
         sessionToken,
         environmentId,
-        secretUid: newId("sec"),
-        version: 1,
-        pdkVersion: 1,
+        secretUid: slot.secretUid,
+        version: slot.version,
+        pdkVersion: key.pdkVersion,
         ...sealed,
       });
+      expect(created.secretUid).toBe(slot.secretUid);
 
       // The row the server stored contains neither the name nor the value.
       const storedRow = await t.run(async (ctx) => getSecretRow(ctx, created.secretId));
@@ -2028,53 +2101,125 @@ describe("end to end", () => {
 
       const row = listed[0];
       if (row === undefined) throw new Error("the listing returned no row");
-      const opened = await openSecret(openedPdk, row);
+      expect(row.secretUid).toBe(slot.secretUid);
+      expect(row.version).toBe(1);
+      const opened = await openSecret(key, row);
       expect(opened.name).toBe(NAME);
       expect(opened.value).toBe(VALUE);
 
-      // ---- 10. And the environment binding actually binds. -----------------
-      // The same key, the same ciphertext, one different environment id in the
-      // associated data. It must fail, or the per-environment binding is
-      // decoration.
-      const other = await t.mutation(api.environments.createEnvironment, {
+      // ---- 10. And the slot binding actually binds. ------------------------
+      // The same key, the same ciphertext, one part of the slot changed. Each
+      // must fail, or that part of the binding is decoration. The environment
+      // is a real second environment's uid, read back from the server.
+      const stagingUid = newId("env");
+      const otherEnvironmentId = await t.mutation(api.environments.createEnvironment, {
         sessionToken,
-        environmentUid: newId("env"),
+        environmentUid: stagingUid,
         projectId,
         name: "staging",
         ...(await wrapProjectDataKey(muk, createProjectDataKey(), {
+          environmentUid: stagingUid,
+          pdkVersion: 1,
           granteeType: "user",
-          granteeId: session.userId,
+          granteeId: session.userUid,
         })),
         pdkVersion: 1,
       });
+      const otherEnvironment = await t.query(api.environments.getEnvironment, {
+        sessionToken,
+        environmentId: otherEnvironmentId,
+      });
       await expect(
-        openSecret(openedPdk, { ...row, environmentId: other }),
+        openSecret({ ...key, environmentUid: otherEnvironment.uid }, row),
+      ).rejects.toThrow(SecretOpenError);
+      await expect(openSecret(key, { ...row, secretUid: newId("sec") })).rejects.toThrow(
+        SecretOpenError,
+      );
+      await expect(
+        openSecretName(key, {
+          ...row,
+          nameCiphertext: row.valueCiphertext,
+          nameNonce: row.valueNonce,
+        }),
       ).rejects.toThrow(SecretOpenError);
 
       // ---- 11. An update, through the same path, reads back updated. ------
+      // The slot for the next version, built from the row as the server
+      // returned it: same permanent uid, version plus one.
       const NEW_VALUE = "postgres://app:hunter3@db.internal:5432/production";
-      const resealed = await sealSecret(openedPdk, {
-        environmentId,
-        name: NAME,
-        value: NEW_VALUE,
-      });
-      await t.mutation(api.secrets.updateSecret, {
+      const nextSlot = nextSecretSlot(row);
+      const resealed = await sealSecret(key, { ...nextSlot, name: NAME, value: NEW_VALUE });
+      const updated = await t.mutation(api.secrets.updateSecret, {
         sessionToken,
         secretId: created.secretId,
-        version: 2,
-        pdkVersion: 1,
+        version: nextSlot.version,
+        pdkVersion: key.pdkVersion,
         ...resealed,
       });
+      expect(updated.secretUid).toBe(slot.secretUid);
 
       const after = await t.query(api.secrets.listSecrets, { sessionToken, environmentId });
       const currentRow = after[0];
       if (currentRow === undefined) throw new Error("the listing returned no row");
       expect(currentRow.version).toBe(2);
-      expect((await openSecret(openedPdk, currentRow)).value).toBe(NEW_VALUE);
+      expect(currentRow.secretUid).toBe(slot.secretUid);
+      expect((await openSecret(key, currentRow)).value).toBe(NEW_VALUE);
+      // Version 1's ciphertext presented as version 2 does not open as current.
+      await expect(
+        openSecretValue(key, {
+          ...currentRow,
+          valueCiphertext: row.valueCiphertext,
+          valueNonce: row.valueNonce,
+        }),
+      ).rejects.toThrow(SecretOpenError);
+
+      // ---- 12. A stale write is refused, and the dashboard says so. -------
+      // A second tab that opened version 1 and seals "version 2" now loses the
+      // race. The server refuses it with its own sentence, and the dashboard's
+      // mapping shows that sentence unchanged with a reload control. This is
+      // the assertion that pins the exact text `write-errors.ts` matches on.
+      const staleSealed = await sealSecret(key, { ...nextSlot, name: NAME, value: "lost race" });
+      const refusal = await t
+        .mutation(api.secrets.updateSecret, {
+          sessionToken,
+          secretId: created.secretId,
+          version: nextSlot.version,
+          pdkVersion: key.pdkVersion,
+          ...staleSealed,
+        })
+        .then(
+          () => null,
+          (cause: unknown) => cause,
+        );
+      expect(describeWriteFailure(refusal)).toEqual({
+        message: STALE_SECRET_VERSION,
+        reload: true,
+      });
+
+      // And a write stating a key generation the environment is not at, as a
+      // tab would after somebody else re-keyed the environment under it.
+      const freshSlot = newSecretSlot();
+      const wrongKeyVersion = await t
+        .mutation(api.secrets.createSecret, {
+          sessionToken,
+          environmentId,
+          secretUid: freshSlot.secretUid,
+          version: freshSlot.version,
+          pdkVersion: key.pdkVersion + 1,
+          ...(await sealSecret(key, { ...freshSlot, name: "X", value: "y" })),
+        })
+        .then(
+          () => null,
+          (cause: unknown) => cause,
+        );
+      expect(describeWriteFailure(wrongKeyVersion)).toEqual({
+        message: STALE_ENVIRONMENT_KEY,
+        reload: true,
+      });
     },
-    // One Argon2id derivation at 64 MiB inside the edge-runtime VM. The default
-    // five seconds is not enough, and a flake here would be read as a real
-    // failure.
+    // One Argon2id derivation at 64 MiB inside the edge-runtime VM. The
+    // default five seconds is not enough, and a flake here would be read as a
+    // real failure.
     120_000,
   );
 });

@@ -6,15 +6,35 @@ import type { Id } from "@convex/_generated/dataModel";
 import { useAuth } from "@/lib/auth/auth-context";
 import { convexClient } from "@/lib/convex-provider";
 import { PdkUnwrapError, unwrapProjectDataKey } from "./pdk";
+import type { EnvironmentKey } from "./pdk";
 
 /**
  * THE PROJECT DATA KEY FOR THE SELECTED ENVIRONMENT, OR AN HONEST REASON THERE
  * IS NONE.
  *
- * It fetches the caller's own grant from `environments.getMyPdkGrant` and opens
- * it with the master unlock key. Everything downstream of it, every secret name
+ * It fetches the environment and the caller's own grant, and opens the grant
+ * with the master unlock key. Everything downstream of it, every secret name
  * on screen, every revealed value, every secret written, depends on this one
  * key, and there is no other route to it.
+ *
+ * THE GRANT IS OPENED FOR ONE EXACT SLOT. Its associated data names the
+ * environment's permanent uid, the key version, and the grantee, and all three
+ * are supplied here rather than trusted from the blob:
+ *
+ *   environmentUid  `uid` off `environments.getEnvironment`. The ENVIRONMENT'S
+ *                   record, never a column on a secret row.
+ *   pdkVersion      the grant's own `pdkVersion` off `getMyPdkGrant`.
+ *   grantee         `"user"` and `session.userUid`, the caller's permanent
+ *                   `usr_` id. Never `session.userId`, the Convex document id,
+ *                   which no grant is keyed by and `pdkAssociatedData` refuses
+ *                   by shape.
+ *
+ * Every one of those arrived from the server and none is trusted on arrival.
+ * They are trusted AFTER the unwrap succeeds, because only a grant wrapped for
+ * exactly that environment, version and grantee opens. That is why the ready
+ * state hands out an {@link EnvironmentKey} carrying the uid and version beside
+ * the key: every secret sealed or opened from it is then bound to values that
+ * have just been verified, and to no others.
  *
  * WHY THIS IS A ONE-SHOT FETCH RATHER THAN `useQuery`, which is what every
  * other read in this dashboard uses. Two reasons, and the first is the one that
@@ -33,7 +53,8 @@ import { PdkUnwrapError, unwrapProjectDataKey } from "./pdk";
  *      The cost is stated rather than hidden: if another client re-keys this
  *      environment, this tab keeps the key it opened until the selection
  *      changes or the page is reloaded, and its writes are refused by the
- *      nonce and version checks rather than silently accepted.
+ *      server with "This environment's key changed since you opened it",
+ *      which the forms show as written, with a way to reload.
  *
  * THE KEY NEVER LEAVES MEMORY. It is not persisted, not logged, and not held in
  * a ref that outlives the selection: the stored result is TAGGED with the
@@ -48,7 +69,7 @@ export type ProjectDataKeyState =
   /** A session exists and the vault does not. The password reopens it. */
   | { readonly status: "locked" }
   | { readonly status: "loading" }
-  | { readonly status: "ready"; readonly pdk: Uint8Array }
+  | { readonly status: "ready"; readonly key: EnvironmentKey }
   /**
    * The server declined to hand over a grant. Its own sentence is carried
    * through rather than replaced, because the server has more than one reason
@@ -75,7 +96,8 @@ export function useProjectDataKey(
 ): ProjectDataKeyState {
   const { session, muk, locked } = useAuth();
   const sessionToken = session?.sessionToken ?? null;
-  const userId = session?.userId ?? null;
+  // The PERMANENT uid. See the header: user grants are keyed and bound by it.
+  const userUid = session?.userUid ?? null;
 
   const [settled, setSettled] = useState<Settled | null>(null);
 
@@ -83,12 +105,13 @@ export function useProjectDataKey(
   // below writes state synchronously from the effect, which would cascade a
   // second render pass on every selection.
   const fetchable =
-    environmentId !== null && sessionToken !== null && userId !== null && muk !== null;
+    environmentId !== null && sessionToken !== null && userUid !== null && muk !== null;
 
   useEffect(() => {
-    if (!fetchable || environmentId === null || sessionToken === null || userId === null) return;
+    if (!fetchable || environmentId === null || sessionToken === null || userUid === null) return;
     if (muk === null) return;
     if (convexClient === null) return;
+    const client = convexClient;
 
     // `cancelled` rather than an AbortController: the work that must not land
     // is the `setState`, not the request.
@@ -100,19 +123,30 @@ export function useProjectDataKey(
 
     void (async () => {
       try {
-        const grant = await convexClient.query(api.environments.getMyPdkGrant, {
-          sessionToken,
-          environmentId,
-        });
+        // In parallel: neither depends on the other, and both are needed
+        // before anything can be opened.
+        const [environment, grant] = await Promise.all([
+          client.query(api.environments.getEnvironment, { sessionToken, environmentId }),
+          client.query(api.environments.getMyPdkGrant, { sessionToken, environmentId }),
+        ]);
         const pdk = await unwrapProjectDataKey(
           muk,
           { wrappedPDK: grant.wrappedPDK, nonce: grant.nonce },
-          // The caller's OWN identity. `getMyPdkGrant` takes no grantee
-          // argument, so this is the only grantee the blob can belong to, and
-          // the associated data would not verify for any other.
-          { granteeType: "user", granteeId: userId },
+          {
+            environmentUid: environment.uid,
+            pdkVersion: grant.pdkVersion,
+            // The caller's OWN identity. `getMyPdkGrant` takes no grantee
+            // argument, so this is the only grantee the blob can belong to,
+            // and the associated data would not verify for any other.
+            granteeType: "user",
+            granteeId: userUid,
+          },
         );
-        settle({ status: "ready", pdk });
+        // Verified by the unwrap above, and carried with the key from here on.
+        settle({
+          status: "ready",
+          key: { pdk, environmentUid: environment.uid, pdkVersion: grant.pdkVersion },
+        });
       } catch (cause) {
         if (cause instanceof ConvexError && typeof cause.data === "string") {
           settle({ status: "refused", message: cause.data });
@@ -122,9 +156,10 @@ export function useProjectDataKey(
           settle({ status: "failed", message: cause.message });
           return;
         }
-        // Anything else is a transport failure or a bug. It gets a generic
-        // sentence: a raw error string on this surface is noise at best, and
-        // the thrown value may carry ciphertext.
+        // Anything else is a transport failure, a malformed uid or version
+        // that `pdkAssociatedData` refused before the unwrap, or a bug. It gets
+        // a generic sentence: a raw error string on this surface is noise at
+        // best, and the thrown value may carry ciphertext.
         settle({
           status: "failed",
           message: "The key for this environment could not be fetched. Try again.",
@@ -135,9 +170,9 @@ export function useProjectDataKey(
     return () => {
       cancelled = true;
     };
-  }, [fetchable, environmentId, sessionToken, userId, muk]);
+  }, [fetchable, environmentId, sessionToken, userUid, muk]);
 
-  if (environmentId === null || sessionToken === null || userId === null) return IDLE;
+  if (environmentId === null || sessionToken === null || userUid === null) return IDLE;
   if (muk === null) {
     // Signed in, vault shut. Not an error and not a loading state: the user has
     // to type their password, and the right hand panel is where they do.
