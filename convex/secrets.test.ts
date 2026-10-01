@@ -195,6 +195,7 @@ function secretArgs(
     secretUid: newId("sec"),
     // The only version a new secret is sealed under.
     version: 1,
+    pdkVersion: 1,
     nameCiphertext: NAME_CIPHERTEXT,
     nameNonce: NAME_NONCE,
     valueCiphertext: VALUE_CIPHERTEXT,
@@ -264,6 +265,7 @@ describe("secrets authorisation", () => {
         sessionToken: alice.sessionToken,
         secretId: theirs.secretId,
         version: 2,
+        pdkVersion: 1,
         nameCiphertext: NAME_CIPHERTEXT,
         nameNonce: "ffffffffffffffffffffffff",
         valueCiphertext: VALUE_CIPHERTEXT,
@@ -424,6 +426,7 @@ describe("a write from a caller who holds no project data key", () => {
         sessionToken: bob.sessionToken,
         secretId,
         version: 2,
+        pdkVersion: 1,
         nameCiphertext: "cc".repeat(24),
         nameNonce: "111111111111111111111111",
         valueCiphertext: "dd".repeat(40),
@@ -452,6 +455,7 @@ describe("a write from a caller who holds no project data key", () => {
         sessionToken: bob.sessionToken,
         secretId: first.secretId,
         version: 2,
+        pdkVersion: 1,
         nameCiphertext: "cc".repeat(24),
         nameNonce: "111111111111111111111111",
         valueCiphertext: "dd".repeat(40),
@@ -585,6 +589,7 @@ describe("a write from a caller who holds no project data key", () => {
       sessionToken: bob.sessionToken,
       secretId: created.secretId,
       version: 2,
+      pdkVersion: 1,
       nameCiphertext: "cc".repeat(24),
       nameNonce: "111111111111111111111111",
       valueCiphertext: "dd".repeat(40),
@@ -747,6 +752,7 @@ describe("the ciphertext-only surface", () => {
       sessionToken: alice.sessionToken,
       secretId: first.secretId,
       version: 2,
+      pdkVersion: 1,
       nameCiphertext: "cc".repeat(24),
       nameNonce: "333333333333333333333333",
       valueCiphertext: "dd".repeat(40),
@@ -812,6 +818,7 @@ describe("the ciphertext-only surface", () => {
         sessionToken: alice.sessionToken,
         secretId: first.secretId,
         version: 2,
+        pdkVersion: 1,
         nameCiphertext: "cc".repeat(24),
         nameNonce: "555555555555555555555555",
         valueCiphertext: "dd".repeat(40),
@@ -830,7 +837,10 @@ describe("the ciphertext-only surface", () => {
     expect(row?.supersededAt).toBeUndefined();
   });
 
-  it("takes pdkVersion from the environment, not from the caller", async () => {
+  // The caller STATES the generation it sealed under, on both writes, and the
+  // stored value is that statement, which must equal the environment's. The
+  // refusals are pinned in "the key generation a write was sealed under".
+  it("stores the stated pdkVersion, which is the environment's", async () => {
     const t = convexTest(schema, modules);
     const { alice, a } = await world(t);
     const environment = await t.query(api.environments.getEnvironment, {
@@ -838,13 +848,14 @@ describe("the ciphertext-only surface", () => {
       environmentId: a.production,
     });
 
-    // Not an argument at all, so there is nothing a caller could pass.
-    const args = JSON.parse(
-      (
-        secretsModule.createSecret as unknown as { exportArgs: () => string }
-      ).exportArgs(),
-    );
-    expect(fieldNames(args)).not.toContain("pdkVersion");
+    for (const name of ["createSecret", "updateSecret"] as const) {
+      const args = JSON.parse(
+        (
+          secretsModule[name] as unknown as { exportArgs: () => string }
+        ).exportArgs(),
+      );
+      expect(fieldNames(args)).toContain("pdkVersion");
+    }
 
     const { secretId } = await t.mutation(
       api.secrets.createSecret,
@@ -921,6 +932,7 @@ describe("the ciphertext-only surface", () => {
         sessionToken: alice.sessionToken,
         secretId,
         version: 2,
+        pdkVersion: 1,
         nameCiphertext: "cc".repeat(24),
         nameNonce: NAME_NONCE,
         valueCiphertext: "dd".repeat(40),
@@ -1138,6 +1150,7 @@ describe("the compare-and-set on update", () => {
       sessionToken: actor.sessionToken,
       secretId,
       version,
+      pdkVersion: 1,
       nameCiphertext: "cc".repeat(24),
       nameNonce: "111111111111111111111111",
       valueCiphertext: "dd".repeat(40),
@@ -1205,12 +1218,13 @@ describe("the compare-and-set on update", () => {
   }
 
   /**
-   * The race the check exists for, end to end: two people open version 2,
-   * one saves version 3, and the other's version 3 must not land on top of
-   * it. The second writer addresses the now-current row, so the refusal is
-   * the compare-and-set and not "already replaced".
+   * The race the check exists for, played the way a real loser plays it. Two
+   * people open version 2 and both hold `second.secretId`. One saves version
+   * 3. The other then saves THEIR version 3, still addressed to the row they
+   * opened, which is now superseded. They must be told to reload, not given a
+   * different message, and nothing of theirs may land.
    */
-  it("refuses the second of two writers who opened the same version", async () => {
+  it("tells the loser of a race to reload, and writes nothing of theirs", async () => {
     const t = convexTest(schema, modules);
     const { alice, a } = await world(t);
     const first = await t.mutation(
@@ -1230,7 +1244,7 @@ describe("the compare-and-set on update", () => {
 
     await expect(
       t.mutation(api.secrets.updateSecret, {
-        ...updateArgs(alice, third.secretId, 3),
+        ...updateArgs(alice, second.secretId, 3),
         nameNonce: "555555555555555555555555",
         valueNonce: "666666666666666666666666",
       }),
@@ -1243,6 +1257,178 @@ describe("the compare-and-set on update", () => {
     expect(live.map((row) => [row.secretId, row.version])).toEqual([
       [third.secretId, 3],
     ]);
+    const history = await t.query(api.secrets.listSecretVersions, {
+      sessionToken: alice.sessionToken,
+      secretId: first.secretId,
+    });
+    expect(history.map((row) => row.version)).toEqual([1, 2, 3]);
+    // The superseded row the loser named was not touched a second time.
+    const opened = await t.run(async (ctx) => getSecretRow(ctx, second.secretId));
+    expect(opened?.valueCiphertext).toBe("dd".repeat(40));
+    expect(opened?.nameNonce).toBe("111111111111111111111111");
+  });
+
+  /**
+   * A SMOKE TEST, NOT A CONCURRENCY TEST. convex-test runs mutations one at a
+   * time, so `Promise.all` here does not interleave two transactions the way
+   * a deployment can; what it does prove is that two updates fired from the
+   * same row, whatever order they land in, end with exactly one success,
+   * exactly one refusal, and exactly one live row. The real interleaving
+   * guarantee is Convex's serialisable OCC, which retries the loser against
+   * the winner's write and so reaches the identical refusal.
+   */
+  it("smoke test: two updates fired together from one row, exactly one lands", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, a } = await world(t);
+    const first = await t.mutation(
+      api.secrets.createSecret,
+      secretArgs(alice, a.production),
+    );
+
+    const results = await Promise.allSettled([
+      t.mutation(api.secrets.updateSecret, updateArgs(alice, first.secretId, 2)),
+      t.mutation(api.secrets.updateSecret, {
+        ...updateArgs(alice, first.secretId, 2),
+        nameNonce: "333333333333333333333333",
+        valueNonce: "444444444444444444444444",
+      }),
+    ]);
+
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.filter(
+      (r): r is PromiseRejectedResult => r.status === "rejected",
+    );
+    expect(rejected).toHaveLength(1);
+    expect(String(rejected[0]?.reason)).toContain(STALE);
+
+    const live = await t.query(api.secrets.listSecrets, {
+      sessionToken: alice.sessionToken,
+      environmentId: a.production,
+    });
+    expect(live).toHaveLength(1);
+    expect(live[0]?.version).toBe(2);
+  });
+});
+
+/**
+ * THE KEY GENERATION THE CLIENT SEALED UNDER, STATED AND CHECKED.
+ *
+ * The client seals under the project data key it unwrapped, and the version of
+ * that key is the grant's `pdkVersion`. If the environment was re-keyed after
+ * the unwrap, the ciphertext is under a generation that is no longer current,
+ * and a server that stamped the environment's number on it would store a row
+ * that never opens. So both writes take `pdkVersion`, refuse a mismatch with
+ * the sentence `createServiceToken` uses, and write nothing.
+ */
+describe("the key generation a write was sealed under", () => {
+  const STALE_KEY =
+    "This environment's key changed since you opened it. Reload and try again.";
+
+  it("refuses a createSecret whose pdkVersion is not the environment's, writing nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, a } = await world(t);
+    await t.run(async (ctx) =>
+      patchEnvironment(ctx, a.production, { pdkVersion: 2 }),
+    );
+
+    for (const pdkVersion of [1, 3, 0]) {
+      await expect(
+        t.mutation(
+          api.secrets.createSecret,
+          secretArgs(alice, a.production, { pdkVersion }),
+        ),
+      ).rejects.toThrow(STALE_KEY);
+    }
+    expect(
+      await t.query(api.secrets.listSecrets, {
+        sessionToken: alice.sessionToken,
+        environmentId: a.production,
+      }),
+    ).toEqual([]);
+
+    // The current generation is accepted and stored as stated.
+    const ok = await t.mutation(
+      api.secrets.createSecret,
+      secretArgs(alice, a.production, { pdkVersion: 2 }),
+    );
+    const row = await t.run(async (ctx) => getSecretRow(ctx, ok.secretId));
+    expect(row?.pdkVersion).toBe(2);
+  });
+
+  it("refuses an updateSecret whose pdkVersion is not the environment's, writing nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, a } = await world(t);
+    const first = await t.mutation(
+      api.secrets.createSecret,
+      secretArgs(alice, a.production),
+    );
+    // A re-key lands after the client unwrapped generation 1.
+    await t.run(async (ctx) =>
+      patchEnvironment(ctx, a.production, { pdkVersion: 2 }),
+    );
+
+    const update = {
+      sessionToken: alice.sessionToken,
+      secretId: first.secretId,
+      version: 2,
+      nameCiphertext: "cc".repeat(24),
+      nameNonce: "111111111111111111111111",
+      valueCiphertext: "dd".repeat(40),
+      valueNonce: "222222222222222222222222",
+    };
+    for (const pdkVersion of [1, 3]) {
+      await expect(
+        t.mutation(api.secrets.updateSecret, { ...update, pdkVersion }),
+      ).rejects.toThrow(STALE_KEY);
+    }
+
+    const live = await t.query(api.secrets.listSecrets, {
+      sessionToken: alice.sessionToken,
+      environmentId: a.production,
+    });
+    expect(live.map((row) => [row.secretId, row.version, row.pdkVersion])).toEqual([
+      [first.secretId, 1, 1],
+    ]);
+    const old = await t.run(async (ctx) => getSecretRow(ctx, first.secretId));
+    expect(old?.supersededAt).toBeUndefined();
+
+    // Resealed under the current generation, it lands and is stored as such.
+    const updated = await t.mutation(api.secrets.updateSecret, {
+      ...update,
+      pdkVersion: 2,
+    });
+    const row = await t.run(async (ctx) => getSecretRow(ctx, updated.secretId));
+    expect(row?.pdkVersion).toBe(2);
+  });
+
+  /**
+   * The nonce history is keyed on the generation the NEW row is sealed under.
+   * After a re-key, reusing a generation-1 nonce under generation 2 is not
+   * reuse under one key and is allowed; reusing it under generation 1 would
+   * have been refused.
+   */
+  it("checks nonce reuse against the stated generation", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, a } = await world(t);
+    const first = await t.mutation(
+      api.secrets.createSecret,
+      secretArgs(alice, a.production),
+    );
+    await t.run(async (ctx) =>
+      patchEnvironment(ctx, a.production, { pdkVersion: 2 }),
+    );
+
+    const reused = await t.mutation(api.secrets.updateSecret, {
+      sessionToken: alice.sessionToken,
+      secretId: first.secretId,
+      version: 2,
+      pdkVersion: 2,
+      nameCiphertext: "cc".repeat(24),
+      nameNonce: NAME_NONCE,
+      valueCiphertext: "dd".repeat(40),
+      valueNonce: VALUE_NONCE,
+    });
+    expect(reused.version).toBe(2);
   });
 });
 
@@ -1336,6 +1522,7 @@ describe("versioning", () => {
       sessionToken: alice.sessionToken,
       secretId: first.secretId,
       version: 2,
+      pdkVersion: 1,
       nameCiphertext: "cc".repeat(24),
       nameNonce: "111111111111111111111111",
       valueCiphertext: "dd".repeat(40),
@@ -1368,7 +1555,7 @@ describe("versioning", () => {
     expect(history.map((h) => h.version)).toEqual([1, 2]);
   });
 
-  it("refuses to update a version that is not the current one", async () => {
+  it("refuses to update or delete through a version that is not the current one", async () => {
     const t = convexTest(schema, modules);
     const { alice, a } = await world(t);
     const first = await t.mutation(
@@ -1379,6 +1566,7 @@ describe("versioning", () => {
       sessionToken: alice.sessionToken,
       secretId: first.secretId,
       version: 2,
+      pdkVersion: 1,
       nameCiphertext: "cc".repeat(24),
       nameNonce: "111111111111111111111111",
       valueCiphertext: "dd".repeat(40),
@@ -1390,12 +1578,31 @@ describe("versioning", () => {
         sessionToken: alice.sessionToken,
         secretId: first.secretId,
         version: 2,
+        pdkVersion: 1,
         nameCiphertext: "ee".repeat(24),
         nameNonce: "333333333333333333333333",
         valueCiphertext: "ff".repeat(40),
         valueNonce: "444444444444444444444444",
       }),
-    ).rejects.toThrow("This version of the secret has already been replaced.");
+    ).rejects.toThrow(
+      "This secret changed since you opened it. Reload to see the latest version.",
+    );
+
+    // And a delete through the superseded row gets the same one answer, rather
+    // than deleting a value the caller never saw.
+    await expect(
+      t.mutation(api.secrets.deleteSecret, {
+        sessionToken: alice.sessionToken,
+        secretId: first.secretId,
+      }),
+    ).rejects.toThrow(
+      "This secret changed since you opened it. Reload to see the latest version.",
+    );
+    const live = await t.query(api.secrets.listSecrets, {
+      sessionToken: alice.sessionToken,
+      environmentId: a.production,
+    });
+    expect(live.map((row) => row.version)).toEqual([2]);
   });
 });
 
@@ -1441,6 +1648,7 @@ describe("deleteSecret", () => {
       sessionToken: alice.sessionToken,
       secretId: first.secretId,
       version: 2,
+      pdkVersion: 1,
       nameCiphertext: "cc".repeat(24),
       nameNonce: "111111111111111111111111",
       valueCiphertext: "dd".repeat(40),
@@ -1479,6 +1687,7 @@ describe("deleteSecret", () => {
         sessionToken: alice.sessionToken,
         secretId,
         version: 2,
+        pdkVersion: 1,
         nameCiphertext: "cc".repeat(24),
         nameNonce: "111111111111111111111111",
         valueCiphertext: "dd".repeat(40),
@@ -1802,6 +2011,7 @@ describe("end to end", () => {
         environmentId,
         secretUid: newId("sec"),
         version: 1,
+        pdkVersion: 1,
         ...sealed,
       });
 
@@ -1852,6 +2062,7 @@ describe("end to end", () => {
         sessionToken,
         secretId: created.secretId,
         version: 2,
+        pdkVersion: 1,
         ...resealed,
       });
 

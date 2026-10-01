@@ -217,6 +217,7 @@ async function world(t: Harness): Promise<World> {
     environmentId,
     secretUid: newId("sec"),
     version: 1,
+    pdkVersion: 1,
     nameCiphertext: NAME_CIPHERTEXT,
     nameNonce: NAME_NONCE,
     valueCiphertext: VALUE_CIPHERTEXT,
@@ -332,6 +333,7 @@ const CALLS: Record<
     // Fresh per call, for the reason `orgUid` is above.
     secretUid: newId("sec"),
     version: 1,
+    pdkVersion: 1,
     nameCiphertext: NAME_CIPHERTEXT,
     nameNonce: "101112131415161718191a1b",
     valueCiphertext: VALUE_CIPHERTEXT,
@@ -342,6 +344,7 @@ const CALLS: Record<
     secretId: w.secretId,
     // `world()` seeded the secret at version 1, so the next one is 2.
     version: 2,
+    pdkVersion: 1,
     nameCiphertext: NAME_CIPHERTEXT,
     nameNonce: "202122232425262728292a2b",
     valueCiphertext: "cc".repeat(40),

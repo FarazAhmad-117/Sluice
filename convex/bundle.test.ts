@@ -183,6 +183,7 @@ async function addSecret(
     // version a new secret has.
     secretUid: newId("sec"),
     version: 1,
+    pdkVersion: 1,
     nameCiphertext: NAME_CIPHERTEXT,
     valueCiphertext,
     ...freshNonces(),
@@ -283,6 +284,7 @@ describe("the bundle", () => {
       sessionToken: alice.sessionToken,
       secretId: replaced.secretId,
       version: 2,
+      pdkVersion: 1,
       nameCiphertext: NAME_CIPHERTEXT,
       valueCiphertext: "44".repeat(40),
       ...freshNonces(),
@@ -688,6 +690,7 @@ describe("the bundle", () => {
       sessionToken: alice.sessionToken,
       secretId: created.secretId,
       version: 2,
+      pdkVersion: 1,
       nameCiphertext: NAME_CIPHERTEXT,
       valueCiphertext: "44".repeat(40),
       ...freshNonces(),

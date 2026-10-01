@@ -18,6 +18,7 @@ import {
   listCurrentSecretsByEnvironment,
   listSecretVersions as listVersionsBySecretUid,
   patchSecret,
+  secretUidTaken,
 } from "./repo/secrets";
 
 /**
@@ -41,8 +42,14 @@ import {
  *      associated data names -- by permanent uid, read off the environment
  *      row, never by this document id -- is always the one its column points
  *      at.
- *   2. `pdkVersion` is copied from the environment rather than accepted from
- *      the caller, so a row cannot claim a key version that never existed.
+ *   2. `pdkVersion` is the key generation the client unwrapped and sealed
+ *      under, so the client STATES it, and it must equal the environment's
+ *      current `pdkVersion` or the write is refused with nothing written (see
+ *      `STALE_PDK_VERSION`). The value stored is the stated one, which by that
+ *      check is also the environment's: a row can neither claim a key version
+ *      that never existed nor be filed under a generation its bytes were not
+ *      sealed under, which is what a server-assigned number would do the
+ *      moment a re-key landed between the client's unwrap and its write.
  *   3. The associated data also names the secret's permanent `sec_` id and
  *      the VERSION the row was sealed under. The server never computes those
  *      bytes, but it MUST store exactly the `secretUid` and `version` the
@@ -123,11 +130,36 @@ const INITIAL_SECRET_VERSION = 1;
  * disagree with the sealed one, or a concurrent edit would be silently
  * overwritten, so the write is refused with nothing written and the person is
  * told what to do about it.
+ *
+ * THE SAME SENTENCE ANSWERS A WRITE ADDRESSED TO A ROW THAT IS NO LONGER
+ * CURRENT, and that is the case it mostly exists for. A real race loser opened
+ * version N, holds THAT row's `secretId`, and sends N + 1; the winner already
+ * saved N + 1, so the row the loser names has been superseded. A separate
+ * "already replaced" message used to answer that case first, which meant the
+ * one person who needed "reload" was the one person never told it. There is
+ * now exactly one refusal for "you are not writing on top of the latest
+ * version", whichever way the staleness shows, and `deleteSecret` uses it too.
  */
 const STALE_VERSION =
   "This secret changed since you opened it. Reload to see the latest version.";
 
-const ALREADY_REPLACED = "This version of the secret has already been replaced.";
+/**
+ * THE COMPARE-AND-SET ON THE KEY GENERATION.
+ *
+ * The client seals both fields under the project data key it unwrapped, whose
+ * version it learned from its grant, and states that version. If somebody
+ * re-keyed the environment in between, the bytes are under a generation that
+ * is no longer current; storing them would either label them with the new
+ * version (they would never open) or keep a superseded key in service. Refused
+ * with nothing written.
+ *
+ * Verbatim the sentence `tokens.ts` uses for the same refusal on a token's
+ * grant, because it is one rule. It is repeated rather than imported for the
+ * reason `tokens.ts` gives for `NO_GRANT`: hoisting the shared refusals into
+ * `lib/authz.ts` is the right follow-up and is its own change.
+ */
+const STALE_PDK_VERSION =
+  "This environment's key changed since you opened it. Reload and try again.";
 
 /**
  * Two versions of one secret claiming to be current, or one secret's history
@@ -148,7 +180,7 @@ function refuse(): never {
  * A member of the org with no row in `pdkGrants` for this environment holds no
  * project data key, so whatever they seal is sealed under a key NOBODY IN THE
  * SYSTEM HOLDS. Nothing downstream notices. The row lands, `pdkVersion` is
- * copied off the environment so it claims a real key version, the listing shows
+ * checked against the environment so it claims a real key version, the listing shows
  * it beside rows that are fine, the bundle ships it to every workload, and the
  * whole thing fails exactly once: as a bare AEAD rejection, at read time, with
  * no indication of which input was wrong, possibly months later and possibly in
@@ -230,6 +262,9 @@ function assertSealed(fields: SealedFields): void {
  * the whole environment would mean reading every secret on every write. The
  * real defence is that `seal` generates the nonce itself; this is the cheap
  * check at the one place the server already holds the history.
+ *
+ * `pdkVersion` is the generation the NEW row is sealed under, as the client
+ * stated it, because that is the key under which a repeat would be reuse.
  */
 function assertNoncesAreNew(
   versions: Doc<"secrets">[],
@@ -328,6 +363,10 @@ export const createSecret = mutation({
     // anything else is refused instead of having its row stored under a
     // version its bytes do not name.
     version: v.number(),
+    // The project data key generation the client sealed both fields under:
+    // the `pdkVersion` of the grant it unwrapped. Must equal the
+    // environment's current one. See `STALE_PDK_VERSION`.
+    pdkVersion: v.number(),
     nameCiphertext: v.string(),
     nameNonce: v.string(),
     valueCiphertext: v.string(),
@@ -357,11 +396,16 @@ export const createSecret = mutation({
       throw new ConvexError(NEW_SECRET_VERSION);
     }
     assertSealed(args);
+    // After the shape checks and before any lookup or insert, the position
+    // `tokens.createServiceToken` gives the same check.
+    if (args.pdkVersion !== environment.pdkVersion) {
+      throw new ConvexError(STALE_PDK_VERSION);
+    }
 
     // Deployment wide, and any row at all, superseded or deleted included: an
     // id that ever named a secret names that secret for ever, and reusing it
     // is how a create becomes an overwrite of somebody else's history.
-    if ((await listVersionsBySecretUid(ctx, secretUid)).length > 0) {
+    if (await secretUidTaken(ctx, secretUid)) {
       throw new ConvexError(DUPLICATE_SECRET_UID);
     }
 
@@ -376,8 +420,9 @@ export const createSecret = mutation({
       nameNonce: args.nameNonce,
       valueCiphertext: args.valueCiphertext,
       valueNonce: args.valueNonce,
-      // From the environment, never from the caller. See the header.
-      pdkVersion: environment.pdkVersion,
+      // What the client sealed under, equal to the environment's current
+      // generation by the check above. See the header, point 2.
+      pdkVersion: args.pdkVersion,
       version: INITIAL_SECRET_VERSION,
     });
 
@@ -409,6 +454,9 @@ export const updateSecret = mutation({
     // The version the client sealed the NEW ciphertext under: the version it
     // opened, plus one. Compared, never assigned.
     version: v.number(),
+    // The key generation the NEW ciphertext is sealed under. Must equal the
+    // environment's current one. See `STALE_PDK_VERSION`.
+    pdkVersion: v.number(),
     nameCiphertext: v.string(),
     nameNonce: v.string(),
     valueCiphertext: v.string(),
@@ -439,25 +487,36 @@ export const updateSecret = mutation({
 
     const { versions, current } = await historyOf(ctx, secret);
 
-    // Deleted is checked before superseded, so a deleted secret answers with
+    // Deleted is checked before staleness, so a deleted secret answers with
     // the same refusal as one that was never there rather than with a message
     // that confirms it exists and describes its state.
     if (current.deletedAt !== undefined) refuse();
-    if (secret.supersededAt !== undefined) {
-      throw new ConvexError(ALREADY_REPLACED);
-    }
 
-    // THE COMPARE-AND-SET, against the current row read in this transaction.
-    // Before any write, so a stale caller leaves no new row and no
-    // `supersededAt` behind. Convex mutations are serialisable, so two writers
-    // racing from the same version cannot both pass it.
+    // THE COMPARE-AND-SET, against the current row read in this transaction,
+    // in both of the forms staleness takes. The row named is not the current
+    // one: the caller opened a version somebody else has since replaced,
+    // which is what a real race loser looks like. Or the stated version is
+    // not current + 1. Either way the same actionable refusal, before any
+    // write, so a stale caller leaves no new row and no `supersededAt`
+    // behind. Convex mutations are serialisable, so two writers racing from
+    // the same version cannot both pass it.
+    //
+    // "Is this the current row" is asked by identity against `current`, not
+    // by reading `secret.supersededAt`, so it does not lean on the
+    // one-live-row invariant a second time: `historyOf` has already enforced
+    // it, and this is the single form `deleteSecret` uses too.
     const nextVersion = current.version + 1;
-    if (args.version !== nextVersion) {
+    if (secret._id !== current._id || args.version !== nextVersion) {
       throw new ConvexError(STALE_VERSION);
     }
 
     assertSealed(args);
-    assertNoncesAreNew(versions, environment.pdkVersion, args);
+    // After the shape checks and before any insert, the position
+    // `tokens.createServiceToken` gives the same check.
+    if (args.pdkVersion !== environment.pdkVersion) {
+      throw new ConvexError(STALE_PDK_VERSION);
+    }
+    assertNoncesAreNew(versions, args.pdkVersion, args);
 
     const secretId = await insertSecret(ctx, {
       // All three read from the row being replaced. None is an argument, which
@@ -470,7 +529,9 @@ export const updateSecret = mutation({
       nameNonce: args.nameNonce,
       valueCiphertext: args.valueCiphertext,
       valueNonce: args.valueNonce,
-      pdkVersion: environment.pdkVersion,
+      // What the client sealed under; equal to the environment's by the check
+      // above.
+      pdkVersion: args.pdkVersion,
       // Equal to `args.version` by the check above: exactly what was sealed.
       version: nextVersion,
     });
@@ -512,7 +573,10 @@ export const deleteSecret = mutation({
     const { current } = await historyOf(ctx, secret);
 
     if (current.deletedAt !== undefined) refuse();
-    if (secret._id !== current._id) throw new ConvexError(ALREADY_REPLACED);
+    // Deleting through a row somebody has since replaced would delete a value
+    // the caller never saw. The same refusal, and the same identity test, as
+    // `updateSecret`: one answer for "you are not looking at the latest".
+    if (secret._id !== current._id) throw new ConvexError(STALE_VERSION);
 
     await patchSecret(ctx, current._id, { deletedAt: Date.now() });
 
