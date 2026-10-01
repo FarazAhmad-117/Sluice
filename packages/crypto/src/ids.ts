@@ -38,8 +38,17 @@ import { randomBytes, toHex } from "./bytes";
  * apart, and `secretAssociatedData` binds both. Minting a fresh `sec_` id per
  * version would defeat the point: the id is what lets a reader say "this
  * ciphertext belongs to THIS secret and no other", across edits.
+ *
+ * A SHARE ID (`shr_…`) IS A GROUPING LABEL, NOT A BINDING. It links the
+ * per-environment rows of one shared secret (a secret set for "all
+ * environments"), each of which is still its own `sec_` lineage sealed under
+ * its own environment's key. It is never part of any associated data, so the
+ * server could relabel which rows belong together. That changes how the
+ * dashboard groups and labels rows, but it cannot make any ciphertext open
+ * under the wrong environment, secret or version: those bindings live in
+ * `secretAssociatedData` and do not mention the share id at all.
  */
-export type IdKind = "org" | "usr" | "env" | "sec";
+export type IdKind = "org" | "usr" | "env" | "sec" | "shr";
 
 const ID_BYTES = 16;
 
@@ -61,6 +70,7 @@ const PATTERNS: Readonly<Record<IdKind, RegExp>> = Object.freeze({
   usr: pattern("usr"),
   env: pattern("env"),
   sec: pattern("sec"),
+  shr: pattern("shr"),
 });
 
 /**
@@ -84,7 +94,7 @@ export function newId(kind: IdKind): string {
  */
 export function assertId(kind: IdKind, field: string, value: string): string {
   if (!Object.prototype.hasOwnProperty.call(PATTERNS, kind)) {
-    throw new Error("kind must be org, usr, env or sec");
+    throw new Error("kind must be org, usr, env, sec or shr");
   }
   if (typeof value !== "string" || !PATTERNS[kind].test(value)) {
     throw new Error(`${field} must be a well-formed ${kind} id`);

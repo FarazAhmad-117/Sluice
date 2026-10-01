@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { assertId, newId, type IdKind } from "../src/ids";
 
 describe("newId", () => {
-  it.each(["org", "usr", "env", "sec"] as const)("mints a %s id in the one canonical shape", (kind) => {
+  it.each(["org", "usr", "env", "sec", "shr"] as const)("mints a %s id in the one canonical shape", (kind) => {
     const id = newId(kind);
     expect(id).toMatch(new RegExp(`^${kind}_[0-9a-f]{32}$`));
     // Minting and validation must agree: whatever newId hands out, assertId
@@ -16,7 +16,7 @@ describe("newId", () => {
   });
 
   it("refuses to mint for an unknown kind", () => {
-    expect(() => newId("foo" as IdKind)).toThrow(/^kind must be org, usr, env or sec$/);
+    expect(() => newId("foo" as IdKind)).toThrow(/^kind must be org, usr, env, sec or shr$/);
   });
 });
 
@@ -58,6 +58,23 @@ describe("assertId", () => {
     );
   });
 
+  it("mints and accepts shr ids", () => {
+    const id = newId("shr");
+    expect(id).toMatch(/^shr_[0-9a-f]{32}$/);
+    expect(assertId("shr", "shareUid", id)).toBe(id);
+  });
+
+  /**
+   * A share id groups the rows of one shared secret; a secret id names one
+   * row's lineage. Passing one where the other is expected must fail at the
+   * call.
+   */
+  it("refuses a sec id where a shr id is expected", () => {
+    expect(() => assertId("shr", "shareUid", newId("sec"))).toThrow(
+      "shareUid must be a well-formed shr id",
+    );
+  });
+
   /**
    * THE REASON THIS PHASE EXISTS. A Convex document id is deployment-local and
    * changes when an org moves cells. It must never reach an encryption binding.
@@ -86,7 +103,7 @@ describe("assertId", () => {
 
   it("rejects an unknown kind", () => {
     expect(() => assertId("foo" as IdKind, "x", "foo_" + "0".repeat(32))).toThrow(
-      /^kind must be org, usr, env or sec$/,
+      /^kind must be org, usr, env, sec or shr$/,
     );
   });
 });
