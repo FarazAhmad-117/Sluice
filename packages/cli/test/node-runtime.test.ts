@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { sanitiseForLog } from "@sluice/sdk";
+import type { RawBundle } from "../src/bundle";
 import {
   ConsoleLogger,
+  guardSubscriptionHandlers,
   NodeChildProcessSupervisor,
   NodeTimers,
   stripControls,
@@ -90,6 +92,55 @@ describe("NodeChildProcessSupervisor", () => {
     await exited;
     expect(supervisor.started).toBe(true);
   }, SPAWNS_REAL_NODE_MS);
+});
+
+describe("guardSubscriptionHandlers, the transport boundary", () => {
+  it("contains a throwing handler, logs it sanitised, and keeps delivering", () => {
+    const logger = new FakeLogger();
+    const received: unknown[] = [];
+    let throwNext = true;
+    const guarded = guardSubscriptionHandlers(
+      {
+        onResult: (raw) => {
+          if (throwNext) {
+            throwNext = false;
+            throw new TypeError("Cannot read properties of null\u001b[2J");
+          }
+          received.push(raw);
+        },
+        onError: () => {
+          throw "not even an Error";
+        },
+      },
+      logger,
+    );
+    const bundle = { secrets: null } as unknown as RawBundle;
+    expect(() => guarded.onResult(bundle)).not.toThrow();
+    expect(() => guarded.onError("expired")).not.toThrow();
+    guarded.onResult(bundle);
+    expect(received).toEqual([bundle]);
+    const failures = logger.lines.filter((line) => line.code === "bundle-handler-failed");
+    expect(failures).toHaveLength(2);
+    expect(logger.text).not.toContain("\u001b");
+  });
+
+  it("does not let a throwing logger undo the guard", () => {
+    const guarded = guardSubscriptionHandlers(
+      {
+        onResult: () => {
+          throw new Error("handler");
+        },
+        onError: () => undefined,
+      },
+      {
+        log: () => {
+          throw new Error("logger");
+        },
+        metric: () => undefined,
+      },
+    );
+    expect(() => guarded.onResult({} as RawBundle)).not.toThrow();
+  });
 });
 
 describe("NodeTimers", () => {

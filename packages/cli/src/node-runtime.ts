@@ -187,10 +187,64 @@ const GET_BUNDLE = makeFunctionReference<"query", { token: string }, RawBundle>(
   "bundle:getBundle",
 );
 
+/**
+ * WRAPS BOTH SUBSCRIPTION HANDLERS SO NOTHING THEY THROW REACHES THE CLIENT.
+ *
+ * The Convex client calls `onUpdate` callbacks from inside its websocket's
+ * `onmessage`, with no try/catch. On Node 22 the global WebSocket is an
+ * EventTarget, which rethrows a listener's error on the next tick as an
+ * uncaught exception, and the process exits. For a supervisor that orphans the
+ * child with its secrets and leaves every later revocation with nobody to
+ * deliver it to.
+ *
+ * `shell.ts` guards its own handlers too; this is the second layer, at the one
+ * place the transport hands control to Sluice, so a handler that is not the
+ * shell's (an embedder's, a future refactor's) is held to the same rule.
+ * Swallowing never loses a shutdown: the shell queues and pumps a notice
+ * before anything that could throw after it. The message is sanitised and the
+ * bundle itself is never logged.
+ */
+export function guardSubscriptionHandlers(
+  handlers: SubscriptionHandlers,
+  logger: Logger,
+): SubscriptionHandlers {
+  const failed = (error: unknown): void => {
+    try {
+      logger.log(
+        "error",
+        "bundle-handler-failed",
+        `a subscription event could not be handled and was dropped: ${sanitiseForLog(
+          error instanceof Error ? error.message : String(error),
+        )}`,
+      );
+    } catch {
+      // A logger that throws must not undo the guard it is reporting from.
+    }
+  };
+  return {
+    onResult(raw: RawBundle): void {
+      try {
+        handlers.onResult(raw);
+      } catch (error) {
+        failed(error);
+      }
+    },
+    onError(message: string): void {
+      try {
+        handlers.onError(message);
+      } catch (error) {
+        failed(error);
+      }
+    },
+  };
+}
+
 export class ConvexBundleSource implements BundleSource {
   readonly #client: ConvexClient;
+  readonly #logger: Logger;
 
   constructor(deploymentUrl: string, logger?: Logger) {
+    this.#logger = logger ?? new ConsoleLogger();
     this.#client = new ConvexClient(deploymentUrl, {
       // There is no window here and nothing to warn anybody about.
       unsavedChangesWarning: false,
@@ -205,7 +259,8 @@ export class ConvexBundleSource implements BundleSource {
     });
   }
 
-  subscribe(bundleToken: string, handlers: SubscriptionHandlers): () => void {
+  subscribe(bundleToken: string, unguarded: SubscriptionHandlers): () => void {
+    const handlers = guardSubscriptionHandlers(unguarded, this.#logger);
     const unsubscribe = this.#client.onUpdate(
       GET_BUNDLE,
       { token: bundleToken },

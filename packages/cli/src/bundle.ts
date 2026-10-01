@@ -63,12 +63,14 @@ import type { TokenIdentity } from "./config";
  * never reads a `secretId` value; its mere presence on a row with no
  * `secretUid` is how an older backend is recognised and named.
  *
- * `lineageId` is DISPLAY ONLY. It names a row in an error message so an
- * operator can find it in the dashboard, and is bound into nothing.
+ * `lineageId` is DISPLAY ONLY AND OPTIONAL. It names a row in an error message
+ * so an operator can find it in the dashboard, and is bound into nothing. It is
+ * optional because the backend may stop sending it now that `secretUid` names a
+ * secret permanently; {@link rowLabel} falls back to the `secretUid`.
  */
 export interface RawSecretRow {
   readonly secretUid: string;
-  readonly lineageId: string;
+  readonly lineageId?: string | undefined;
   readonly version: number;
   readonly pdkVersion: number;
   readonly nameCiphertext: string;
@@ -218,9 +220,9 @@ export function readRevocation(raw: RawBundle | null | undefined): ParsedRevocat
  * Opens every row in the bundle, or opens none of them.
  *
  * NO MESSAGE THIS FUNCTION PRODUCES CONTAINS A NAME, A VALUE, A KEY OR A
- * CIPHERTEXT. An unopenable row is named by its `lineageId`, which is a server
- * side identifier an operator can paste into the dashboard and which reveals
- * nothing about the secret. The AEAD failures deliberately carry no detail
+ * CIPHERTEXT. An unopenable row is named by {@link rowLabel}: its `lineageId`,
+ * or failing that its `secretUid`, both identifiers an operator can paste into
+ * the dashboard and neither of which reveals anything about the secret. The AEAD failures deliberately carry no detail
  * about which input was wrong, matching `@sluice/crypto`: inventing a
  * distinction between a wrong key, a tampered ciphertext and wrong associated
  * data would turn this into a decryption oracle.
@@ -317,17 +319,16 @@ export async function decryptSecrets(
     );
   }
 
-  // A MISSING GRANT IS ALL THREE FIELDS ABSENT, AND ONLY THEN. `pdkVersion` is
-  // tested for presence, not for type, on purpose: a version that is present
-  // but is not a number (`"1"`, `null`, `1.5`) is not a missing grant, it is a
-  // malformed one, and must reach the guard below and be reported as
-  // `malformed`. Calling it `no-grant` would send an operator to the dashboard
-  // to issue a grant the token already has.
-  if (
-    typeof raw.wrappedPDK !== "string" ||
-    typeof raw.pdkNonce !== "string" ||
-    raw.pdkVersion === undefined
-  ) {
+  // A MISSING GRANT IS ALL THREE FIELDS ABSENT, AND ONLY THEN. That is exactly
+  // what `convex/bundle.ts` sends when there is no `pdkGrants` row. Any other
+  // combination, one or two of the three present, or a wrap or nonce that is
+  // not a string, is not a missing grant but a malformed one, and is reported
+  // as `malformed` below. Calling it `no-grant` would send an operator to the
+  // dashboard to issue a grant the token already has. A `pdkVersion` that is
+  // present but is not a positive whole number (`"1"`, `null`, `1.5`) is
+  // likewise malformed, and is caught by the crypto layer's own version rule
+  // in the guard after this one.
+  if (raw.wrappedPDK === undefined && raw.pdkNonce === undefined && raw.pdkVersion === undefined) {
     // The token authenticated and the environment exists; there is simply no
     // `pdkGrants` row for it. Named separately from every other failure because
     // the fix is an administrative one, in the dashboard, and no amount of
@@ -337,6 +338,20 @@ export async function decryptSecrets(
       "This service token has no project data key grant on its environment, so it cannot " +
         "open any secret. Issue the token a grant in the Sluice dashboard. Sluice is not " +
         "exiting: a missing grant is not a revocation.",
+    );
+  }
+
+  if (
+    typeof raw.wrappedPDK !== "string" ||
+    typeof raw.pdkNonce !== "string" ||
+    raw.pdkVersion === undefined
+  ) {
+    // Part of a grant. No value is echoed: all three came off the same
+    // untrusted bundle.
+    throw new BundleDecryptError(
+      "malformed",
+      "The Sluice bundle carried an incomplete project data key grant, so no secret can be " +
+        "opened. Sluice is keeping any last known good secrets.",
     );
   }
 
@@ -402,6 +417,17 @@ export async function decryptSecrets(
         throw unreadableRow(row);
       }
 
+      // CHECKED BEFORE IT IS COMPARED, because the comparison's message prints
+      // it. A row's `pdkVersion` is an untrusted column, and anything that is
+      // not a positive whole number (a 10,000 character string, an escape
+      // sequence, `null`) would otherwise be interpolated into a log line. It
+      // is not a re-key either, so it fails as the unreadable row it is. The
+      // bundle's own `pdkVersion` needs no such check here: the grant guard
+      // above has already held it to the crypto layer's version rule.
+      if (!Number.isSafeInteger(row.pdkVersion) || row.pdkVersion < 1) {
+        throw unreadableRow(row);
+      }
+
       if (row.pdkVersion !== raw.pdkVersion) {
         // Expected during a re-key and only then. The next push carries the
         // matching wrap, so keeping any last known good set costs milliseconds.
@@ -451,7 +477,7 @@ export async function decryptSecrets(
       if (!ENV_NAME.test(name)) {
         throw new BundleDecryptError(
           "bad-name",
-          `The secret with lineage id ${safeId(row.lineageId)} has a name that cannot be an ` +
+          `The secret ${rowLabel(row)} has a name that cannot be an ` +
             "environment variable. Names must start with a letter or an underscore and " +
             "contain only letters, digits and underscores. The name is not printed here.",
         );
@@ -459,8 +485,8 @@ export async function decryptSecrets(
       if (Object.prototype.hasOwnProperty.call(secrets, name)) {
         throw new BundleDecryptError(
           "duplicate-name",
-          `Two secrets in this environment decrypt to the same name, one of them with ` +
-            `lineage id ${safeId(row.lineageId)}. Sluice will not choose between them. ` +
+          `Two secrets in this environment decrypt to the same name, one of them ` +
+            `the secret ${rowLabel(row)}. Sluice will not choose between them. ` +
             "The name is not printed here.",
         );
       }
@@ -507,17 +533,27 @@ async function open(
  * about which input was wrong, matching the AEAD failures it sits beside.
  */
 function unreadableRow(row: unknown): BundleDecryptError {
-  const lineageId =
-    typeof row === "object" && row !== null ? (row as { lineageId?: unknown }).lineageId : undefined;
   return new BundleDecryptError(
     "row-open",
-    `The secret with lineage id ${safeId(lineageId)} could not be opened with this ` +
+    `The secret ${rowLabel(row)} could not be opened with this ` +
       "environment's project data key. Sluice is keeping any last known good secrets.",
   );
 }
 
 /**
- * A lineage id, or a placeholder.
+ * How every message names a row: its `lineageId` when the row carries one,
+ * otherwise its `secretUid`, each through {@link safeId}. Takes `unknown`
+ * because it is called on entries that may not be rows at all, and must never
+ * throw on one, since it runs while building the error for exactly those.
+ */
+function rowLabel(row: unknown): string {
+  if (typeof row !== "object" || row === null) return safeId(undefined);
+  const { lineageId, secretUid } = row as { lineageId?: unknown; secretUid?: unknown };
+  return lineageId !== undefined ? safeId(lineageId) : safeId(secretUid);
+}
+
+/**
+ * An identifier, or a placeholder.
  *
  * The id is a server side identifier and is safe to show, but it arrives from
  * the same untrusted row as everything else, so a value that is not a short

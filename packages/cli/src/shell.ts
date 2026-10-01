@@ -446,10 +446,51 @@ export class Shell {
     this.#retireOld();
     this.#retiringUnsubscribe = this.#currentUnsubscribe;
 
+    // THE BOUNDARY GUARD. NOTHING THROWN BELOW MAY REACH THE TRANSPORT.
+    //
+    // These handlers are called from inside the Convex client's websocket
+    // `onmessage`, unguarded. On Node 22 the global WebSocket is an
+    // EventTarget, which rethrows a listener's error on the next tick as an
+    // UNCAUGHT EXCEPTION, and the process exits. For a supervisor that is the
+    // worst failure available: the child is orphaned with its secrets, and
+    // every later revocation has nobody to deliver it to. The kill switch is
+    // disabled for that process for good, by one hostile bundle.
+    //
+    // SWALLOWING HERE NEVER LOSES A SHUTDOWN. `#onBundle` reads the notice and
+    // queues it, and `#enqueue` pumps it through the core and applies the
+    // decisions synchronously, before anything after `readRevocation` runs.
+    // So by the time anything later can throw, a genuine revocation has
+    // already been acted on, and a forged one correctly has not. If the pump
+    // itself throws, the decisions it had applied are applied and the drain's
+    // timers are armed; the alternative to logging it is the crash above.
     this.#currentUnsubscribe = this.#source.subscribe(credential.token, {
-      onResult: (raw) => this.#onBundle(generation, raw),
-      onError: (errorMessage) => this.#onSubscriptionError(generation, errorMessage),
+      onResult: (raw) => {
+        try {
+          this.#onBundle(generation, raw);
+        } catch (error) {
+          this.#handlerFailed(error);
+        }
+      },
+      onError: (errorMessage) => {
+        try {
+          this.#onSubscriptionError(generation, errorMessage);
+        } catch (error) {
+          this.#handlerFailed(error);
+        }
+      },
     });
+  }
+
+  #handlerFailed(error: unknown): void {
+    try {
+      this.#logger.log(
+        "error",
+        "bundle-handler-failed",
+        `a subscription event could not be handled and was dropped: ${sanitiseForLog(message(error))}`,
+      );
+    } catch {
+      // A logger that throws must not undo the guard it is reporting from.
+    }
   }
 
   #retireOld(): void {
@@ -486,7 +527,16 @@ export class Shell {
       // A revoked bundle carries no secrets by design. Feeding the empty set to
       // the core would read as "every secret was removed", which is a different
       // and untrue statement.
-      if (raw.secrets === undefined || raw.secrets.length === 0) return;
+      //
+      // `Array.isArray` FIRST, and not `=== undefined`. `secrets` is untrusted
+      // and anyone with database write access can serve `null` beside a notice.
+      // `null.length` used to throw HERE, after the notice was queued but out
+      // of the transport's callback, where nothing caught it: the supervisor
+      // died, and with a FORGED notice (which the core rejects, so nothing is
+      // queued) that left the child running, orphaned, with its secrets, and
+      // every later genuine revocation with nobody to deliver it to. Anything
+      // that is not an array here carries no secrets worth decrypting.
+      if (!Array.isArray(raw.secrets) || raw.secrets.length === 0) return;
     }
 
     const sequence = this.#bundleSequence + 1;

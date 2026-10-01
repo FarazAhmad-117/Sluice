@@ -35,4 +35,12 @@ main({
     process.on("SIGINT", () => handler("SIGINT"));
     process.on("SIGTERM", () => handler("SIGTERM"));
   },
+  onFatal: (handler) => {
+    // Node's default for both is to exit, and a supervisor that exits while
+    // its child lives orphans the child with its secrets, out of reach of
+    // every later revocation. The handler kills the child first; see
+    // `fatalHandler` in `run.ts`.
+    process.on("uncaughtException", (error) => handler(error));
+    process.on("unhandledRejection", (reason) => handler(reason));
+  },
 });

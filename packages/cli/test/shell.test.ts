@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it } from "vitest";
 import { MAX_CLOCK_STEP_MS, NO_PERSISTED_FLOOR, SluiceCore } from "@sluice/sdk";
 import { toHex } from "@sluice/crypto";
+import type { RawBundle } from "../src/bundle";
 import { Shell } from "../src/shell";
 import {
   ENVIRONMENT_UID,
@@ -677,6 +678,8 @@ describe("Shell: availability, section 4.3", () => {
       });
       await flush(() => h.shell.busy);
       expect(h.exits).toEqual([1]);
+      expect(h.child.signals).toEqual(["SIGTERM"]);
+      expect(h.child.running).toBe(false);
       const unreadable = h.logger.lines.filter((line) => line.code === "bundle-unreadable");
       expect(unreadable.length).toBeGreaterThan(0);
       for (const line of unreadable) expect(line.message.startsWith("row-open:")).toBe(true);
@@ -698,6 +701,126 @@ describe("Shell: availability, section 4.3", () => {
     const unreadable = h.logger.lines.filter((line) => line.code === "bundle-unreadable");
     expect(unreadable).toHaveLength(1);
     expect(unreadable[0]!.message.startsWith("row-open:")).toBe(true);
+  });
+
+  // A NOTICE BESIDE `secrets` THAT IS NOT AN ARRAY. Any database writer can
+  // serve this. `null.length` used to throw out of the transport callback,
+  // uncaught, and kill the supervisor: with a genuine notice the SIGKILL
+  // escalation never fired, and with a forged one the child was orphaned with
+  // its secrets and could never be revoked again.
+  const NOT_AN_ARRAY: readonly unknown[] = [null, "x", {}, { length: 1 }];
+
+  function withSecrets(raw: RawBundle, secrets: unknown): RawBundle {
+    return { ...raw, secrets: secrets as RawBundle["secrets"] };
+  }
+
+  it("shuts down on a genuine notice whatever non-array the secrets field holds", async () => {
+    for (const secrets of NOT_AN_ARRAY) {
+      const h = await booted({ drainMs: 0 });
+      const base = await fixture.bundleWith({}, 2);
+      const bundle = withSecrets(
+        { ...base, revocationNotice: signedNotice(org, fixture.identity, { epoch: 3 }) },
+        secrets,
+      );
+      expect(() => h.source.emit(bundle)).not.toThrow();
+      await flush(() => h.shell.busy);
+      expect(h.child.signals).toEqual(["SIGTERM"]);
+      expect(h.exits).toEqual([1]);
+      expect(h.logger.has("bundle-handler-failed")).toBe(false);
+    }
+  });
+
+  it("escalates to SIGKILL on a wedged child, whatever non-array the secrets field holds", async () => {
+    for (const secrets of NOT_AN_ARRAY) {
+      const h = await booted({ drainMs: 0, killGraceMs: 4_000 });
+      h.child.ignoreSigterm = true;
+      const base = await fixture.bundleWith({}, 2);
+      const bundle = withSecrets(
+        { ...base, revocationNotice: signedNotice(org, fixture.identity, { epoch: 3 }) },
+        secrets,
+      );
+      expect(() => h.source.emit(bundle)).not.toThrow();
+      await flush(() => h.shell.busy);
+      expect(h.child.signals).toEqual(["SIGTERM"]);
+      expect(h.exits).toEqual([]);
+      await h.tick(4_000);
+      expect(h.child.signals).toEqual(["SIGTERM", "SIGKILL"]);
+      expect(h.child.running).toBe(false);
+      expect(h.exits).toEqual([1]);
+    }
+  });
+
+  it("stays alive and supervising after a FORGED notice beside non-array secrets", async () => {
+    for (const secrets of NOT_AN_ARRAY) {
+      const h = await booted({ drainMs: 0 });
+      const forger = orgKeyPair();
+      const base = await fixture.bundleWith({}, 2);
+      const forged = withSecrets(
+        { ...base, revocationNotice: signedNotice(forger, fixture.identity, { epoch: 3 }) },
+        secrets,
+      );
+      expect(() => h.source.emit(forged)).not.toThrow();
+      await flush(() => h.shell.busy);
+      await h.tick(MAX_CLOCK_STEP_MS * 3);
+      expect(h.exits).toEqual([]);
+      expect(h.child.signals).toEqual([]);
+      expect(h.child.running).toBe(true);
+
+      // Still supervised: the next genuine notice is delivered and acted on.
+      h.source.emit({
+        ...(await fixture.bundleWith({}, 3)),
+        revocationNotice: signedNotice(org, fixture.identity, { epoch: 4 }),
+      });
+      await flush(() => h.shell.busy);
+      expect(h.child.signals).toEqual(["SIGTERM"]);
+      expect(h.exits).toEqual([1]);
+    }
+  });
+
+  it("contains a throw from inside the bundle handler, after the notice has been acted on", async () => {
+    // A bundle whose `secrets` throws on read stands in for any future bug
+    // that throws after `readRevocation`. The notice is queued and pumped
+    // first, so the shutdown happens, and the throw is logged by the boundary
+    // guard instead of reaching the transport.
+    const h = await booted({ drainMs: 0 });
+    const base = await fixture.bundleWith({}, 2);
+    const hostile = {
+      ...base,
+      revocationNotice: signedNotice(org, fixture.identity, { epoch: 3 }),
+    } as Record<string, unknown>;
+    Object.defineProperty(hostile, "secrets", {
+      get() {
+        throw new TypeError("secrets exploded\u001b[2J");
+      },
+    });
+    expect(() => h.source.emit(hostile as unknown as RawBundle)).not.toThrow();
+    await flush(() => h.shell.busy);
+    expect(h.child.signals).toEqual(["SIGTERM"]);
+    expect(h.exits).toEqual([1]);
+    expect(h.logger.has("bundle-handler-failed")).toBe(true);
+    expect(h.logger.text).not.toContain("\u001b");
+  });
+
+  it("contains a throw from the bundle handler without a notice, and keeps supervising", async () => {
+    const h = await booted();
+    const hostile = {} as Record<string, unknown>;
+    Object.defineProperty(hostile, "revocationNotice", {
+      get() {
+        throw new Error("notice exploded");
+      },
+    });
+    expect(() => h.source.emit(hostile as unknown as RawBundle)).not.toThrow();
+    await flush(() => h.shell.busy);
+    expect(h.logger.has("bundle-handler-failed")).toBe(true);
+    expect(h.exits).toEqual([]);
+    expect(h.child.running).toBe(true);
+
+    h.source.emit({
+      ...(await fixture.bundleWith({}, 3)),
+      revocationNotice: signedNotice(org, fixture.identity, { epoch: 4 }),
+    });
+    await flush(() => h.shell.busy);
+    expect(h.exits).toEqual([1]);
   });
 
   it("still delivers a notice carried on a bundle whose environmentUid is malformed", async () => {

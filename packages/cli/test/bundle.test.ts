@@ -353,6 +353,85 @@ describe("decryptSecrets", () => {
     expect((error as BundleDecryptError).code).toBe("row-open");
   });
 
+  it("refuses a whole row relabelled with another secret's id, ciphertexts untouched", async () => {
+    // The inverse splice: rather than moving a ciphertext into another row,
+    // the attacker rewrites a row's `secretUid` column to claim it belongs to
+    // a different secret.
+    const { identity, raw } = await fixture({ DATABASE_URL: "postgres://real", STRIPE_KEY: "sk" });
+    const [database, stripe] = raw.secrets as [RawSecretRow, RawSecretRow];
+    const relabelled: RawSecretRow = { ...database, secretUid: stripe.secretUid };
+    const error = await decryptSecrets(identity, { ...raw, secrets: [relabelled] }).catch(
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(BundleDecryptError);
+    expect((error as BundleDecryptError).code).toBe("row-open");
+  });
+
+  it("refuses a row whose own key version is not a positive whole number, without echoing it", async () => {
+    // It used to be interpolated into the `pdk-version-mismatch` message
+    // unchecked, so any database writer could put arbitrary text in a log line.
+    const { identity, raw } = await fixture();
+    const huge = "Z".repeat(10_000);
+    for (const pdkVersion of ["1", null, huge, 0, -1, 1.5, Number.NaN, "\u001b[2J"]) {
+      const rows = raw.secrets.map((row, i) =>
+        i === 0 ? ({ ...row, pdkVersion } as unknown as RawSecretRow) : row,
+      );
+      const error = await decryptSecrets(identity, { ...raw, secrets: rows }).catch(
+        (e: unknown) => e,
+      );
+      expect(error).toBeInstanceOf(BundleDecryptError);
+      expect((error as BundleDecryptError).code).toBe("row-open");
+      expect((error as Error).message).not.toContain("ZZZZ");
+      expect((error as Error).message).not.toContain("\u001b");
+      expect((error as Error).message.length).toBeLessThan(400);
+    }
+  });
+
+  it("calls a partial or mistyped grant malformed, never no-grant", async () => {
+    const { identity, raw } = await fixture();
+    for (const partial of [
+      { wrappedPDK: undefined },
+      { pdkNonce: undefined },
+      { pdkVersion: undefined },
+      { wrappedPDK: undefined, pdkNonce: undefined },
+      { wrappedPDK: undefined, pdkVersion: undefined },
+      { pdkNonce: undefined, pdkVersion: undefined },
+      { wrappedPDK: 42 },
+      { pdkNonce: null },
+      { wrappedPDK: null, pdkNonce: null, pdkVersion: null },
+    ]) {
+      const error = await decryptSecrets(identity, {
+        ...raw,
+        ...(partial as Partial<RawBundle>),
+      }).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(BundleDecryptError);
+      expect((error as BundleDecryptError).code).toBe("malformed");
+    }
+  });
+
+  it("names a row by its secretUid when the backend sends no lineageId", async () => {
+    const { identity, raw } = await fixture({ "not a name": "x" });
+    const { lineageId: _dropped, ...withoutLineage } = raw.secrets[0]!;
+    const error = await decryptSecrets(identity, { ...raw, secrets: [withoutLineage] }).catch(
+      (e: unknown) => e,
+    );
+    expect((error as BundleDecryptError).code).toBe("bad-name");
+    expect((error as Error).message).toContain(`The secret ${withoutLineage.secretUid}`);
+
+    const unopenable = { ...withoutLineage, valueNonce: "00" };
+    const rowError = await decryptSecrets(identity, { ...raw, secrets: [unopenable] }).catch(
+      (e: unknown) => e,
+    );
+    expect((rowError as BundleDecryptError).code).toBe("row-open");
+    expect((rowError as Error).message).toContain(`The secret ${withoutLineage.secretUid}`);
+  });
+
+  it("names a row by its lineageId when it has one", async () => {
+    const { identity, raw } = await fixture({ "not a name": "x" });
+    const error = await decryptSecrets(identity, raw).catch((e: unknown) => e);
+    expect((error as Error).message).toContain("The secret lin0");
+  });
+
   it("refuses a version number relabelled on an otherwise untouched row", async () => {
     const { identity, raw } = await fixture({ API_KEY: "x" });
     const relabelled = { ...raw.secrets[0]!, version: 2 };

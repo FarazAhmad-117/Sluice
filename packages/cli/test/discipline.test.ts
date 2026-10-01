@@ -95,10 +95,13 @@ describe("the source of this package", () => {
       if (hits !== null) counted[file.name] = hits.length;
     }
     // Two in `shell.ts`, the SIGTERM and the SIGKILL of `#stopChild`, which is
-    // reachable only from `host.exit`. One in `run.ts`, the relay of a signal
-    // the operator sent, which originates nothing. `node-runtime.ts` defines
-    // the method and does not call it.
-    expect(counted).toEqual({ "shell.ts": 2, "run.ts": 1 });
+    // reachable only from `host.exit`. Two in `run.ts`: the relay of a signal
+    // the operator sent, which originates nothing, and the SIGKILL in
+    // `fatalHandler`, reachable only from an uncaught exception or unhandled
+    // rejection on its way to an exit, which exists so the supervisor can never
+    // die leaving the child running. Neither is a Sluice decision.
+    // `node-runtime.ts` defines the method and does not call it.
+    expect(counted).toEqual({ "shell.ts": 2, "run.ts": 2 });
   });
 
   it("never re-derives an associated data rule or a domain label by hand", () => {
