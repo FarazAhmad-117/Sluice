@@ -1,33 +1,18 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { ConvexError } from "convex/values";
-import {
-  ACCOUNT_SALT_BYTES,
-  assertId,
-  fromHex,
-  newAccountSalt,
-  newId,
-  toHex,
-} from "@sluice/crypto";
 import type { MasterUnlockKey } from "@sluice/crypto";
 import { api } from "@convex/_generated/api";
 import { convexClient } from "@/lib/convex-provider";
-import {
-  DerivationBusyError,
-  deriveMasterUnlockKey,
-  probeDerivationCapability,
-} from "@/lib/crypto/derive";
+import { deriveMasterUnlockKey, probeDerivationCapability } from "@/lib/crypto/derive";
 import type { Degradation, DerivationPath } from "@/lib/crypto/derive";
-import { normaliseEmail } from "./email";
-import {
-  createIdentity,
-  deriveAuthVerifier,
-  identityMatches,
-  unwrapIdentity,
-} from "./identity";
+import { AuthFlowError } from "./auth-errors";
+import { createAuthFlows } from "./auth-flows";
+import type { AuthPhase } from "./auth-flows";
 import type { PrivateIdentity } from "./identity";
 import { clearSession, loadSession, saveSession } from "./session-store";
 import type { PersistedSession } from "./session-store";
+
+export type { AuthPhase } from "./auth-flows";
 
 /**
  * THE AUTHENTICATION AND VAULT STATE FOR THE WHOLE DASHBOARD.
@@ -69,20 +54,6 @@ export interface DeviceCapability {
   readonly wasmUsable: boolean;
   readonly reasons: readonly string[];
 }
-
-/** Phases a sign-in passes through, so the button can say something true. */
-export type AuthPhase =
-  | "idle"
-  /**
-   * Login only: asking `auth.getLoginSalt` for the salt to derive under. A
-   * network round trip, so it gets its own phase rather than being reported
-   * as "deriving" while no Argon2 has started.
-   */
-  | "fetching-salt"
-  | "deriving"
-  | "generating-keys"
-  | "contacting-server"
-  | "unwrapping";
 
 /**
  * THERE IS NO `hydrated` FLAG HERE, AND ITS ABSENCE IS DELIBERATE.
@@ -152,85 +123,6 @@ export interface AuthState {
 const MAX_TIMEOUT_MS = 2_147_483_647;
 
 const AuthContext = createContext<AuthState | null>(null);
-
-/**
- * `auth.signup`'s refusal when the client-minted uid is already taken. Restated
- * from `convex/auth.ts` (`DUPLICATE_UID`) because the server sends a sentence,
- * not a code; if that wording changes, this match quietly stops firing and the
- * server's own sentence is shown instead, which is still accurate, only less
- * helpful. It is the one server message that is rewritten rather than passed
- * through, because "uid" means nothing to the person at the form and the remedy
- * is one they would not guess: submitting again mints a fresh uid and salt.
- * With 128 random bits it should never happen honestly; if it does, it is a
- * broken random source or a replayed request, and a retry is still correct.
- */
-const DUPLICATE_UID = "An account already exists with that uid.";
-
-/**
- * Turns anything thrown by a Convex call into a sentence for the form.
- *
- * `ConvexError.data` is where the server's own message arrives. Everything else
- * gets a generic line: a raw transport error string on a login form is noise at
- * best and an information leak at worst.
- */
-function messageForUser(cause: unknown): string {
-  if (cause instanceof ConvexError) {
-    const data: unknown = cause.data;
-    if (data === DUPLICATE_UID) {
-      return "Account setup collided with an existing account id. Submit the form again.";
-    }
-    if (typeof data === "string" && data.length > 0) return data;
-  }
-  if (cause instanceof DerivationBusyError) {
-    return "A key derivation is already running. Wait for it to finish.";
-  }
-  if (cause instanceof Error && cause.name.startsWith("Derivation")) return cause.message;
-  if (cause instanceof Error && cause.name === "EmailFormatError") return cause.message;
-  if (cause instanceof Error && cause.name === "UnwrapFailedError") return cause.message;
-  if (cause instanceof Error && cause.name === "WrappedKeyFormatError") return cause.message;
-  if (cause instanceof Error && cause.name === "AccountSaltError") return cause.message;
-  return "Something went wrong. Try again.";
-}
-
-/**
- * The salt `getLoginSalt` returned is not hex, or not 16 bytes of it.
- *
- * The server stores and returns exactly 32 lowercase hex characters, real or
- * decoy, so this is a broken server or a broken transport, never a wrong
- * password and never an unknown address -- the decoy is well-formed by
- * construction and derives like a real salt. The message says so without
- * echoing the value.
- */
-class AccountSaltError extends Error {
-  constructor() {
-    super("The server returned an unusable account salt. Try again, and report it if it persists.");
-    this.name = "AccountSaltError";
-  }
-}
-
-/**
- * `fromHex` plus the width rule, so a bad salt from the server fails as
- * {@link AccountSaltError} BEFORE an Argon2 run, rather than as an opaque
- * width error from inside the derivation. `deriveMUK` still enforces the width
- * itself; this only gives the failure a sentence a person can act on.
- */
-function decodeLoginSalt(hex: string): Uint8Array {
-  let bytes: Uint8Array;
-  try {
-    bytes = fromHex(hex);
-  } catch {
-    throw new AccountSaltError();
-  }
-  if (bytes.length !== ACCOUNT_SALT_BYTES) throw new AccountSaltError();
-  return bytes;
-}
-
-export class AuthFlowError extends Error {
-  constructor(cause: unknown) {
-    super(messageForUser(cause));
-    this.name = "AuthFlowError";
-  }
-}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   /**
@@ -357,192 +249,62 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return result.key;
   }, []);
 
-  const requireClient = useCallback(() => {
-    if (convexClient === null) {
-      throw new AuthFlowError(new Error("This build has no Convex deployment URL."));
-    }
-    return convexClient;
-  }, []);
+  /**
+   * The three flows, as plain functions over the client: `auth-flows.ts`
+   * carries the sequences and the reasons for their order. What stays here is
+   * storing what they open and turning any failure into one `AuthFlowError`.
+   */
+  const flows = useMemo(() => createAuthFlows(convexClient, { derive, setPhase }), [derive]);
 
   const signup = useCallback(
-    async ({ email, password }: { email: string; password: string }) => {
-      const client = requireClient();
+    async (input: { email: string; password: string }) => {
       try {
-        // Normalised first, so a malformed address is refused before 64 MiB
-        // of Argon2 is spent on it. The address is now only the lookup key
-        // for login; it no longer feeds the derivation.
-        const normalised = normaliseEmail(email);
-
-        // BOTH MINTED HERE, BEFORE ANYTHING IS DERIVED OR SENT. The salt is the
-        // account's, random and permanent: the server stores it verbatim and
-        // hands it back from `getLoginSalt`, so it is public, and the password
-        // remains the only secret input to the key. The uid is the account's
-        // permanent id, which every wrap addressed to this user will bind to.
-        // It is client-minted like every permanent id in this protocol, so it
-        // is fixed before anything bound to it exists; the server checks only
-        // its shape and that no other account already holds it.
-        const accountSalt = newAccountSalt();
-        const uid = newId("usr");
-        const muk = await derive(password, accountSalt);
-
-        setPhase("generating-keys");
-        const { wrapped, pub } = await createIdentity(muk);
-        const authVerifier = deriveAuthVerifier(muk);
-
-        setPhase("contacting-server");
-        // Only public material, two opaque blobs and a verifier. No password,
-        // no master unlock key, no private key.
-        await client.mutation(api.auth.signup, {
-          uid,
-          accountSalt: toHex(accountSalt),
-          email: normalised,
-          authVerifier,
-          publicKey: wrapped.publicKey,
-          verifyKey: wrapped.verifyKey,
-          wrappedPrivateKey: wrapped.wrappedPrivateKey,
-          wrappedSigningKey: wrapped.wrappedSigningKey,
-        });
-
-        // `signup` returns a user id and nothing else: it does not sign the
-        // user in. Logging in immediately is the only way to obtain a session,
-        // and it deliberately reuses the SAME master unlock key rather than
-        // deriving a second time, which would cost another 64 MiB and another
-        // 1.6 seconds for an identical result.
-        //
-        // It also skips `getLoginSalt`: the salt is the one minted above, and
-        // asking the server for it back would only add a round trip.
-        const result = await client.mutation(api.auth.login, {
-          email: normalised,
-          authVerifier,
-        });
-
-        setPhase("unwrapping");
-        // The round trip is checked rather than assumed. If what came back does
-        // not open under the key that sealed it, the account is broken NOW,
-        // which is far better than finding out at the first secret read.
-        const restored = await unwrapIdentity(muk, result);
-        if (!identityMatches(restored, pub)) {
-          throw new Error("The server returned key material that does not match this account.");
-        }
-        // The uid too. A server that answered with a different account's uid
-        // would have every later wrap bound to the wrong user.
-        if (result.userUid !== uid) {
-          throw new Error("The server returned an account id that does not match this account.");
-        }
-
-        const persisted: PersistedSession = {
-          sessionToken: result.sessionToken,
-          sessionExpiresAt: result.sessionExpiresAt,
-          userId: result.userId,
-          userUid: uid,
-          accountSalt: toHex(accountSalt),
-          email: normalised,
-          publicKey: result.publicKey,
-          verifyKey: result.verifyKey,
-          wrappedPrivateKey: result.wrappedPrivateKey,
-          wrappedSigningKey: result.wrappedSigningKey,
-        };
-        saveSession(persisted);
-        setSession(persisted);
-        setVault({ identity: restored, muk });
+        const opened = await flows.signup(input);
+        saveSession(opened.session);
+        setSession(opened.session);
+        setVault({ identity: opened.identity, muk: opened.muk });
       } catch (cause) {
         throw new AuthFlowError(cause);
       } finally {
         setPhase("idle");
       }
     },
-    [derive, requireClient],
+    [flows],
   );
 
   const login = useCallback(
-    async ({ email, password }: { email: string; password: string }) => {
-      const client = requireClient();
+    async (input: { email: string; password: string }) => {
       try {
-        const normalised = normaliseEmail(email);
-
-        // THE SALT FIRST. The key is derived under the account's random salt,
-        // so nothing can be derived until the server says what it is. For an
-        // address with no account the answer is a decoy of the same shape,
-        // which derives like any other salt and then fails `login` with the
-        // same generic message as a wrong password; nothing here inspects it
-        // or could tell. A `query`, not a mutation: it writes nothing.
-        setPhase("fetching-salt");
-        const { accountSalt: saltHex } = await client.query(api.auth.getLoginSalt, {
-          email: normalised,
-        });
-        const accountSalt = decodeLoginSalt(saltHex);
-
-        const muk = await derive(password, accountSalt);
-        const authVerifier = deriveAuthVerifier(muk);
-
-        setPhase("contacting-server");
-        const result = await client.mutation(api.auth.login, { email: normalised, authVerifier });
-
-        setPhase("unwrapping");
-        const priv = await unwrapIdentity(muk, result);
-        if (!identityMatches(priv, result)) {
-          throw new Error("The server returned key material that does not match this account.");
-        }
-
-        const persisted: PersistedSession = {
-          sessionToken: result.sessionToken,
-          sessionExpiresAt: result.sessionExpiresAt,
-          userId: result.userId,
-          // Checked now rather than at the next reload, where `loadSession`
-          // would discard the record and send the user back here anyway.
-          userUid: assertId("usr", "userUid", result.userUid),
-          // Re-encoded from the decoded bytes rather than copied from the
-          // reply, so what is stored is exactly what was derived under.
-          accountSalt: toHex(accountSalt),
-          email: normalised,
-          publicKey: result.publicKey,
-          verifyKey: result.verifyKey,
-          wrappedPrivateKey: result.wrappedPrivateKey,
-          wrappedSigningKey: result.wrappedSigningKey,
-        };
-        saveSession(persisted);
-        setSession(persisted);
-        setVault({ identity: priv, muk });
+        const opened = await flows.login(input);
+        saveSession(opened.session);
+        setSession(opened.session);
+        setVault({ identity: opened.identity, muk: opened.muk });
       } catch (cause) {
         throw new AuthFlowError(cause);
       } finally {
         setPhase("idle");
       }
     },
-    [derive, requireClient],
+    [flows],
   );
 
   /**
-   * Re-opens the vault after a refresh, using the session that survived and the
-   * wrapped blobs stored beside it. No network call and no new session: the
-   * token is still live, so this is purely local work.
-   *
-   * A wrong password fails at `unwrapIdentity` with a message that does not say
-   * which input was wrong, because AES-GCM cannot tell us and guessing would be
-   * a decryption oracle.
+   * Re-opens the vault after a refresh. Local work only; see
+   * `createAuthFlows().unlock`.
    */
   const unlock = useCallback(
     async ({ password }: { password: string }) => {
       const current = session;
       if (current === null) throw new AuthFlowError(new Error("There is no session to unlock."));
       try {
-        // The stored salt, which `loadSession` has already checked is 32
-        // lowercase hex. No `getLoginSalt` call: unlock is local by design,
-        // and the record is the only source of the salt after a reload.
-        const muk = await derive(password, fromHex(current.accountSalt));
-        setPhase("unwrapping");
-        const priv = await unwrapIdentity(muk, current);
-        if (!identityMatches(priv, current)) {
-          throw new Error("The stored key material does not match this account.");
-        }
-        setVault({ identity: priv, muk });
+        setVault(await flows.unlock(current, password));
       } catch (cause) {
         throw new AuthFlowError(cause);
       } finally {
         setPhase("idle");
       }
     },
-    [derive, session],
+    [flows, session],
   );
 
   /**

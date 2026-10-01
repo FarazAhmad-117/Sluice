@@ -130,7 +130,10 @@ let nextRequestId = 1;
  * would put a password oracle in module scope for no benefit. Keying by nothing
  * -- a plain mutex that rejects any concurrent call -- would turn an ordinary
  * double-click into an error message on a form the user has already filled in.
- * Comparing the strings directly is what makes the second click a no-op.
+ * Comparing the strings directly is what makes the second click a no-op --
+ * for login and unlock, whose salt is the same on every attempt. Signup mints
+ * a new salt per submit, so its second click never matches; the disabled
+ * submit button is what stops a double signup, not this slot.
  *
  * The salt is held as HEX, and compared as hex, for the same reason: login
  * decodes it afresh on every attempt, so a double-click delivers two distinct
@@ -357,6 +360,14 @@ async function deriveOnce(
  * one derivation and one 64 MiB allocation, not two. A concurrent call with
  * DIFFERENT inputs throws {@link DerivationBusyError} rather than starting a
  * second allocation beside the first.
+ *
+ * THE DEDUPE APPLIES ONLY WHEN THE SALT IS IDENTICAL. That covers login and
+ * unlock, where every attempt derives under the same stored or fetched salt.
+ * It does NOT cover signup: each submit mints a fresh salt, so a second click
+ * is a different request and is refused with `DerivationBusyError`, not
+ * joined. What actually prevents a double signup is the submit button being
+ * disabled while a phase is running; this slot only guarantees that a missed
+ * disable costs an error message rather than a second 64 MiB allocation.
  *
  * The returned {@link DerivationResult} names the route that was actually
  * taken. A UI that ignores `path` and `degradations` will not notice that every

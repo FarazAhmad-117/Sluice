@@ -125,7 +125,7 @@ export class UnwrapFailedError extends Error {
  * these blobs. In practice that is a wrong password, except that a wrong
  * password normally fails earlier, at `auth.login`, because the verifier is
  * derived from the same MUK. Reaching this failure with a successful login
- * therefore means something worse: a tampered row, a changed email, or a
+ * therefore means something worse: a tampered row, a substituted account salt, or a
  * changed derivation. It must never be swallowed and the undecrypted bytes must
  * never be used.
  */

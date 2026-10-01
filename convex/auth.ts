@@ -3,6 +3,7 @@ import { ACCOUNT_SALT_BYTES } from "@sluice/crypto";
 import { mutation, query } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { normaliseEmail } from "./lib/email";
+import { DUPLICATE_UID } from "./lib/errors";
 import type { NormalisedEmail } from "./lib/email";
 import { assertHexBytes } from "./lib/hex";
 import { requireId } from "./lib/ids";
@@ -37,7 +38,6 @@ import { getUserByEmail, getUserByUid, insertUser } from "./repo/users";
  */
 
 const DUPLICATE_EMAIL = "An account already exists for that email.";
-const DUPLICATE_UID = "An account already exists with that uid.";
 
 export const signup = mutation({
   args: {

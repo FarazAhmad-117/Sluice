@@ -79,8 +79,16 @@ const STORAGE_KEY = "sluice.session.v1";
  * Exactly `toHex` of `ACCOUNT_SALT_BYTES` bytes: lowercase, nothing else. That
  * is what the server stores and what `getLoginSalt` returns, so anything else
  * did not come from this code.
+ *
+ * ONE RULE FOR THE WIRE AND FOR STORAGE. `decodeLoginSalt` in `auth-errors.ts`
+ * checks `getLoginSalt`'s reply against this same pattern, so a salt the login
+ * flow accepts is always one this store will load back after a reload. Two
+ * patterns would let them drift, and the first symptom would be an unlock
+ * prompt that refuses every password. Built from `ACCOUNT_SALT_BYTES` rather
+ * than spelled `{32}` so a width change in the package moves it too. No `g`
+ * flag: a global regex carries `lastIndex` between `test` calls.
  */
-const ACCOUNT_SALT_HEX = new RegExp(`^[0-9a-f]{${ACCOUNT_SALT_BYTES * 2}}$`);
+export const ACCOUNT_SALT_HEX = new RegExp(`^[0-9a-f]{${ACCOUNT_SALT_BYTES * 2}}$`);
 
 /**
  * The persisted half of a signed-in session. Every field here is either public

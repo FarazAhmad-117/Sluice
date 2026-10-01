@@ -31,9 +31,10 @@ import { assessPassword } from "@/lib/auth/password";
  *
  * TWO GATES, AND NEITHER IS DECORATION.
  *
- * 1. THE STRENGTH GATE. The Argon2id salt is derived from the email address,
- *    which is public, so the password is the only entropy in the master unlock
- *    key. `lib/auth/password.ts` carries the rule and the argument for it.
+ * 1. THE STRENGTH GATE. The Argon2id salt is a random per-account value, but
+ *    it is public (`auth.getLoginSalt` returns it to anyone), so the password
+ *    is the only secret input to the master unlock key.
+ *    `lib/auth/password.ts` carries the rule and the argument for it.
  *
  * 2. THE ACKNOWLEDGEMENT. There is NO ACCOUNT RECOVERY in this product. The
  *    server has never seen the password and has nothing to reset. A forgotten
