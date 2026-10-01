@@ -187,6 +187,23 @@ export async function decryptSecrets(
   identity: TokenIdentity,
   raw: RawBundle,
 ): Promise<SecretBundle> {
+  if (typeof raw === "object" && raw !== null && raw.environmentUid === undefined) {
+    // VERSION SKEW, NAMED AS SUCH. A bundle with no `environmentUid` but with
+    // the v1 `environmentId` field is not hostile, it is a backend that has not
+    // been deployed alongside this CLI. It is still refused, as `malformed`,
+    // because the v1 id cannot be bound into the v2 associated data and
+    // guessing would decrypt nothing. But the operator is told the fix rather
+    // than handed a shape error. The value of the old field is never echoed: it
+    // arrived from the same untrusted row as everything else.
+    if (Object.prototype.hasOwnProperty.call(raw, "environmentId")) {
+      throw new BundleDecryptError(
+        "malformed",
+        "This bundle comes from a Sluice backend older than this CLI; deploy the backend " +
+          "and the CLI together. Sluice is keeping any last known good secrets.",
+      );
+    }
+  }
+
   if (
     typeof raw !== "object" ||
     raw === null ||
@@ -202,29 +219,49 @@ export async function decryptSecrets(
     );
   }
 
-  // BOTH ASSOCIATED DATA VALUES ARE BUILT HERE, UP FRONT, AND INSIDE A GUARD.
+  // BOTH ASSOCIATED DATA VALUES ARE BUILT HERE, UP FRONT, EACH INSIDE A GUARD.
   //
   // `pdkAssociatedData` and `secretAssociatedData` validate the id they are
   // given and THROW a plain `Error` when it is not a well formed `env_` id. The
   // value comes straight off a subscription that anyone with database write
   // access can shape, so a malformed one is an ordinary hostile input, not a
   // bug, and it must fail exactly like every other bundle that will not open:
-  // as a named `BundleDecryptError` that the shell logs by code while holding
-  // the last known good set. Letting the crypto layer's throw out unconverted
+  // as a named `BundleDecryptError` that the shell logs by code while keeping
+  // any last known good set. Letting the crypto layer's throw out unconverted
   // would make a malformed bundle an anonymous exception on the same code path
   // that, one bundle later, has to deliver a shutdown. A malformed bundle must
   // never become an exception on the path to a shutdown.
   //
-  // The guard is this narrow on purpose. It wraps only the two pure functions
-  // whose throw is a statement about the input; it does not wrap `unseal` or
-  // the row loop, which have their own named failures below. The message does
-  // not repeat the offending id, for the same reason `safeId` exists.
+  // The guards are this narrow on purpose. They wrap only the two pure
+  // functions whose throw is a statement about their input; they do not wrap
+  // `unseal` or the row loop, which have their own named failures below. No
+  // message repeats the offending id, for the same reason `safeId` exists.
   //
-  // Built before the grant check so that a bundle with a usable grant and an
-  // unusable environment id is reported as what it is, malformed, rather than
-  // as a missing grant that sends an operator to the dashboard for nothing.
-  let pdkAAD: Uint8Array;
+  // TWO GUARDS, NOT ONE, so each message blames only what it can know is
+  // wrong. `secretAssociatedData` takes nothing but the bundle's environment
+  // id, so its failure is that id's fault and says so. `pdkAssociatedData`
+  // also takes this token's own `tokenIdHashHex`, computed locally; it runs
+  // second, so the environment id has already passed the same check by then,
+  // and a failure there is most likely a local bug that must never be reported
+  // as the server's malformed environment id. Its message stays neutral.
+  //
+  // Both run BEFORE the grant check, so a bundle whose environment id is
+  // unusable is reported as malformed even when it also lacks a grant. The bad
+  // id is the root cause: reporting `no-grant` instead would send an operator
+  // to the dashboard to issue a grant that could never have helped.
   let secretAAD: Uint8Array;
+  try {
+    secretAAD = secretAssociatedData({ environmentUid: raw.environmentUid });
+  } catch {
+    throw new BundleDecryptError(
+      "malformed",
+      "The Sluice bundle named its environment with an id that is not a permanent " +
+        "environment id, so none of its secrets can be bound to it. Sluice is keeping any " +
+        "last known good secrets.",
+    );
+  }
+
+  let pdkAAD: Uint8Array;
   try {
     // Pinned in client code and NEVER taken from the server beyond the id the
     // bundle names. A deployment that could choose these bytes could hand this
@@ -234,13 +271,11 @@ export async function decryptSecrets(
       granteeType: "token",
       granteeId: identity.tokenIdHashHex,
     });
-    secretAAD = secretAssociatedData({ environmentUid: raw.environmentUid });
   } catch {
     throw new BundleDecryptError(
       "malformed",
-      "The Sluice bundle named its environment with an id that is not a permanent " +
-        "environment id, so none of its secrets can be bound to it. Sluice is holding the " +
-        "last known good secrets.",
+      "Sluice could not build the associated data this bundle's key grant is bound to. " +
+        "Sluice is keeping any last known good secrets.",
     );
   }
 
@@ -279,24 +314,23 @@ export async function decryptSecrets(
     );
   }
 
-  const associatedData = secretAAD;
   const secrets: Record<string, string> = {};
   try {
     for (const row of raw.secrets) {
       if (row.pdkVersion !== raw.pdkVersion) {
         // Expected during a re-key and only then. The next push carries the
-        // matching wrap, so holding the last known good set costs milliseconds.
+        // matching wrap, so keeping any last known good set costs milliseconds.
         throw new BundleDecryptError(
           "pdk-version-mismatch",
           `A secret in this bundle is sealed under project data key version ${row.pdkVersion} ` +
             `while this token holds version ${raw.pdkVersion}. This is what a re-key looks ` +
-            "like from here. Sluice is holding the last known good secrets and waiting for " +
+            "like from here. Sluice is keeping any last known good secrets and waiting for " +
             "the next update.",
         );
       }
 
-      const name = await open(pdk, associatedData, row, row.nameCiphertext, row.nameNonce);
-      const value = await open(pdk, associatedData, row, row.valueCiphertext, row.valueNonce);
+      const name = await open(pdk, secretAAD, row, row.nameCiphertext, row.nameNonce);
+      const value = await open(pdk, secretAAD, row, row.valueCiphertext, row.valueNonce);
 
       if (!ENV_NAME.test(name)) {
         throw new BundleDecryptError(
@@ -349,7 +383,7 @@ async function open(
     throw new BundleDecryptError(
       "row-open",
       `The secret with lineage id ${safeId(row.lineageId)} could not be opened with this ` +
-        "environment's project data key. Sluice is holding the last known good secrets.",
+        "environment's project data key. Sluice is keeping any last known good secrets.",
     );
   }
 }

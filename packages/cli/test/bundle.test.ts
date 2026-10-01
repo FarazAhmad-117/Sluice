@@ -133,15 +133,45 @@ describe("decryptSecrets", () => {
     expect((error as BundleDecryptError).code).toBe("malformed");
   });
 
-  it("refuses the environment's Convex document id in place of its permanent id", async () => {
+  it("names an older backend when the bundle carries only the v1 environmentId", async () => {
     // The v1 field, still arriving from a backend that has not moved, must be
     // read as "no permanent id" and not quietly bound into the associated data.
+    // It is still `malformed`, but the message says what to do about it.
     const { identity, raw } = await fixture();
     const { environmentUid: _dropped, ...withoutUid } = raw;
+    const convexId = "k17dn9q2x4m8p3v6b0zc5t7wgh";
     const error = await decryptSecrets(identity, {
       ...withoutUid,
-      environmentId: "k17dn9q2x4m8p3v6b0zc5t7wgh",
+      environmentId: convexId,
     } as unknown as RawBundle).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(BundleDecryptError);
+    expect((error as BundleDecryptError).code).toBe("malformed");
+    expect((error as Error).message).toContain("older than this CLI");
+    expect((error as Error).message).toContain("deploy the backend and the CLI together");
+    expect((error as Error).message).not.toContain(convexId);
+  });
+
+  it("does not claim an older backend when environmentUid is merely missing", async () => {
+    const { identity, raw } = await fixture();
+    const { environmentUid: _dropped, ...withoutUid } = raw;
+    const error = await decryptSecrets(identity, withoutUid as unknown as RawBundle).catch(
+      (e: unknown) => e,
+    );
+    expect((error as BundleDecryptError).code).toBe("malformed");
+    expect((error as Error).message).not.toContain("older than this CLI");
+  });
+
+  it("reports a malformed environment id as malformed even when the grant is also missing", async () => {
+    // The bad id is the root cause; `no-grant` would send an operator to the
+    // dashboard to issue a grant that could never have helped.
+    const { identity, raw } = await fixture();
+    const error = await decryptSecrets(identity, {
+      ...raw,
+      environmentUid: "k17dn9q2x4m8p3v6b0zc5t7wgh",
+      wrappedPDK: undefined,
+      pdkNonce: undefined,
+      pdkVersion: undefined,
+    }).catch((e: unknown) => e);
     expect((error as BundleDecryptError).code).toBe("malformed");
   });
 

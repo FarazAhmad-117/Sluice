@@ -23,6 +23,7 @@ import {
 
 interface Harness {
   readonly shell: Shell;
+  readonly core: SluiceCore;
   readonly timers: FakeTimers;
   readonly source: FakeSource;
   readonly handshaker: FakeHandshaker;
@@ -104,6 +105,7 @@ function harness(fixture: Fixture, org: Org, options: HarnessOptions = {}): Harn
 
   return {
     shell,
+    core,
     timers,
     source,
     handshaker,
@@ -571,21 +573,56 @@ describe("Shell: availability, section 4.3", () => {
     // The crypto layer throws on a malformed id. That throw must land as a
     // logged, unreadable bundle and never as a shutdown or an escaped exception.
     const h = await booted();
-    const good = await fixture.bundleWith({ A: "b" }, 2);
-    for (const environmentUid of ["k17dn9q2x4m8p3v6b0zc5t7wgh", ENVIRONMENT_UID.toUpperCase()]) {
-      h.source.emit({ ...good, environmentUid });
+    const bootSet = h.core.lastKnownGood?.secrets;
+    expect(bootSet).toEqual({ DATABASE_URL: "postgres://real" });
+
+    const replacement = await fixture.bundleWith({ A: "b" }, 2);
+    for (const environmentUid of [
+      "k17dn9q2x4m8p3v6b0zc5t7wgh",
+      "env_" + ENVIRONMENT_UID.slice(4).toUpperCase(),
+    ]) {
+      h.source.emit({ ...replacement, environmentUid });
       await flush(() => h.shell.busy);
     }
-    const { environmentUid: _dropped, ...withoutUid } = good;
-    h.source.emit(withoutUid as typeof good);
+    const { environmentUid: _dropped, ...withoutUid } = replacement;
+    h.source.emit(withoutUid as typeof replacement);
     await flush(() => h.shell.busy);
     await h.tick(MAX_CLOCK_STEP_MS * 3);
+
     expect(h.exits).toEqual([]);
     expect(h.child.signals).toEqual([]);
-    expect(h.child.spawnedEnv?.DATABASE_URL).toBe("postgres://real");
+    // The core, not the boot-time child environment, is what proves nothing
+    // from the three refused bundles was installed.
+    expect(h.core.lastKnownGood?.secrets).toEqual(bootSet);
+    // One entry per refused bundle, each logged under the bundle layer's own
+    // code rather than as an anonymous exception.
+    const unreadable = h.logger.lines.filter((line) => line.code === "bundle-unreadable");
+    expect(unreadable).toHaveLength(3);
+    for (const line of unreadable) expect(line.message.startsWith("malformed:")).toBe(true);
+
+    // And the wrapper is still alive: the next valid bundle is applied.
+    h.source.emit(replacement);
+    await flush(() => h.shell.busy);
+    expect(h.core.lastKnownGood?.secrets).toEqual({ A: "b" });
+    expect(h.logger.lines.filter((line) => line.code === "bundle-unreadable")).toHaveLength(3);
+    expect(h.exits).toEqual([]);
+  });
+
+  it("shuts down on a valid notice even when the same bundle's secrets fail to decrypt", async () => {
+    // A bundle with real rows, a malformed environment id AND a genuine notice.
+    // The notice is read first and the decrypt failure runs concurrently; this
+    // proves that failure cannot interfere with the shutdown.
+    const h = await booted({ drainMs: 0 });
+    const withRows = await fixture.bundleWith({ A: "b" }, 2);
+    expect(withRows.secrets.length).toBeGreaterThan(0);
+    h.source.emit({
+      ...withRows,
+      environmentUid: "k17dn9q2x4m8p3v6b0zc5t7wgh",
+      revocationNotice: signedNotice(org, fixture.identity, { epoch: 3 }),
+    });
+    await flush(() => h.shell.busy);
+    expect(h.exits).toEqual([1]);
     expect(h.logger.has("bundle-unreadable")).toBe(true);
-    // Logged by the bundle layer's own code, not as an anonymous exception.
-    expect(h.logger.text).toContain("malformed");
   });
 
   it("still delivers a notice carried on a bundle whose environmentUid is malformed", async () => {
