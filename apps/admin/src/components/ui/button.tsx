@@ -32,8 +32,16 @@ interface CommonProps {
 type AsButton = CommonProps &
   Omit<ButtonHTMLAttributes<HTMLButtonElement>, keyof CommonProps> & {
     readonly to?: undefined;
-    /** Shows a spinner, sets `aria-busy`, and disables the button. */
+    /**
+     * Shows a spinner and refuses clicks, WITHOUT the `disabled` attribute.
+     * Disabling the focused control makes the browser drop focus to `<body>`,
+     * which loses the person's place and, inside a drawer, would let focus out
+     * of the trap. So it is `aria-disabled` plus a guarded click, focus stays
+     * on the button, and a visually hidden status says what is happening.
+     */
     readonly loading?: boolean;
+    /** What the status announces while loading. Defaults to "Working…". */
+    readonly loadingLabel?: string;
   };
 
 type AsLink = CommonProps & Omit<LinkProps, keyof CommonProps> & { readonly to: LinkProps["to"] };
@@ -57,25 +65,43 @@ export function Button(props: ButtonProps) {
     className = "",
     children,
     loading = false,
-    disabled,
+    loadingLabel = "Working…",
+    onClick,
     type = "button",
     ...button
   } = props;
   return (
-    <button
-      {...button}
-      type={type}
-      disabled={disabled === true || loading}
-      aria-busy={loading || undefined}
-      className={buttonClass(variant, size, className)}
-    >
-      {loading ? (
-        <IconSpinner className="size-4 animate-spin motion-reduce:animate-none" />
-      ) : (
-        icon
-      )}
-      {children}
-    </button>
+    <>
+      <button
+        {...button}
+        type={type}
+        aria-disabled={loading ? true : button["aria-disabled"]}
+        aria-busy={loading || undefined}
+        onClick={(event) => {
+          // Also stops a submit button submitting its form, including the
+          // implicit submit from pressing Enter in a field.
+          if (loading) {
+            event.preventDefault();
+            return;
+          }
+          onClick?.(event);
+        }}
+        className={buttonClass(variant, size, className)}
+      >
+        {loading ? (
+          <IconSpinner className="size-4 animate-spin motion-reduce:animate-none" />
+        ) : (
+          icon
+        )}
+        {children}
+      </button>
+      {/* Outside the button, so it is announced rather than folded into the
+          button's name. Always rendered, so the live region exists before
+          its text changes, which is what makes screen readers announce it. */}
+      <span role="status" className="sr-only">
+        {loading ? loadingLabel : ""}
+      </span>
+    </>
   );
 }
 
