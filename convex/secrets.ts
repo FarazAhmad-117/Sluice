@@ -8,17 +8,25 @@ import {
   NOT_PERMITTED,
   assertOrgLink,
   requireEnvironment,
+  requireProject,
   requireSecret,
 } from "./lib/authz";
+import {
+  DUPLICATE_SHARE_UID,
+  SHARED_NEEDS_SHARED_ROW,
+  SHARED_ROWS_MISMATCH,
+} from "./lib/errors";
 import { assertHexAtLeast, assertHexBytes } from "./lib/hex";
 import { requireId } from "./lib/ids";
-import { getPDKGrant } from "./repo/environments";
+import { getPDKGrant, listEnvironmentsByProject } from "./repo/environments";
 import {
   insertSecret,
+  listCurrentByShareUid,
   listCurrentSecretsByEnvironment,
   listSecretVersions as listVersionsBySecretUid,
   patchSecret,
   secretUidTaken,
+  shareUidTaken,
 } from "./repo/secrets";
 
 /**
@@ -603,6 +611,236 @@ export const deleteSecret = mutation({
       targetId: current._id,
     });
 
+    return null;
+  },
+});
+
+/**
+ * A SECRET FOR "ALL ENVIRONMENTS" IS ONE ROW PER ENVIRONMENT, WRITTEN AT ONCE.
+ *
+ * Every environment has its own project data key, and that is not negotiable:
+ * it is what lets a token for staging be issued without handing it the key to
+ * production. So a value shared across environments cannot be one ciphertext.
+ * The client seals it N times, once per environment, each row under that
+ * environment's key and its own `sec_` id, and sends all N here together with
+ * one `shr_` id that links them. Each row is then an ordinary secret in every
+ * respect the rest of this file cares about: its own history, its own
+ * compare-and-set, its own place in its environment's bundle.
+ *
+ * WHAT THIS MUTATION OWNS IS THE SHAPE OF THE GROUP, AND IT OWNS IT
+ * ATOMICALLY. The rows must name exactly the project's environments, each
+ * once: a missing one would leave an environment silently without a secret
+ * the dashboard labels "All environments", an extra one would file a row in
+ * an environment the group does not belong to, and a repeated one would give
+ * an environment two current values under one label. All N land in one
+ * Convex transaction or none does, so there is no half-written group to
+ * clean up.
+ *
+ * WHAT THE SERVER CANNOT CHECK. Whether the N ciphertexts hold the same
+ * plaintext, or whether an `overridden: false` row really carries the shared
+ * value: the server cannot open any of them, by design. A client that lies
+ * here mislabels its own data and nothing more, because the `shr_` id and the
+ * flag are bound into no associated data (see `shr_` in
+ * `packages/crypto/src/ids.ts`). Every row is still checked, one by one, by
+ * every rule `createSecret` applies, in the same order, so none of the
+ * properties that DO protect a value is weaker for arriving in a group.
+ */
+export const createSharedSecret = mutation({
+  args: {
+    ...sessionArg,
+    // The project whose environments the group spans. Environment ids arrive
+    // per row, and each must be one of THIS project's, checked below against
+    // the set read from the database rather than walked one at a time.
+    projectId: v.id("projects"),
+    // The group's id, `shr_` + 32 lowercase hex, minted by the client with
+    // `newId("shr")`. Client-chosen, so its shape is checked and its
+    // uniqueness enforced here, as for `secretUid`.
+    shareUid: v.string(),
+    rows: v.array(
+      v.object({
+        environmentId: v.id("environments"),
+        // Exactly the fields `createSecret` takes for one row, with the same
+        // meaning and the same checks.
+        secretUid: v.string(),
+        version: v.number(),
+        pdkVersion: v.number(),
+        // True when this environment keeps its own value instead of the
+        // shared one. Labelling only; see the header above.
+        overridden: v.boolean(),
+        nameCiphertext: v.string(),
+        nameNonce: v.string(),
+        valueCiphertext: v.string(),
+        valueNonce: v.string(),
+      }),
+    ),
+  },
+  returns: v.array(
+    v.object({
+      secretId: v.id("secrets"),
+      secretUid: v.string(),
+      environmentId: v.id("environments"),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const { org, project, user } = await requireProject(
+      ctx,
+      args.sessionToken,
+      args.projectId,
+    );
+
+    // THE SET CHECK, against the environments read in this transaction. An
+    // environment from another project, another org, or one that does not
+    // exist is simply not in this set, so it fails here with the same
+    // sentence as a missing one, and without a per-row lookup that could
+    // answer differently for "exists elsewhere" and "does not exist".
+    const environments = await listEnvironmentsByProject(ctx, project._id);
+    const byId = new Map(environments.map((env) => [env._id, env]));
+    const named = new Set(args.rows.map((row) => row.environmentId));
+    if (
+      args.rows.length !== environments.length ||
+      named.size !== args.rows.length ||
+      args.rows.some((row) => !byId.has(row.environmentId))
+    ) {
+      throw new ConvexError(SHARED_ROWS_MISMATCH);
+    }
+    const pairs = args.rows.map((row) => ({
+      row,
+      environment: byId.get(row.environmentId) as Doc<"environments">,
+    }));
+
+    // Then, per environment, what `createSecret` checks before anything else:
+    // the org copy each row will be filed under is the walked org, and the
+    // caller holds a key for this environment, so nothing is sealed under a
+    // key nobody holds. A caller missing a grant on ANY environment cannot
+    // write the group at all, because the alternative is a group with a hole
+    // in it.
+    for (const { environment } of pairs) {
+      assertOrgLink(environment.orgId, org);
+      await requirePDKGrant(ctx, environment._id, user.uid);
+    }
+
+    // Shape checks, per row, in `createSecret`'s order.
+    const shareUid = requireId("shr", "shareUid", args.shareUid);
+    for (const { row, environment } of pairs) {
+      requireId("sec", "secretUid", row.secretUid);
+      if (row.version !== INITIAL_SECRET_VERSION) {
+        throw new ConvexError(NEW_SECRET_VERSION);
+      }
+      assertSealed(row);
+      if (row.pdkVersion !== environment.pdkVersion) {
+        throw new ConvexError(STALE_PDK_VERSION);
+      }
+    }
+
+    if (args.rows.every((row) => row.overridden)) {
+      throw new ConvexError(SHARED_NEEDS_SHARED_ROW);
+    }
+
+    // Uniqueness. Within the call first, because `secretUidTaken` cannot see
+    // a row this transaction has not inserted yet, and two rows of one group
+    // sharing a `sec_` id would be one lineage spanning two environments:
+    // exactly what `historyOf` treats as corruption. Then deployment wide,
+    // for the reason given above `DUPLICATE_SECRET_UID`.
+    const uids = new Set(args.rows.map((row) => row.secretUid));
+    if (uids.size !== args.rows.length) {
+      throw new ConvexError(DUPLICATE_SECRET_UID);
+    }
+    for (const uid of uids) {
+      if (await secretUidTaken(ctx, uid)) {
+        throw new ConvexError(DUPLICATE_SECRET_UID);
+      }
+    }
+    if (await shareUidTaken(ctx, shareUid)) {
+      throw new ConvexError(DUPLICATE_SHARE_UID);
+    }
+
+    const created: Array<{
+      secretId: Id<"secrets">;
+      secretUid: string;
+      environmentId: Id<"environments">;
+    }> = [];
+    for (const { row, environment } of pairs) {
+      const secretId = await insertSecret(ctx, {
+        environmentId: environment._id,
+        // Off the environment row read above and checked against the walked
+        // org. There is no orgId argument.
+        orgId: environment.orgId,
+        secretUid: row.secretUid,
+        nameCiphertext: row.nameCiphertext,
+        nameNonce: row.nameNonce,
+        valueCiphertext: row.valueCiphertext,
+        valueNonce: row.valueNonce,
+        pdkVersion: row.pdkVersion,
+        version: INITIAL_SECRET_VERSION,
+        shareUid,
+        overridden: row.overridden,
+      });
+      // One event per row, the same event `createSecret` writes, so "what was
+      // created in this environment" answers the same way however it was
+      // created.
+      await recordUserEvent(ctx, {
+        orgId: org._id,
+        actorId: user._id,
+        action: "secret.create",
+        targetId: secretId,
+      });
+      created.push({
+        secretId,
+        secretUid: row.secretUid,
+        environmentId: environment._id,
+      });
+    }
+    return created;
+  },
+});
+
+/**
+ * Soft-deletes every current row of one shared secret, in every environment,
+ * in one transaction: the group's counterpart to `deleteSecret`, with the
+ * same retention reasoning.
+ *
+ * Addressed by project and share id. The project is what the authorisation
+ * walk starts from; the share id is then only a label, so every row it finds
+ * must belong to one of that project's environments, or the call is refused
+ * with the shared not-found sentence. A share id copied from another project
+ * therefore deletes nothing and confirms nothing.
+ */
+export const deleteSharedSecret = mutation({
+  args: {
+    ...sessionArg,
+    projectId: v.id("projects"),
+    shareUid: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { org, project, user } = await requireProject(
+      ctx,
+      args.sessionToken,
+      args.projectId,
+    );
+
+    const rows = await listCurrentByShareUid(ctx, args.shareUid);
+    if (rows.length === 0) refuse();
+    const environments = await listEnvironmentsByProject(ctx, project._id);
+    const inProject = new Set(environments.map((env) => env._id));
+    if (rows.some((row) => !inProject.has(row.environmentId))) refuse();
+
+    // The same rule as `createSharedSecret`: a group is acted on whole, so a
+    // caller missing a key for any of its environments acts on none of it.
+    for (const row of rows) {
+      await requirePDKGrant(ctx, row.environmentId, user.uid);
+    }
+
+    const now = Date.now();
+    for (const row of rows) {
+      await patchSecret(ctx, row._id, { deletedAt: now });
+      await recordUserEvent(ctx, {
+        orgId: org._id,
+        actorId: user._id,
+        action: "secret.delete",
+        targetId: row._id,
+      });
+    }
     return null;
   },
 });

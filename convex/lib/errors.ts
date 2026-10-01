@@ -22,3 +22,30 @@
  * again, which mints a fresh uid, is the correct remedy.
  */
 export const DUPLICATE_UID = "An account already exists with that uid.";
+
+/**
+ * `secrets.createSharedSecret`'s refusal when the rows it was handed are not
+ * exactly one per environment of the project: one missing, one extra, one
+ * from another project, or one environment named twice. The honest cause is a
+ * dashboard that loaded the environment list before somebody added or removed
+ * one, so the remedy is to reload and seal again.
+ */
+export const SHARED_ROWS_MISMATCH =
+  "This project's environments changed since you opened it. Reload and try again.";
+
+/**
+ * `secrets.createSharedSecret`'s refusal when every row is marked overridden.
+ * A shared secret whose shared value no environment uses is N unrelated
+ * secrets wearing a group label, and the dashboard would show "All
+ * environments" over a value nobody reads.
+ */
+export const SHARED_NEEDS_SHARED_ROW =
+  "A secret for all environments needs at least one environment using the shared value.";
+
+/**
+ * `secrets.createSharedSecret`'s refusal when the client-minted `shr_` id is
+ * already carried by any row. Accepting it would fold the new rows into an
+ * existing group, which the dashboard would then label and delete together.
+ * Minting a fresh id and submitting again is the remedy.
+ */
+export const DUPLICATE_SHARE_UID = "That shared secret id is already in use.";

@@ -163,6 +163,8 @@ interface World {
   projectId: Id<"projects">;
   environmentId: Id<"environments">;
   secretId: Id<"secrets">;
+  /** The share id of a shared secret spanning the project's environments. */
+  shareUid: string;
   /** A registered service token, and the signed notice that revokes it. */
   revoke: {
     tokenId: string;
@@ -223,6 +225,27 @@ async function world(t: Harness): Promise<World> {
     valueCiphertext: VALUE_CIPHERTEXT,
     valueNonce: VALUE_NONCE,
   });
+  // A shared secret across the project's one environment, so
+  // `deleteSharedSecret` has a group to delete.
+  const shareUid = newId("shr");
+  await t.mutation(api.secrets.createSharedSecret, {
+    sessionToken: alice.sessionToken,
+    projectId,
+    shareUid,
+    rows: [
+      {
+        environmentId,
+        secretUid: newId("sec"),
+        version: 1,
+        pdkVersion: 1,
+        overridden: false,
+        nameCiphertext: NAME_CIPHERTEXT,
+        nameNonce: "303132333435363738393a3b",
+        valueCiphertext: VALUE_CIPHERTEXT,
+        valueNonce: "3b3a393837363534333231ff",
+      },
+    ],
+  });
   const victim = mintToken({ environment: "production" });
   await t.mutation(api.tokens.createServiceToken, {
     sessionToken: alice.sessionToken,
@@ -248,6 +271,7 @@ async function world(t: Harness): Promise<World> {
     projectId,
     environmentId,
     secretId,
+    shareUid,
     revoke: {
       ...notice,
       signature: toHex(signRevocation(orgKeys.authSeed, notice)),
@@ -350,9 +374,33 @@ const CALLS: Record<
     valueCiphertext: "cc".repeat(40),
     valueNonce: "2b2a292827262524232221ff",
   }),
+  "secrets.createSharedSecret": (w, sessionToken) => ({
+    sessionToken,
+    projectId: w.projectId,
+    // Both fresh per call, for the reason `orgUid` is above.
+    shareUid: newId("shr"),
+    rows: [
+      {
+        environmentId: w.environmentId,
+        secretUid: newId("sec"),
+        version: 1,
+        pdkVersion: 1,
+        overridden: false,
+        nameCiphertext: NAME_CIPHERTEXT,
+        nameNonce: "404142434445464748494a4b",
+        valueCiphertext: VALUE_CIPHERTEXT,
+        valueNonce: "4b4a494847464544434241ff",
+      },
+    ],
+  }),
   "secrets.deleteSecret": (w, sessionToken) => ({
     sessionToken,
     secretId: w.secretId,
+  }),
+  "secrets.deleteSharedSecret": (w, sessionToken) => ({
+    sessionToken,
+    projectId: w.projectId,
+    shareUid: w.shareUid,
   }),
   "secrets.getSecret": (w, sessionToken) => ({
     sessionToken,
@@ -404,10 +452,10 @@ const FUNCTIONS = exportedFunctions();
 
 describe("the enumeration this file is built on", () => {
   it("finds every public function in the hierarchy", () => {
-    // Nineteen, written as a number as well as a list, so that an enumeration
-    // which silently starts returning nothing cannot make every assertion
-    // below pass vacuously.
-    expect(FUNCTIONS.length).toBe(19);
+    // Twenty-one, written as a number as well as a list, so that an
+    // enumeration which silently starts returning nothing cannot make every
+    // assertion below pass vacuously.
+    expect(FUNCTIONS.length).toBe(21);
     expect(FUNCTIONS).toEqual([
       "environments.createEnvironment",
       "environments.getEnvironment",
@@ -421,7 +469,9 @@ describe("the enumeration this file is built on", () => {
       "projects.getProject",
       "projects.listProjects",
       "secrets.createSecret",
+      "secrets.createSharedSecret",
       "secrets.deleteSecret",
+      "secrets.deleteSharedSecret",
       "secrets.getSecret",
       // listSecretVersions sorts before listSecrets, because the enumeration
       // sorts by code point and "V" (0x56) precedes "s" (0x73). Written in

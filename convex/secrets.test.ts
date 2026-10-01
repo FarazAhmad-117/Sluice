@@ -688,12 +688,19 @@ describe("the ciphertext-only surface", () => {
       // `packages/crypto/src/ids.ts`.
       "shareUid",
       "overridden",
+      // `createSharedSecret` and `deleteSharedSecret`: the project a group
+      // spans, and the array of per-environment rows, each of which is made
+      // of the fields above.
+      "projectId",
+      "rows",
     ]);
 
     const names = [
       "createSecret",
+      "createSharedSecret",
       "updateSecret",
       "deleteSecret",
+      "deleteSharedSecret",
       "getSecret",
       "listSecrets",
       "listSecretVersions",
@@ -1779,7 +1786,9 @@ describe("the secrets surface", () => {
   it("exports exactly the functions it is supposed to", () => {
     expect(Object.keys(secretsModule).sort()).toEqual([
       "createSecret",
+      "createSharedSecret",
       "deleteSecret",
+      "deleteSharedSecret",
       "getSecret",
       "listSecretVersions",
       "listSecrets",
