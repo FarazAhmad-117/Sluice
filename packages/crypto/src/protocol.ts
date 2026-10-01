@@ -1,5 +1,6 @@
 import { sha256 } from "@noble/hashes/sha256";
 import { concat, toHex, utf8 } from "./bytes";
+import { assertId } from "./ids";
 
 /**
  * THE RULES BOTH ENDS OF THE WIRE MUST AGREE ON, BYTE FOR BYTE.
@@ -38,13 +39,39 @@ import { concat, toHex, utf8 } from "./bytes";
  * NO PARAMETER HERE SELECTS A VERSION OR A DOMAIN. Every label is bound inside
  * its function. A version a caller can pass is a version a caller can get
  * wrong, and on the AAD it would additionally be a downgrade a client could
- * perform on itself. A new construction gets a new `/v2` label and a new
- * function; it does not get an argument.
+ * perform on itself. A new construction gets a new label and replaces the
+ * function's body; it does not get an argument.
  *
  * NONE OF THESE MAY BE FETCHED FROM A SERVER AT RUNTIME. They are pinned in
  * client code. A server that could choose the associated data could hand a
  * client the AAD of a different environment and undo the environment binding
  * entirely, which is the one thing that binding exists to prevent.
+ *
+ * WHY THE ASSOCIATED DATA IS `/v2` AND THERE IS NO `/v1` PATH BESIDE IT.
+ *
+ * v1 bound a secret to the Convex document id of its environment, and could not
+ * bind a key grant to its environment or a revocation key to its org at all:
+ * Convex mints document ids on insert, and every one of those wraps happens in
+ * the client BEFORE the creating mutation runs. Both problems had the same root,
+ * and `ids.ts` removes it: every org, user and environment now carries a
+ * permanent id minted by the client, so the id exists before the wrap, and it
+ * travels unchanged when an org moves between cells, where a document id would
+ * be re-minted and every ciphertext bound to it would stop opening.
+ *
+ * v2 therefore binds those permanent ids, and binds them everywhere v1 had to
+ * leave a gap. It REPLACES v1 rather than sitting beside it, because no real
+ * user data was ever sealed under v1: a second construction still accepted on
+ * read would be a downgrade path protecting nothing.
+ *
+ * EVERY ID IS SHAPE-CHECKED BY KIND before it is concatenated. `assertId`
+ * accepts exactly `<kind>_` followed by 32 lowercase hex characters, so none of
+ * these inputs can contain the separator, whitespace, a control character, a
+ * lone surrogate (which `TextEncoder` would fold onto U+FFFD), or a second
+ * spelling of the same value. That is what keeps every concatenation below
+ * injective, and it is strictly tighter than the free-form guard v1 needed for
+ * opaque document ids. It also means an id of the wrong kind -- `usr_…` where
+ * `env_…` belongs, or a Convex document id at all -- fails at the call instead
+ * of producing well-formed associated data for the wrong thing.
  */
 
 /**
@@ -55,7 +82,7 @@ import { concat, toHex, utf8 } from "./bytes";
  * exists to remove. The only way to obtain these bytes is
  * {@link secretAssociatedData}.
  */
-const SECRET_AAD_PREFIX = "sluice/secret/v1|";
+const SECRET_AAD_PREFIX = "sluice/secret/v2|";
 
 /**
  * The domain label for {@link tokenIdHash}. NOT exported, for the same reason.
@@ -73,14 +100,14 @@ const TOKEN_ID_HASH_LABEL = "sluice/token-id/v1";
  * the same reason as the two above: reaching it means calling
  * {@link pdkAssociatedData}.
  */
-const PDK_AAD_PREFIX = "sluice/pdk/v1|";
+const PDK_AAD_PREFIX = "sluice/pdk/v2|";
 
 /**
  * The associated data prefix for a wrapped organisation revocation signing
  * key. NOT exported, for the same reason as the three above: reaching it means
  * calling {@link revocationKeyAssociatedData}.
  */
-const REVOCATION_KEY_AAD_PREFIX = "sluice/revocation-key/v1|";
+const REVOCATION_KEY_AAD_PREFIX = "sluice/revocation-key/v2|";
 
 /** The separator, written once so no call site spells it. */
 const SEPARATOR = "|";
@@ -101,72 +128,36 @@ const GRANTEE_TYPES: readonly string[] = ["user", "token"];
 const TOKEN_ID_BYTES = 16;
 
 /**
- * Characters an environment id may not contain.
+ * The shape of a `tokenIdHash`: SHA-256 output as {@link tokenIdHash} spells
+ * it, 64 lowercase hex characters, anchored at both ends.
  *
- * `\p{Cs}` -- LONE SURROGATES -- is the one that is a real collision and not a
- * tidiness rule. `TextEncoder` does not throw on an unpaired surrogate, it
- * SUBSTITUTES U+FFFD. So the three distinct strings `"\uD800"`, `"\uDC00"` and
- * `"�"` all encode to the same three bytes, which means three environment
- * ids -- three distinct rows, three distinct keys in an exact-match index --
- * would share one associated data and each could open the others' ciphertext.
- * That is the exact cross-environment binding failure the AAD exists to
- * prevent, arriving through the encoder rather than through the concatenation.
- * Under the `u` flag a surrogate PAIR is a single non-Cs code point, so real
- * astral characters are unaffected; only the unpaired form is rejected.
+ * NEW IN v2, AND IT IS WHY THE TWO GRANTEE NAMESPACES ARE NOW SEPARATED BY
+ * SHAPE AS WELL AS BY TYPE. v1 accepted any opaque string as a grantee id of
+ * either kind and relied on `granteeType` alone to keep them apart. v2 checks
+ * each namespace against its own shape -- `usr_` plus 32 hex for a person, 64
+ * bare hex for a token -- and the two cannot overlap, so a value that is the
+ * wrong shape for the type it claims fails at the call instead of sealing a
+ * grant no reader will ever look up. Lowercase only, for the reason `ids.ts`
+ * gives: two spellings of one digest would be two AADs for one grantee.
  *
- * `|` is the separator and is RESERVED. Today the prefix is fixed-width, so the
- * map from id to AAD is injective whatever the id contains. The moment a `/v2`
- * appends a second field after the id, an id containing `|` shifts the parse
- * and two different structures share one AAD. Reserving it now costs nothing --
- * a Convex id is lowercase alphanumeric -- and reserving it later is impossible,
- * because by then the ciphertext is on disk under the old rule.
- *
- * Control and separator categories are rejected on the same grounds as
- * `revocation.ts` pins `tokenId`: an id that can carry a newline is an id that
- * can shift a field boundary in any line-oriented encoding this ever grows
- * into, and an id with leading or trailing whitespace is two ids that look like
- * one in a log.
- *
- * This is a TIGHTENING of `convex/lib/aad.ts`, which checks only for empty. It
- * changes no bytes: every input the Convex version accepts AND that is a real
- * Convex id produces identical output here. It only refuses inputs that were
- * already ambiguous.
- *
- * No `g` flag, deliberately: a global regex carries `lastIndex` across `.test`
- * calls and would alternate between pass and fail on the same input.
+ * No flags: `$` without `m` matches only at end of input, so a trailing
+ * newline is rejected, and without `g` there is no `lastIndex` to carry
+ * between calls.
  */
-const IDENTIFIER_FORBIDDEN = /[\p{Cs}\p{Cc}\p{Zs}\p{Zl}\p{Zp}|]/u;
+const TOKEN_HASH_PATTERN = /^[0-9a-f]{64}$/;
 
 /**
- * The one guard for every opaque identifier that gets concatenated into
- * associated data, applied to the environment id and to the grantee id alike.
+ * The guard for a token grantee id, the one input here that is not a permanent
+ * id and so cannot go through `assertId`.
  *
- * It is a function rather than two copies of three checks because this file is
- * the single definition of these constructions, and a file that defines one
- * rule twice is the failure mode it was created to delete. The field name is a
- * parameter so the message still names the argument that was wrong, which is
- * the only thing a caller can act on; the VALUE is never echoed, because a lone
- * surrogate does not survive a log line intact and every other guard in this
- * package refuses to print its input.
+ * `typeof` is checked even though the type says string: the value arrives from
+ * a database row or a JSON body, and `String(undefined)` would otherwise be
+ * rejected only by luck of the pattern. The value is never echoed, matching
+ * every other guard in this package.
  */
-function assertIdentifier(field: string, value: string): string {
-  // `typeof` on a field the type already declares is not redundant. These
-  // values reach this from a database row, a URL segment or a JSON body, and a
-  // type is not a runtime guarantee. Without this check `undefined` would
-  // concatenate to the literal "undefined" and produce a perfectly well-formed,
-  // completely wrong AAD.
-  if (typeof value !== "string") {
-    throw new Error(`${field} must be a string`);
-  }
-  // An empty id would bind the ciphertext to the version and to NOTHING else,
-  // and the call would look exactly like a correct one.
-  if (value.length === 0) {
-    throw new Error(`${field} must not be empty`);
-  }
-  if (IDENTIFIER_FORBIDDEN.test(value)) {
-    throw new Error(
-      `${field} must not contain the separator, whitespace, control characters or lone surrogates`,
-    );
+function assertTokenHash(value: string): string {
+  if (typeof value !== "string" || !TOKEN_HASH_PATTERN.test(value)) {
+    throw new Error("granteeId must be a token id hash");
   }
   return value;
 }
@@ -177,10 +168,13 @@ function assertIdentifier(field: string, value: string): string {
  * Every secret ciphertext in Sluice, both the name and the value, is sealed
  * with AES-GCM under associated data of exactly:
  *
- *     utf8("sluice/secret/v1|" + environmentId)
+ *     utf8("sluice/secret/v2|" + environmentUid)
  *
- * where `environmentId` is the Convex id of the environment the row belongs to,
- * spelled exactly as the server returns it.
+ * where `environmentUid` is the permanent `env_` id of the environment the row
+ * belongs to (see `ids.ts`), spelled exactly as stored. NOT its Convex document
+ * id: that is local to one deployment and is re-minted when an org moves cells,
+ * and ciphertext bound to it would stop opening on the day of the move with no
+ * server able to repair it, because no server holds a key.
  *
  * WHY THE VERSION IS IN HERE AND NOT IN A COLUMN. Associated data is
  * authenticated: change one byte of it and decryption fails. A column is not.
@@ -191,23 +185,29 @@ function assertIdentifier(field: string, value: string): string {
  * the ciphertext cannot be separated: a row whose version is altered simply
  * stops decrypting, loudly, which is the correct failure.
  *
- * WHY THE ENVIRONMENT ID IS IN HERE. Without it, a `dev` row could be copied
- * into `prod` by anyone with write access to the table and would decrypt
- * perfectly, because the project data key is per environment but the AAD would
- * bind nothing. The server's half of this defence is that no mutation accepts an
- * environment id for a row that already has one, so a secret cannot be moved
+ * WHY THE ENVIRONMENT IS IN HERE. Without it, a `dev` row could be copied into
+ * `prod` by anyone with write access to the table and would decrypt perfectly,
+ * because the project data key is per environment but the AAD would bind
+ * nothing. The server's half of this defence is that no mutation accepts an
+ * environment for a row that already has one, so a secret cannot be moved
  * between environments through the API either. Both halves are needed: this one
  * stops the database operator, the other stops the API caller.
  *
  * THE ARGUMENT IS AN OBJECT, NOT A STRING, AND CERTAINLY NOT A JOINED ONE. A
  * function taking the finished string would let a caller build
- * `"sluice/secret/v1|" + id` themselves, which is the hand-copied literal this
+ * `"sluice/secret/v2|" + id` themselves, which is the hand-copied literal this
  * module was created to delete. Naming the field at every call site is also what
- * makes a diff that swaps a project id for an environment id visible.
+ * makes a diff that swaps a project id for an environment id visible -- and the
+ * field is named `environmentUid`, not `environmentId`, so that every v1 call
+ * site passing a document id fails to compile rather than silently binding the
+ * wrong thing.
  */
-export function secretAssociatedData(params: { environmentId: string }): Uint8Array {
-  const environmentId = assertIdentifier("environmentId", params.environmentId);
-  return utf8.encode(SECRET_AAD_PREFIX + environmentId);
+export function secretAssociatedData(params: { environmentUid: string }): Uint8Array {
+  const environmentUid = assertId("env", "environmentUid", params.environmentUid);
+
+  // Unambiguous by construction: the prefix is fixed and `assertId` admits
+  // exactly one fixed-width shape. No two distinct inputs produce one string.
+  return utf8.encode(SECRET_AAD_PREFIX + environmentUid);
 }
 
 /**
@@ -217,44 +217,45 @@ export function secretAssociatedData(params: { environmentId: string }): Uint8Ar
  * Every `pdkGrants.wrappedPDK` in Sluice is sealed with AES-GCM under
  * associated data of exactly:
  *
- *     utf8("sluice/pdk/v1|" + granteeType + "|" + granteeId)
+ *     utf8("sluice/pdk/v2|" + environmentUid + "|" + granteeType + "|" + granteeId)
  *
- * where `granteeType` is `"user"` or `"token"`, and `granteeId` is the `users`
- * document id for a user and the {@link tokenIdHash} for a token, spelled
- * exactly as they are stored on the row.
+ * where `environmentUid` is the permanent `env_` id of the environment whose
+ * project data key this is, `granteeType` is `"user"` or `"token"`, and
+ * `granteeId` is the user's permanent `usr_` id for a user and the
+ * {@link tokenIdHash} for a token, spelled exactly as they are stored on the
+ * row.
  *
- * WHY THE ENVIRONMENT ID IS NOT IN HERE, WHICH IS THE FIRST THING A READER OF
- * `secretAssociatedData` WILL EXPECT AND MUST NOT ADD.
+ * WHY THE ENVIRONMENT IS IN HERE NOW, WHEN v1 DOCUMENTED AT LENGTH THAT IT
+ * COULD NOT BE.
  *
- * It CANNOT be. A grant is written in the same transaction that creates its
- * environment, for the reason `convex/environments.ts` states at that call
- * site: an environment with no grant is an environment whose secrets nobody can
- * ever read, discovered long after creation with no error at any point. The
- * server never sees a plaintext project data key, so the wrap happens in the
- * client BEFORE that mutation runs, at which point the environment has no id.
- * The only way to bind one would be to split creation into two mutations, and
- * the state between them is precisely the un-openable environment this design
- * exists to make unrepresentable. A worse failure, bought with a weaker one.
+ * The v1 constraint was real. A grant is written in the same transaction that
+ * creates its environment, for the reason `convex/environments.ts` states at
+ * that call site: an environment with no grant is an environment whose secrets
+ * nobody can ever read, discovered long after creation with no error at any
+ * point. The server never sees a plaintext project data key, so the wrap
+ * happens in the client BEFORE that mutation runs -- and in v1 the only
+ * environment id was the one Convex mints on insert, which did not exist yet.
  *
- * AND IT IS NOT NEEDED, which is why the trade is acceptable rather than merely
- * forced. A project data key IS the environment: it is minted per environment
- * and opens nothing else. The environment binding that matters is carried by
- * {@link secretAssociatedData}, which binds EVERY ciphertext this key opens to
- * the environment it belongs to. A grant blob moved into another environment's
- * row by someone with database write access yields a key that opens none of
- * that environment's secrets. That is a failure, loudly, and not an escalation:
- * the mover cannot produce a wrap the target's grantee can open without already
- * holding the grantee's key, and if they held that they would not need the row.
+ * The permanent id removes the constraint without touching the transaction:
+ * the client mints `env_…` first, wraps under it, and passes both into the
+ * same single mutation. So v2 binds it, and a grant blob copied into another
+ * environment's row by someone with database write access now FAILS TO OPEN,
+ * instead of opening to a key that merely fails against that environment's
+ * secrets. The old argument that the binding was unnecessary -- a project data
+ * key opens nothing but its own environment's ciphertext -- still holds as a
+ * second line; it is no longer the only one, and a row that lies about where
+ * it belongs now says so at the first unwrap rather than at the first secret.
  *
  * WHY THE GRANTEE IS IN HERE. `granteeType` and `granteeId` are COLUMNS, and a
  * column is not authenticated. Naming the grantee inside the associated data is
  * what makes a row whose grantee fields were edited stop opening instead of
  * claiming to belong to somebody it does not. It also separates the two
- * namespaces: a `users` document id and a `tokenIdHash` are both opaque
- * strings, and one wrapping key can hold grants of both kinds.
+ * namespaces: one wrapping key can hold grants of both kinds. In v2 they are
+ * separated twice -- by the type literal, and by a per-type shape check that
+ * {@link TOKEN_HASH_PATTERN} documents -- where v1 had only the first.
  *
  * WHY `pdkVersion` IS NOT IN HERE. It is the same call `secrets` makes: the
- * version bound into associated data is the PROTOCOL version, `/v1`, and the
+ * version bound into associated data is the PROTOCOL version, `/v2`, and the
  * key version lives in a column. Binding `pdkVersion` would buy nothing against
  * the only rollback that works anyway -- restoring the whole earlier row, whose
  * associated data was correct for its own version -- while forcing every client
@@ -263,26 +264,38 @@ export function secretAssociatedData(params: { environmentId: string }): Uint8Ar
  *
  * THE ARGUMENT IS AN OBJECT, NOT A JOINED STRING, for the reason above: naming
  * the fields at every call site is what makes a diff that swaps a user id for a
- * token hash visible.
+ * token hash, or one environment for another, visible.
  */
 export function pdkAssociatedData(params: {
+  environmentUid: string;
   granteeType: PDKGranteeType;
   granteeId: string;
 }): Uint8Array {
+  const environmentUid = assertId("env", "environmentUid", params.environmentUid);
   const { granteeType } = params;
 
   // Checked against the closed set rather than merely for being a string. An
-  // unrecognised type is not a wrong value that fails later, it is a fourth
+  // unrecognised type is not a wrong value that fails later, it is a further
   // construction that succeeds and produces bytes no reader will reconstruct.
   if (typeof granteeType !== "string" || !GRANTEE_TYPES.includes(granteeType)) {
     throw new Error(`granteeType must be one of ${GRANTEE_TYPES.join(", ")}`);
   }
-  const granteeId = assertIdentifier("granteeId", params.granteeId);
 
-  // Unambiguous by construction: the prefix is fixed, `granteeType` is one of
-  // two known literals, and `granteeId` cannot contain the separator. No two
-  // distinct inputs produce one string.
-  return utf8.encode(PDK_AAD_PREFIX + granteeType + SEPARATOR + granteeId);
+  // The shape is chosen BY the type, so a token hash passed as a user (or a
+  // user id passed as a token) fails here rather than sealing a grant filed
+  // under the wrong namespace.
+  const granteeId =
+    granteeType === "user"
+      ? assertId("usr", "granteeId", params.granteeId)
+      : assertTokenHash(params.granteeId);
+
+  // Unambiguous by construction: the prefix is fixed, `environmentUid` is a
+  // fixed-width shape with no separator in it, `granteeType` is one of two
+  // known literals, and `granteeId` is a separator-free shape fixed by that
+  // literal. No two distinct inputs produce one string.
+  return utf8.encode(
+    PDK_AAD_PREFIX + environmentUid + SEPARATOR + granteeType + SEPARATOR + granteeId,
+  );
 }
 
 /**
@@ -292,48 +305,44 @@ export function pdkAssociatedData(params: {
  * Every `revocationGrants.wrappedRevocationKey` in Sluice is sealed with
  * AES-GCM under associated data of exactly:
  *
- *     utf8("sluice/revocation-key/v1|" + granteeId)
+ *     utf8("sluice/revocation-key/v2|" + orgUid + "|" + granteeUid)
  *
- * where `granteeId` is the `users` document id of the person the key is wrapped
- * to, spelled exactly as it is stored on the row.
+ * where `orgUid` is the permanent `org_` id of the org whose key this is, and
+ * `granteeUid` is the permanent `usr_` id of the person the key is wrapped to,
+ * spelled exactly as they are stored.
  *
  * WHAT IS WRAPPED IS THE ED25519 SEED, 32 bytes, the private half of
  * `orgs.revocationPublicKey`. It is generated in a browser, it is the one thing
  * that can sign a revocation notice any SDK will honour, and this server has
  * never held it. That is the product's wedge.
  *
- * WHY THE ORG ID IS NOT IN HERE, WHICH IS THE FIRST THING A READER WILL EXPECT
- * AND MUST NOT ADD. It is the identical constraint {@link pdkAssociatedData}
- * documents about the environment id, arriving for the identical reason.
+ * WHY THE ORG IS IN HERE NOW, WHEN v1 DOCUMENTED AT LENGTH THAT IT COULD NOT
+ * BE. It is the identical change {@link pdkAssociatedData} documents for the
+ * environment, for the identical reason.
  *
- * It CANNOT be. The grant is written in the same transaction that creates its
- * org, because `convex/orgs.ts` says at that call site that an org without one
- * is an org for which no revocation notice can ever be signed -- the wedge
- * broken at creation time, discovered during the incident it exists for. The
- * server never sees the plaintext signing key, so the wrap happens in the
- * CLIENT before that mutation runs, at which point the org has no id: Convex
- * mints document ids on insert and no client can predict or choose one. The
- * only way to bind one would be to split creation into two mutations, and the
- * state between them is precisely the un-openable org this design exists to
- * make unrepresentable. A worse failure, bought with a weaker one.
+ * The v1 constraint was real. The grant is written in the same transaction
+ * that creates its org, because `convex/orgs.ts` says at that call site that
+ * an org without one is an org for which no revocation notice can ever be
+ * signed -- the wedge broken at creation time, discovered during the incident
+ * it exists for. The server never sees the plaintext signing key, so the wrap
+ * happens in the CLIENT before that mutation runs, and in v1 the only org id
+ * was the one Convex mints on insert. The permanent `org_` id exists before
+ * the mutation, so v2 binds it without splitting creation in two, and a
+ * revocation-key blob copied into another org's row now FAILS TO OPEN.
  *
- * The slug is available at wrap time and is NOT a substitute. It is the one
- * field `createOrg` can reject after the wrap has happened -- two people
+ * The slug is still NOT a substitute, and v1's reason still holds: it is the
+ * one field `createOrg` can reject after the wrap has happened -- two people
  * creating `acme` at once means one of them retries under a different slug --
- * and a client that retried without re-wrapping would write exactly the
- * unopenable grant this construction exists to prevent. It is also renameable
- * in a way a document id is not.
+ * and it is renameable in a way a permanent id is not.
  *
- * AND IT IS NOT NEEDED, which is why the trade is acceptable rather than merely
- * forced. A revocation key IS the org: one keypair per org, and it signs
- * nothing else. The org binding that matters is carried on every notice by
- * `verifyRevocation`, which checks the signature against `orgs`'s own stored
- * public key, in this server and again in every SDK. A grant blob moved into
- * another org's row by someone with database write access yields a key whose
- * signatures that org rejects. That is a failure, loudly, and not an
- * escalation: the mover cannot produce a wrap the target's grantee can open
- * without already holding that grantee's master unlock key, and if they held
- * that they would not need the row.
+ * WHAT THIS STILL DOES NOT BIND, and why `revocationKeyMatches` in the
+ * dashboard is still needed. The associated data names the org, but it cannot
+ * name `orgs.revocationPublicKey`: that is a column, and a database writer who
+ * swapped it would leave every grant opening perfectly while the SDKs verified
+ * notices against a key the org's admins do not hold. Checking the unwrapped
+ * seed against the stored public key is the only thing that catches that, and
+ * `verifyRevocation` checking every notice against the org's own stored key
+ * remains the binding SDKs rely on.
  *
  * WHY THE GRANTEE IS IN HERE. `granteeId` is a COLUMN, and a column is not
  * authenticated. Naming the grantee inside the associated data is what makes a
@@ -341,23 +350,32 @@ export function pdkAssociatedData(params: {
  * somebody it does not.
  *
  * WHY THERE IS NO `granteeType`. Unlike `pdkGrants`, only a person can sign a
- * revocation: the schema types `revocationGrants.granteeId` as `v.id("users")`
- * rather than as a string, so there is one namespace and nothing for a type to
- * separate. A service token that could sign its own revocation would be a
- * kill switch the compromised party holds.
+ * revocation, so there is one namespace and nothing for a type to separate,
+ * and the grantee is checked as a `usr_` id outright. A service token that
+ * could sign its own revocation would be a kill switch the compromised party
+ * holds.
  *
  * THE DOMAIN IS WHAT KEEPS THIS BLOB AND A PROJECT DATA KEY APART, and that
  * matters more here than domain separation usually does: both are sealed under
  * the SAME master unlock key, so the prefix is the only reason a
  * `pdkGrants.wrappedPDK` cannot be written into `revocationGrants` and opened
  * as a signing key.
+ *
+ * THE ARGUMENT IS AN OBJECT, and the two fields are ids of DIFFERENT kinds, so
+ * a call site that passes them the wrong way round fails at the call rather
+ * than sealing a blob nobody will reconstruct.
  */
-export function revocationKeyAssociatedData(params: { granteeId: string }): Uint8Array {
-  const granteeId = assertIdentifier("granteeId", params.granteeId);
+export function revocationKeyAssociatedData(params: {
+  orgUid: string;
+  granteeUid: string;
+}): Uint8Array {
+  const orgUid = assertId("org", "orgUid", params.orgUid);
+  const granteeUid = assertId("usr", "granteeUid", params.granteeUid);
 
-  // Unambiguous by construction: the prefix is fixed-width and `granteeId`
-  // cannot contain the separator. No two distinct inputs produce one string.
-  return utf8.encode(REVOCATION_KEY_AAD_PREFIX + granteeId);
+  // Unambiguous by construction: the prefix is fixed and both ids are
+  // fixed-width shapes that cannot contain the separator. No two distinct
+  // inputs produce one string.
+  return utf8.encode(REVOCATION_KEY_AAD_PREFIX + orgUid + SEPARATOR + granteeUid);
 }
 
 /**
