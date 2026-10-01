@@ -1,8 +1,7 @@
 import { ConvexError, v } from "convex/values";
-import { randomBytes, toHex } from "@sluice/crypto";
 import { mutation, query } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
-import type { MutationCtx, QueryCtx } from "./_generated/server";
+import type { QueryCtx } from "./_generated/server";
 import { recordUserEvent } from "./lib/audit";
 import {
   sessionArg,
@@ -12,11 +11,12 @@ import {
   requireSecret,
 } from "./lib/authz";
 import { assertHexAtLeast, assertHexBytes } from "./lib/hex";
+import { requireId } from "./lib/ids";
 import { getPDKGrant } from "./repo/environments";
 import {
   insertSecret,
   listCurrentSecretsByEnvironment,
-  listSecretVersions as listVersionsByLineage,
+  listSecretVersions as listVersionsBySecretUid,
   patchSecret,
 } from "./repo/secrets";
 
@@ -33,7 +33,7 @@ import {
  * nowhere, and a second copy that looked authoritative is exactly what was
  * just deleted.
  *
- * The two server-side halves of that rule live here:
+ * The server-side halves of that rule live here:
  *
  *   1. An environment id is accepted only when a row is CREATED. No mutation
  *      accepts one for a row that already exists, so a secret cannot be moved
@@ -43,6 +43,18 @@ import {
  *      at.
  *   2. `pdkVersion` is copied from the environment rather than accepted from
  *      the caller, so a row cannot claim a key version that never existed.
+ *   3. The associated data also names the secret's permanent `sec_` id and
+ *      the VERSION the row was sealed under. The server never computes those
+ *      bytes, but it MUST store exactly the `secretUid` and `version` the
+ *      client sealed under and return both on every read, because a reader
+ *      rebuilds the associated data from them. That is what makes a splice
+ *      fail: ciphertext moved into another secret's row, or an old version
+ *      replayed as the current one, names a slot it does not occupy and does
+ *      not open. So the version is not assigned here behind the client's
+ *      back. It is STATED by the client and checked as a compare-and-set:
+ *      1 on create, exactly current + 1 on update, and anything else is
+ *      refused with nothing written, so a stale write fails loudly instead of
+ *      storing a row whose stored slot disagrees with its sealed one.
  */
 
 // AES-GCM appends a 16 byte tag to every ciphertext, so nothing shorter than
@@ -53,45 +65,75 @@ const MIN_CIPHERTEXT_BYTES = 16;
 const NONCE_BYTES = 12;
 
 /**
- * WHERE LINEAGE IDS COME FROM, AND WHY IT IS THIS.
+ * WHERE A SECRET'S PERMANENT ID COMES FROM, AND WHY THAT IS NOW THE CLIENT.
  *
- * `secrets.lineageId` is a plain string in the schema and every version of one
+ * `secrets.secretUid` is a plain string in the schema and every version of one
  * logical secret shares it, so two unrelated secrets carrying the same value
  * would silently merge their histories: one would appear as a version of the
  * other, an old value would be offered as the current one, and the listing
  * would lose a row. Nothing in the schema prevents it, so it is prevented
  * here.
  *
- * THE DECISION: the server mints it, from 16 bytes of `randomBytes` in
- * `@sluice/crypto`, hex encoded, and NO function in this file accepts a
- * lineage id as an argument.
+ * It used to be minted on this server and accepted from nobody, and that was
+ * the right call while the id was only a grouping key. It is not any more. The
+ * client now seals both fields under associated data that NAMES the id, so it
+ * must exist before the first write, and only the client can choose it: the
+ * server cannot hand it out in advance without a second round trip and a
+ * reservation table, and it must never be the party choosing what ciphertext
+ * is bound to.
  *
- * Minting on the server rather than on the client is the part that matters,
- * and it is not the obvious choice, so here is the reasoning. A client-minted
- * id would be an argument, and an argument can name an EXISTING lineage,
- * including one in an environment the caller can write to but whose history
- * they should not be able to rewrite. That turns "create a secret" into "add a
- * version to that secret", which is a silent overwrite of the current value
- * with no update path having been called and no version check having run.
- * Randomness on the client does not help, because the attack is not a
- * collision, it is a deliberate choice. Making it unaddressable is the only
- * defence that does not depend on the client behaving.
+ * WHAT THE OLD DESIGN DEFENDED AGAINST STILL HOLDS, BY A DIFFERENT MECHANISM.
+ * A client-chosen id is an argument, and an argument can name an EXISTING
+ * secret, including one the caller can write to but whose history they should
+ * not be able to rewrite. Accepted naively, that turns "create a secret" into
+ * "add a version to that secret": a silent overwrite of the current value with
+ * no update path called and no compare-and-set run. Randomness on the client
+ * does not help, because the attack is a deliberate choice, not a collision.
+ * So `createSecret` refuses ANY id that ANY row already carries, deployment
+ * wide, with one indexed read in the same mutation as the insert. Convex
+ * mutations are serialisable transactions, so read-then-insert is not a race.
+ * The only way to add a version is `updateSecret`, which is where the
+ * compare-and-set lives.
  *
- * 16 bytes rather than 32 because this is a grouping key and not a
- * capability: it is returned to any member of the org, so its secrecy buys
- * nothing, and 128 bits of collision resistance is already far beyond the
- * number of secrets that will ever exist. The uniqueness check below is what
- * makes it an invariant rather than a probability argument.
+ * The refusal is the same whichever environment or org owns the existing row:
+ * it confirms the id is in use and nothing about where. An id is a label, not
+ * a secret, and the same argument `createEnvironment` makes for `env_` ids
+ * applies.
  */
-const LINEAGE_ID_BYTES = 16;
+const DUPLICATE_SECRET_UID = "A secret with that id already exists.";
+
+/**
+ * The client sealed a brand-new secret under version 1, because that is the
+ * only version a new secret has. A create stating anything else is a client
+ * whose ciphertext names a slot this row will not occupy, and storing it would
+ * produce a row that lists and syncs and never opens. Refused, not corrected:
+ * correcting the stored number cannot change what the bytes were sealed under.
+ */
+const NEW_SECRET_VERSION = "A new secret starts at version 1.";
+const INITIAL_SECRET_VERSION = 1;
+
+/**
+ * THE COMPARE-AND-SET REFUSAL.
+ *
+ * `updateSecret` takes the version the client sealed the NEW ciphertext under,
+ * and it must be exactly the current version plus one. Equal to the current
+ * version means two writers raced from the same starting point and this one
+ * lost; higher means the client skipped a version; lower or zero means a
+ * client replaying something old. In every case the stored `version` would
+ * disagree with the sealed one, or a concurrent edit would be silently
+ * overwritten, so the write is refused with nothing written and the person is
+ * told what to do about it.
+ */
+const STALE_VERSION =
+  "This secret changed since you opened it. Reload to see the latest version.";
 
 const ALREADY_REPLACED = "This version of the secret has already been replaced.";
 
 /**
- * Two versions of one lineage claiming to be current, or one lineage spanning
- * two environments, is corruption rather than a state a caller can reach. It
- * says so instead of picking one, because picking one is exactly how a merged
- * history becomes invisible.
+ * Two versions of one secret claiming to be current, or one secret's history
+ * spanning two environments, is corruption rather than a state a caller can
+ * reach. It says so instead of picking one, because picking one is exactly how
+ * a merged history becomes invisible.
  */
 const INCONSISTENT = "This secret's version history is inconsistent.";
 
@@ -180,11 +222,11 @@ function assertSealed(fields: SealedFields): void {
 }
 
 /**
- * The same rule across a lineage: a new version sealed under the same key
- * version must not repeat a nonce an earlier version used.
+ * The same rule across one secret's history: a new version sealed under the
+ * same key version must not repeat a nonce an earlier version used.
  *
  * This is NOT a complete nonce-reuse detector and must not be mistaken for
- * one. It cannot see reuse across two different lineages, and widening it to
+ * one. It cannot see reuse across two different secrets, and widening it to
  * the whole environment would mean reading every secret on every write. The
  * real defence is that `seal` generates the nonce itself; this is the cheap
  * check at the one place the server already holds the history.
@@ -207,32 +249,21 @@ function assertNoncesAreNew(
   }
 }
 
-async function mintLineageId(ctx: MutationCtx): Promise<string> {
-  const lineageId = toHex(randomBytes(LINEAGE_ID_BYTES));
-  // The assertion that makes uniqueness an invariant instead of an argument
-  // about birthdays. It is one indexed read, it will never fire, and the day
-  // it does the alternative was a silently merged history.
-  if ((await listVersionsByLineage(ctx, lineageId)).length > 0) {
-    throw new ConvexError("Could not allocate a secret lineage. Try again.");
-  }
-  return lineageId;
-}
-
 /**
- * Every version of the lineage this row belongs to, oldest first, plus the one
+ * Every version of the secret this row belongs to, oldest first, plus the one
  * current version.
  *
- * The environment check is the guard against a lineage that spans two
- * environments. It cannot happen through this API, because a lineage id is
- * never an argument and an environment id is only ever read from the row being
- * superseded, but this is the read path that would quietly serve the result if
- * it ever did.
+ * The environment check is the guard against one `secretUid` spanning two
+ * environments. It cannot happen through this API, because `createSecret`
+ * refuses an id any row already carries and `updateSecret` copies both the id
+ * and the environment off the row being superseded, but this is the read path
+ * that would quietly serve the result if it ever did.
  */
-async function lineageOf(
+async function historyOf(
   ctx: QueryCtx,
   secret: Doc<"secrets">,
 ): Promise<{ versions: Doc<"secrets">[]; current: Doc<"secrets"> }> {
-  const versions = await listVersionsByLineage(ctx, secret.lineageId);
+  const versions = await listVersionsBySecretUid(ctx, secret.secretUid);
   if (versions.some((row) => row.environmentId !== secret.environmentId)) {
     throw new ConvexError(INCONSISTENT);
   }
@@ -244,7 +275,10 @@ async function lineageOf(
 const secretShape = {
   secretId: v.id("secrets"),
   environmentId: v.id("environments"),
-  lineageId: v.string(),
+  // The permanent id and the version, exactly as the client sealed under:
+  // together with the environment's uid they are the inputs a reader needs to
+  // rebuild `secretAssociatedData`. See the header, point 3.
+  secretUid: v.string(),
   version: v.number(),
   pdkVersion: v.number(),
   nameCiphertext: v.string(),
@@ -264,7 +298,7 @@ function view(secret: Doc<"secrets">) {
   return {
     secretId: secret._id,
     environmentId: secret.environmentId,
-    lineageId: secret.lineageId,
+    secretUid: secret.secretUid,
     version: secret.version,
     pdkVersion: secret.pdkVersion,
     nameCiphertext: secret.nameCiphertext,
@@ -283,6 +317,17 @@ export const createSecret = mutation({
     // The only place an environment id is ever accepted. After this, a row's
     // environment is read from the row and never from a caller.
     environmentId: v.id("environments"),
+    // The secret's permanent id, `sec_` + 32 lowercase hex, minted by the
+    // client with `newId("sec")` BEFORE this call, because both fields below
+    // are sealed under associated data that names it. Client-chosen, so its
+    // shape is checked and its uniqueness enforced here. See the note above
+    // `DUPLICATE_SECRET_UID`.
+    secretUid: v.string(),
+    // The version the client sealed both fields under. Must be 1. It is an
+    // argument rather than a constant so that a client which sealed under
+    // anything else is refused instead of having its row stored under a
+    // version its bytes do not name.
+    version: v.number(),
     nameCiphertext: v.string(),
     nameNonce: v.string(),
     valueCiphertext: v.string(),
@@ -290,7 +335,7 @@ export const createSecret = mutation({
   },
   returns: v.object({
     secretId: v.id("secrets"),
-    lineageId: v.string(),
+    secretUid: v.string(),
     version: v.number(),
   }),
   handler: async (ctx, args) => {
@@ -302,26 +347,38 @@ export const createSecret = mutation({
     // The copy of the org on the environment is about to be written onto the
     // new row, so it must be the org the walk authorised. See `authz.ts`.
     assertOrgLink(environment.orgId, org);
-    // Before any validation and before the lineage is minted, so a caller with
-    // no key cannot consume a lineage id or learn anything from the order in
-    // which their arguments were rejected.
+    // Before any validation and before the id is looked up, so a caller with
+    // no key cannot probe which secret ids are taken or learn anything from
+    // the order in which their arguments were rejected.
     await requirePDKGrant(ctx, environment._id, user.uid);
+
+    const secretUid = requireId("sec", "secretUid", args.secretUid);
+    if (args.version !== INITIAL_SECRET_VERSION) {
+      throw new ConvexError(NEW_SECRET_VERSION);
+    }
     assertSealed(args);
 
-    const lineageId = await mintLineageId(ctx);
+    // Deployment wide, and any row at all, superseded or deleted included: an
+    // id that ever named a secret names that secret for ever, and reusing it
+    // is how a create becomes an overwrite of somebody else's history.
+    if ((await listVersionsBySecretUid(ctx, secretUid)).length > 0) {
+      throw new ConvexError(DUPLICATE_SECRET_UID);
+    }
+
     const secretId = await insertSecret(ctx, {
       environmentId: environment._id,
       // Off the environment row the authorisation walk loaded. There is no
       // orgId argument, so a caller cannot file a secret under another org.
       orgId: environment.orgId,
-      lineageId,
+      // Exactly what the client sealed under. See the header, point 3.
+      secretUid,
       nameCiphertext: args.nameCiphertext,
       nameNonce: args.nameNonce,
       valueCiphertext: args.valueCiphertext,
       valueNonce: args.valueNonce,
       // From the environment, never from the caller. See the header.
       pdkVersion: environment.pdkVersion,
-      version: 1,
+      version: INITIAL_SECRET_VERSION,
     });
 
     await recordUserEvent(ctx, {
@@ -331,7 +388,7 @@ export const createSecret = mutation({
       targetId: secretId,
     });
 
-    return { secretId, lineageId, version: 1 };
+    return { secretId, secretUid, version: INITIAL_SECRET_VERSION };
   },
 });
 
@@ -339,11 +396,19 @@ export const createSecret = mutation({
  * An update is an insert. The previous row is marked superseded and keeps its
  * ciphertext exactly as it was, because a version history that rewrites rows
  * is not a history.
+ *
+ * The caller states the version it sealed the new ciphertext under, and the
+ * write lands only if that is exactly the current version plus one. See
+ * `STALE_VERSION`. The new row keeps the secret's `secretUid`, read off the
+ * row being replaced.
  */
 export const updateSecret = mutation({
   args: {
     ...sessionArg,
     secretId: v.id("secrets"),
+    // The version the client sealed the NEW ciphertext under: the version it
+    // opened, plus one. Compared, never assigned.
+    version: v.number(),
     nameCiphertext: v.string(),
     nameNonce: v.string(),
     valueCiphertext: v.string(),
@@ -351,7 +416,7 @@ export const updateSecret = mutation({
   },
   returns: v.object({
     secretId: v.id("secrets"),
-    lineageId: v.string(),
+    secretUid: v.string(),
     version: v.number(),
   }),
   handler: async (ctx, args) => {
@@ -372,7 +437,7 @@ export const updateSecret = mutation({
     // the two can never disagree.
     await requirePDKGrant(ctx, secret.environmentId, user.uid);
 
-    const { versions, current } = await lineageOf(ctx, secret);
+    const { versions, current } = await historyOf(ctx, secret);
 
     // Deleted is checked before superseded, so a deleted secret answers with
     // the same refusal as one that was never there rather than with a message
@@ -382,22 +447,32 @@ export const updateSecret = mutation({
       throw new ConvexError(ALREADY_REPLACED);
     }
 
+    // THE COMPARE-AND-SET, against the current row read in this transaction.
+    // Before any write, so a stale caller leaves no new row and no
+    // `supersededAt` behind. Convex mutations are serialisable, so two writers
+    // racing from the same version cannot both pass it.
+    const nextVersion = current.version + 1;
+    if (args.version !== nextVersion) {
+      throw new ConvexError(STALE_VERSION);
+    }
+
     assertSealed(args);
     assertNoncesAreNew(versions, environment.pdkVersion, args);
 
     const secretId = await insertSecret(ctx, {
       // All three read from the row being replaced. None is an argument, which
       // is what stops an update relabelling a secret into another environment,
-      // another org or another lineage.
+      // another org or another secret's history.
       environmentId: secret.environmentId,
       orgId: secret.orgId,
-      lineageId: secret.lineageId,
+      secretUid: secret.secretUid,
       nameCiphertext: args.nameCiphertext,
       nameNonce: args.nameNonce,
       valueCiphertext: args.valueCiphertext,
       valueNonce: args.valueNonce,
       pdkVersion: environment.pdkVersion,
-      version: current.version + 1,
+      // Equal to `args.version` by the check above: exactly what was sealed.
+      version: nextVersion,
     });
 
     await patchSecret(ctx, current._id, { supersededAt: Date.now() });
@@ -409,14 +484,14 @@ export const updateSecret = mutation({
       targetId: secretId,
     });
 
-    return { secretId, lineageId: secret.lineageId, version: current.version + 1 };
+    return { secretId, secretUid: secret.secretUid, version: nextVersion };
   },
 });
 
 /**
  * Soft delete, applied to the current version, which retires the whole
- * lineage: every read path below asks the lineage whether its current version
- * is deleted, so an earlier version does not become a back door to a secret
+ * secret: every read path below asks the secret's history whether its current
+ * version is deleted, so an earlier version does not become a back door to a secret
  * somebody deleted.
  *
  * The rows stay, because the value may need to be produced later for an
@@ -434,7 +509,7 @@ export const deleteSecret = mutation({
       args.sessionToken,
       args.secretId,
     );
-    const { current } = await lineageOf(ctx, secret);
+    const { current } = await historyOf(ctx, secret);
 
     if (current.deletedAt !== undefined) refuse();
     if (secret._id !== current._id) throw new ConvexError(ALREADY_REPLACED);
@@ -457,9 +532,9 @@ export const getSecret = query({
   returns: v.object(secretShape),
   handler: async (ctx, args) => {
     const { secret } = await requireSecret(ctx, args.sessionToken, args.secretId);
-    // A superseded version is readable. A version of a DELETED lineage is not,
+    // A superseded version is readable. A version of a DELETED secret is not,
     // whichever version was asked for.
-    const { current } = await lineageOf(ctx, secret);
+    const { current } = await historyOf(ctx, secret);
     if (current.deletedAt !== undefined) refuse();
     return view(secret);
   },
@@ -487,15 +562,19 @@ export const listSecrets = query({
 
 /**
  * Every version of one logical secret, oldest first, addressed by any one of
- * its rows. It does not take a lineage id, because a lineage id is not a thing
- * a caller is allowed to name: see the note above `LINEAGE_ID_BYTES`.
+ * its rows, each carrying the `secretUid` and `version` it was sealed under.
+ *
+ * It is addressed by a row id rather than by `secretUid` on purpose. The
+ * authorisation walk (`requireSecret`) starts from a row, so a row id is what
+ * proves the caller may read this history at all; a lookup by uid would need
+ * its own walk, and the uid is a label anybody holding a bundle can see.
  */
 export const listSecretVersions = query({
   args: { ...sessionArg, secretId: v.id("secrets") },
   returns: v.array(v.object(secretShape)),
   handler: async (ctx, args) => {
     const { secret } = await requireSecret(ctx, args.sessionToken, args.secretId);
-    const { versions, current } = await lineageOf(ctx, secret);
+    const { versions, current } = await historyOf(ctx, secret);
     if (current.deletedAt !== undefined) refuse();
     return versions.map(view);
   },

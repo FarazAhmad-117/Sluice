@@ -46,16 +46,18 @@ export async function listCurrentSecretsByEnvironment(
 }
 
 /**
- * Every version of one logical secret, oldest first. This is what makes
- * "the previous version remains readable" answerable at all.
+ * Every version of one logical secret, oldest first, by its permanent `sec_`
+ * id. This is what makes "the previous version remains readable" answerable at
+ * all, and it is also `createSecret`'s uniqueness check: any row at all means
+ * the id is taken.
  */
 export async function listSecretVersions(
   ctx: QueryCtx,
-  lineageId: string,
+  secretUid: string,
 ): Promise<Doc<"secrets">[]> {
   return await ctx.db
     .query("secrets")
-    .withIndex("by_lineage_version", (q) => q.eq("lineageId", lineageId))
+    .withIndex("by_secret_version", (q) => q.eq("secretUid", secretUid))
     .collect();
 }
 

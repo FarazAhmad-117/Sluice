@@ -41,6 +41,9 @@ export const modules = import.meta.glob("./**/*.ts");
 const WRAP = {
   wrappedPDK: "dd".repeat(48),
   pdkNonce: "0a1b2c3d4e5f60718293a4b5",
+  // The key version the wrap above was made under, which the client states
+  // and `createEnvironment` checks: a new environment starts at 1.
+  pdkVersion: 1,
 } as const;
 
 type Harness = ReturnType<typeof convexTest>;
@@ -176,6 +179,10 @@ async function addSecret(
   return await t.mutation(api.secrets.createSecret, {
     sessionToken: actor.sessionToken,
     environmentId,
+    // Minted by the client, as the dashboard mints it, and stated at the only
+    // version a new secret has.
+    secretUid: newId("sec"),
+    version: 1,
     nameCiphertext: NAME_CIPHERTEXT,
     valueCiphertext,
     ...freshNonces(),
@@ -200,6 +207,7 @@ async function issueAndHandshake(
     publicKey: minted.upload.publicKey,
     wrappedPDK: "cc".repeat(48),
     pdkNonce: "0102030405060708090a0b0c",
+    pdkVersion: 1,
   });
 
   const unixSeconds = Math.floor(Date.now() / 1000);
@@ -221,12 +229,14 @@ async function issueAndHandshake(
   return { minted, serviceTokenId, bundleToken: token };
 }
 
+// `secretUid` and `version` are the slot each row was sealed under, and the
+// SDK rebuilds the associated data from them. `secretId`, a Convex document
+// id, is deliberately absent: see the note on `secretShape` in `bundle.ts`.
 const SECRET_FIELDS = [
-  "lineageId",
   "nameCiphertext",
   "nameNonce",
   "pdkVersion",
-  "secretId",
+  "secretUid",
   "valueCiphertext",
   "valueNonce",
   "version",
@@ -248,8 +258,8 @@ describe("the bundle", () => {
     const bundle = await t.query(api.bundle.getBundle, { token: bundleToken });
 
     expect(bundle.environmentUid).toBe(acme.productionUid);
-    expect(bundle.secrets.map((secret) => secret.secretId)).toEqual([
-      mine.secretId,
+    expect(bundle.secrets.map((secret) => secret.secretUid)).toEqual([
+      mine.secretUid,
     ]);
     // Not merely "the other rows are absent": nothing about the sibling
     // environment or the other tenant appears anywhere in the payload.
@@ -272,6 +282,7 @@ describe("the bundle", () => {
     const updated = await t.mutation(api.secrets.updateSecret, {
       sessionToken: alice.sessionToken,
       secretId: replaced.secretId,
+      version: 2,
       nameCiphertext: NAME_CIPHERTEXT,
       valueCiphertext: "44".repeat(40),
       ...freshNonces(),
@@ -284,11 +295,17 @@ describe("the bundle", () => {
     const { bundleToken } = await issueAndHandshake(t, alice, acme.production);
     const bundle = await t.query(api.bundle.getBundle, { token: bundleToken });
 
-    expect(bundle.secrets.map((secret) => secret.secretId).sort()).toEqual(
-      [kept.secretId, updated.secretId].sort(),
+    expect(
+      bundle.secrets
+        .map((secret) => `${secret.secretUid}@${secret.version}`)
+        .sort(),
+    ).toEqual(
+      [`${kept.secretUid}@1`, `${replaced.secretUid}@2`].sort(),
     );
+    // The new version kept the secret's permanent id.
+    expect(updated.secretUid).toBe(replaced.secretUid);
     // The superseded row's ciphertext must not travel either: a workload that
-    // installed both versions of one lineage would have no way to tell which
+    // installed both versions of one secret would have no way to tell which
     // is current, because the name is ciphertext.
     expect(JSON.stringify(bundle)).not.toContain("22".repeat(40));
   });
@@ -652,6 +669,55 @@ describe("the bundle", () => {
     expect(Object.keys(returns.value)).toContain("environmentUid");
   });
 
+  /**
+   * EVERY INPUT TO THE ASSOCIATED DATA, AND NOTHING DEPLOYMENT-LOCAL.
+   *
+   * The SDK opens each row under `secretAssociatedData({ environmentUid,
+   * secretUid, version, field })` and the grant under `pdkAssociatedData({
+   * environmentUid, pdkVersion, ... })`, so the bundle must carry exactly what
+   * the client sealed under. And it must NOT carry the secret's Convex
+   * document id: it is not in the associated data, and a client holding it is
+   * one confusion away from treating it as the secret's identity.
+   */
+  it("carries each row's secretUid and version and the grant's pdkVersion, and no secretId", async () => {
+    const t = convexTest(schema, modules);
+    const alice = await seedUser(t, "alice@example.test");
+    const acme = await tenant(t, alice, "acme");
+    const created = await addSecret(t, alice, acme.production, "11".repeat(40));
+    const updated = await t.mutation(api.secrets.updateSecret, {
+      sessionToken: alice.sessionToken,
+      secretId: created.secretId,
+      version: 2,
+      nameCiphertext: NAME_CIPHERTEXT,
+      valueCiphertext: "44".repeat(40),
+      ...freshNonces(),
+    });
+    const { bundleToken } = await issueAndHandshake(t, alice, acme.production);
+
+    const bundle = await t.query(api.bundle.getBundle, { token: bundleToken });
+
+    expect(bundle.pdkVersion).toBe(1);
+    expect(bundle.secrets).toHaveLength(1);
+    expect(bundle.secrets[0]?.secretUid).toBe(created.secretUid);
+    expect(bundle.secrets[0]?.secretUid).toMatch(/^sec_[0-9a-f]{32}$/);
+    expect(bundle.secrets[0]?.version).toBe(2);
+
+    // Neither document id, nor the field name, anywhere in the payload.
+    const serialised = JSON.stringify(bundle);
+    expect(serialised).not.toContain("secretId");
+    expect(serialised).not.toContain(created.secretId);
+    expect(serialised).not.toContain(updated.secretId);
+
+    // And the declared return type agrees with the value.
+    const returns = JSON.parse(
+      (bundleModule.getBundle as unknown as { exportReturns: () => string }).exportReturns(),
+    );
+    const declared = JSON.stringify(returns);
+    expect(declared).not.toContain('"secretId"');
+    expect(declared).toContain('"secretUid"');
+    expect(declared).toContain('"pdkVersion"');
+  });
+
   it("refuses a token issued for a different service token", async () => {
     const t = convexTest(schema, modules);
     const alice = await seedUser(t, "alice@example.test");
@@ -673,7 +739,7 @@ describe("the bundle", () => {
     const own = await t.query(api.bundle.getBundle, {
       token: first.bundleToken,
     });
-    expect(own.secrets.map((secret) => secret.secretId)).toEqual([mine.secretId]);
+    expect(own.secrets.map((secret) => secret.secretUid)).toEqual([mine.secretUid]);
   });
 
   it("refuses a forged, expired, absent or unknown credential identically", async () => {

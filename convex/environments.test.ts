@@ -14,6 +14,7 @@ import {
   getEnvironment as getEnvironmentRow,
   getPDKGrant,
   listPDKGrantsByEnvironment,
+  patchEnvironment,
 } from "./repo/environments";
 import * as environmentsModule from "./environments";
 
@@ -93,8 +94,12 @@ const NOT_PERMITTED = "Not found, or you do not have access to it.";
 const WRAPPED_PDK = "dd".repeat(48);
 const PDK_NONCE = "0a1b2c3d4e5f60718293a4b5";
 
-/** The two arguments every `createEnvironment` call now carries. */
-const wrap = { wrappedPDK: WRAPPED_PDK, pdkNonce: PDK_NONCE };
+/**
+ * The three key arguments every `createEnvironment` call now carries: the
+ * wrap, its nonce, and the key version the client wrapped under, which a new
+ * environment must state as 1.
+ */
+const wrap = { wrappedPDK: WRAPPED_PDK, pdkNonce: PDK_NONCE, pdkVersion: 1 };
 
 /** One tenant with a project, and a second tenant with a project of its own. */
 async function twoTenants(t: Harness) {
@@ -234,8 +239,12 @@ describe("createEnvironment", () => {
    * only safe starting point is one the caller cannot choose. This asserts the
    * validator itself rather than the behaviour: a handler that ignored a
    * supplied epoch today is one refactor away from using it.
+   *
+   * `pdkVersion` IS on the list, and is not a choice: the client states the
+   * version it wrapped under so the server can refuse anything but 1. The
+   * test below pins that.
    */
-  it("does not accept an epoch or a pdkVersion from the caller", () => {
+  it("does not accept an epoch from the caller", () => {
     const args = JSON.parse(
       (
         environmentsModule.createEnvironment as unknown as {
@@ -248,10 +257,42 @@ describe("createEnvironment", () => {
       "environmentUid",
       "name",
       "pdkNonce",
+      "pdkVersion",
       "projectId",
       "sessionToken",
       "wrappedPDK",
     ]);
+  });
+
+  /**
+   * The client wrapped the first grant under `pdkAssociatedData` naming key
+   * version 1. A create that states any other version is a client whose wrap
+   * names a version this grant will not be stored under, so it is refused and
+   * nothing is written: no environment, no grant.
+   */
+  it("refuses a pdkVersion other than 1 and writes nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, projectA } = await twoTenants(t);
+
+    for (const pdkVersion of [0, 2, -1, 1.5, Number.NaN]) {
+      await expect(
+        t.mutation(api.environments.createEnvironment, {
+          sessionToken: alice.sessionToken,
+          environmentUid: newId("env"),
+          projectId: projectA,
+          name: "production",
+          ...wrap,
+          pdkVersion,
+        }),
+      ).rejects.toThrow("A new environment's key starts at version 1.");
+    }
+
+    expect(
+      await t.query(api.environments.listEnvironments, {
+        sessionToken: alice.sessionToken,
+        projectId: projectA,
+      }),
+    ).toEqual([]);
   });
 
   // The uid is what every secret and every grant in this environment binds to
@@ -455,7 +496,9 @@ describe("the creator's project data key grant", () => {
 
   /**
    * Which key version the blob opens comes off the environment the mutation
-   * just wrote, not from the caller. The two cannot disagree because one is
+   * just wrote. The caller states the version it wrapped under, but only so
+   * that anything other than 1 can be refused; the stored value is never
+   * taken from the argument. The two rows cannot disagree because one is
    * copied from the other inside one transaction.
    */
   it("records the environment's own pdkVersion", async () => {
@@ -620,6 +663,35 @@ describe("listEnvironments", () => {
     });
     expect(list.map((e) => e.uid)).toEqual([environmentUid]);
   });
+
+  // The environment's CURRENT key version, which a client must state back to
+  // `createServiceToken` when it wraps a token's grant. Without it in the
+  // listing a client has no way to know which version it opened.
+  it("returns each environment's current pdkVersion", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, projectA } = await twoTenants(t);
+    const environmentId = await t.mutation(api.environments.createEnvironment, {
+      sessionToken: alice.sessionToken,
+      environmentUid: newId("env"),
+      projectId: projectA,
+      name: "production",
+      ...wrap,
+    });
+    await t.run(async (ctx) =>
+      patchEnvironment(ctx, environmentId, { pdkVersion: 3 }),
+    );
+
+    const list = await t.query(api.environments.listEnvironments, {
+      sessionToken: alice.sessionToken,
+      projectId: projectA,
+    });
+    expect(list.map((e) => e.pdkVersion)).toEqual([3]);
+    const one = await t.query(api.environments.getEnvironment, {
+      sessionToken: alice.sessionToken,
+      environmentId,
+    });
+    expect(one.pdkVersion).toBe(3);
+  });
 });
 
 describe("the environments surface", () => {
@@ -763,6 +835,7 @@ describe("getMyPdkGrant", () => {
       name: "production",
       wrappedPDK: "ab".repeat(48),
       pdkNonce: PDK_NONCE,
+      pdkVersion: 1,
     });
     expect(projectB).toBeDefined();
 

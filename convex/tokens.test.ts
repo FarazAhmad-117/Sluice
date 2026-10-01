@@ -36,6 +36,9 @@ export const modules = import.meta.glob("./**/*.ts");
 const WRAP = {
   wrappedPDK: "dd".repeat(48),
   pdkNonce: "0a1b2c3d4e5f60718293a4b5",
+  // The key version the wrap above was made under, which the client states
+  // and `createEnvironment` checks: a new environment starts at 1.
+  pdkVersion: 1,
 } as const;
 
 type Harness = ReturnType<typeof convexTest>;
@@ -122,6 +125,7 @@ async function issue(
     publicKey: minted.upload.publicKey,
     wrappedPDK: "cc".repeat(48),
     pdkNonce: "0102030405060708090a0b0c",
+    pdkVersion: 1,
   });
   return { minted, serviceTokenId };
 }
@@ -167,6 +171,7 @@ describe("createServiceToken", () => {
         publicKey: minted.upload.publicKey,
         wrappedPDK: "cc".repeat(48),
         pdkNonce: "0102030405060708090a0b0c",
+        pdkVersion: 1,
       }),
     ).rejects.toThrow("already exists");
   });
@@ -187,6 +192,7 @@ describe("createServiceToken", () => {
         publicKey: minted.upload.publicKey,
         wrappedPDK: "cc".repeat(48),
         pdkNonce: "0102030405060708090a0b0c",
+        pdkVersion: 1,
       }),
     ).rejects.toThrow(NOT_PERMITTED);
   });
@@ -204,6 +210,7 @@ describe("createServiceToken", () => {
       publicKey: minted.upload.publicKey,
       wrappedPDK: "cc".repeat(48),
       pdkNonce: "0102030405060708090a0b0c",
+      pdkVersion: 1,
     };
 
     for (const bad of [
@@ -273,6 +280,7 @@ describe("a token's wrapped project data key", () => {
         publicKey: minted.upload.publicKey,
         wrappedPDK: "cc".repeat(48),
         pdkNonce: "0102030405060708090a0b0c",
+        pdkVersion: 1,
       }),
     ).rejects.toThrow("This record's organisation link is inconsistent. Nothing was written.");
 
@@ -337,11 +345,12 @@ describe("a token's wrapped project data key", () => {
   });
 
   /**
-   * Which project data key version the blob opens is copied off the environment
-   * row, exactly as `secrets.ts` copies it, and is not an argument. A caller
-   * that could choose it could label a stale wrap as current.
+   * Which project data key version the blob opens is the environment's
+   * current one, and the client must STATE the version it wrapped under so the
+   * server can check the two agree. A caller cannot make the column say
+   * anything else: a mismatch is refused, it is never stored.
    */
-  it("records the environment's pdkVersion and never one the caller chose", async () => {
+  it("records the environment's pdkVersion, which the caller must state exactly", async () => {
     const t = convexTest(schema, modules);
     const alice = await seedUser(t, "alice@example.test");
     const { environmentId } = await tenant(t, alice, "acme");
@@ -351,13 +360,65 @@ describe("a token's wrapped project data key", () => {
       getPDKGrant(ctx, environmentId, "token", tokenIdHash({ tokenId: minted.tokenId })),
     );
     expect(grant?.pdkVersion).toBe(1);
+  });
 
-    const args = JSON.parse(
-      (
-        tokensModule.createServiceToken as unknown as { exportArgs: () => string }
-      ).exportArgs(),
-    ) as { value: Record<string, unknown> };
-    expect(Object.keys(args.value)).not.toContain("pdkVersion");
+  /**
+   * THE COMPARE-AND-SET. The client wrapped the token's grant under
+   * `pdkAssociatedData` naming the key version it opened. If the environment
+   * has been re-keyed since, the wrap names a version the grant would not be
+   * stored under and the workload would fail at boot with a bare AEAD
+   * rejection. Refused, with neither a token row nor a grant written.
+   */
+  it("refuses a pdkVersion that is not the environment's current one, writing nothing", async () => {
+    const t = convexTest(schema, modules);
+    const alice = await seedUser(t, "alice@example.test");
+    const { environmentId } = await tenant(t, alice, "acme");
+    // A re-key happened after the client opened the environment at version 1.
+    await t.run(async (ctx) =>
+      patchEnvironment(ctx, environmentId, { pdkVersion: 2 }),
+    );
+
+    const minted = mintToken({ environment: "production" });
+    for (const pdkVersion of [1, 3, 0]) {
+      await expect(
+        t.mutation(api.tokens.createServiceToken, {
+          sessionToken: alice.sessionToken,
+          environmentId,
+          tokenId: minted.upload.tokenId,
+          publicKey: minted.upload.publicKey,
+          wrappedPDK: "cc".repeat(48),
+          pdkNonce: "0102030405060708090a0b0c",
+          pdkVersion,
+        }),
+      ).rejects.toThrow(
+        "This environment's key changed since you opened it. Reload and try again.",
+      );
+    }
+
+    const hash = tokenIdHash({ tokenId: minted.tokenId });
+    expect(
+      await t.run(async (ctx) => getServiceTokenByIdHash(ctx, hash)),
+    ).toBeNull();
+    const grants = await t.run(async (ctx) =>
+      listPDKGrantsByEnvironment(ctx, environmentId),
+    );
+    expect(grants.filter((g) => g.granteeType === "token")).toEqual([]);
+
+    // And the current version is accepted, and stored, so the check above is
+    // not one that refuses everything.
+    await t.mutation(api.tokens.createServiceToken, {
+      sessionToken: alice.sessionToken,
+      environmentId,
+      tokenId: minted.upload.tokenId,
+      publicKey: minted.upload.publicKey,
+      wrappedPDK: "cc".repeat(48),
+      pdkNonce: "0102030405060708090a0b0c",
+      pdkVersion: 2,
+    });
+    const grant = await t.run(async (ctx) =>
+      getPDKGrant(ctx, environmentId, "token", hash),
+    );
+    expect(grant?.pdkVersion).toBe(2);
   });
 
   /**
@@ -380,6 +441,7 @@ describe("a token's wrapped project data key", () => {
         publicKey: minted.upload.publicKey,
         wrappedPDK: "cc".repeat(48),
         pdkNonce: "0102030405060708090a0b0c",
+        pdkVersion: 1,
       }),
     ).rejects.toThrow(NOT_PERMITTED);
 
@@ -427,6 +489,7 @@ describe("a token's wrapped project data key", () => {
         publicKey: minted.upload.publicKey,
         wrappedPDK: "cc".repeat(48),
         pdkNonce: "0102030405060708090a0b0c",
+        pdkVersion: 1,
       }),
     ).rejects.toThrow("You hold no key for this environment");
   });
@@ -455,6 +518,7 @@ describe("a token's wrapped project data key", () => {
         publicKey: minted.upload.publicKey,
         wrappedPDK: "cc".repeat(48),
         pdkNonce: "0102030405060708090a0b0c",
+        pdkVersion: 1,
       }),
     ).rejects.toThrow();
 

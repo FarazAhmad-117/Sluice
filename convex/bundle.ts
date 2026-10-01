@@ -78,9 +78,24 @@ function refuse(): never {
   throw new ConvexError(REFUSED);
 }
 
+/**
+ * One secret, as a workload needs it to open it and nothing more.
+ *
+ * `secretUid` and `version` are exactly what the client sealed the row under,
+ * and with `environmentUid` above they are the inputs to
+ * `secretAssociatedData` in `@sluice/crypto`. The server stores them as sealed
+ * and never computes the associated data; returning them is what lets the SDK
+ * rebuild it, and what makes a row spliced into another secret's slot, or an
+ * old version served as current, fail to open instead of yielding a wrong
+ * value.
+ *
+ * NO `secretId`. The Convex document id used to be here. It is local to this
+ * deployment, it is not in the associated data, and this query takes no
+ * argument a workload could send it back to, so the only thing it could do in
+ * a bundle is be mistaken for the secret's identity. `secretUid` is that.
+ */
 const secretShape = {
-  secretId: v.id("secrets"),
-  lineageId: v.string(),
+  secretUid: v.string(),
   version: v.number(),
   // Which project data key version opened this row. The bundle can legitimately
   // contain rows at more than one version during a re-key, and the client has
@@ -139,6 +154,12 @@ export const getBundle = query({
     // revoked. The bundle therefore always answers, and simply carries no key.
     // A client that receives no key has a loud, immediate failure with a name;
     // one that receives no answer has a retry loop.
+    //
+    // `pdkVersion` is the grant's own, exactly the version the client wrapped
+    // `wrappedPDK` under, and it is an input to `pdkAssociatedData` alongside
+    // `environmentUid`. The SDK rebuilds the grant's associated data from it,
+    // so a grant rolled back or swapped in from another version does not
+    // unwrap.
     pdkVersion: v.optional(v.number()),
     wrappedPDK: v.optional(v.string()),
     pdkNonce: v.optional(v.string()),
@@ -220,8 +241,7 @@ export const getBundle = query({
 
 function view(secret: Doc<"secrets">) {
   return {
-    secretId: secret._id,
-    lineageId: secret.lineageId,
+    secretUid: secret.secretUid,
     version: secret.version,
     pdkVersion: secret.pdkVersion,
     nameCiphertext: secret.nameCiphertext,

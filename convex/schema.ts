@@ -195,11 +195,17 @@ export default defineSchema({
     granteeId: v.string(),
     wrappedPDK: v.string(),
     nonce: v.string(),
-    // WHICH project data key version this blob opens, copied off the
-    // environment row at write time and never taken from a caller. Without it
-    // the bundle would have to report `environments.pdkVersion` beside a
-    // wrapped key from this row: two rows describing one key, free to disagree,
-    // which is the very thing the column above was deleted for.
+    // WHICH project data key version this blob opens. The client wraps under
+    // `pdkAssociatedData`, which binds this version, so it STATES the version
+    // it wrapped under, and the writing mutation checks that it equals the
+    // environment's current `pdkVersion` (exactly 1 in `createEnvironment`)
+    // and refuses otherwise, writing nothing. The value stored is then the
+    // environment's, which by that check is also exactly what the bytes name;
+    // a caller can make a write fail but cannot make this column say
+    // anything else. Without the column the bundle would have to report
+    // `environments.pdkVersion` beside a wrapped key from this row: two rows
+    // describing one key, free to disagree, which is the very thing the
+    // column above was deleted for.
     pdkVersion: v.number(),
   })
     // Prefix-queried by `environmentId` alone for "every grant on this
@@ -224,12 +230,25 @@ export default defineSchema({
     // per table, and a per-org quota needs a direct count rather than a walk.
     orgId: v.id("orgs"),
 
-    // Every version of one logical secret shares a `lineageId`. Without it
-    // versioning is unrepresentable: the name is ciphertext under a random
-    // nonce, so two versions of the same secret are not comparable byte for
-    // byte and nothing else links the rows. You could have history or a usable
-    // listing, not both.
-    lineageId: v.string(),
+    // The secret's PERMANENT id, `sec_` + 32 lowercase hex: see
+    // `packages/crypto/src/ids.ts`. Every version of one logical secret shares
+    // it. Without it versioning is unrepresentable: the name is ciphertext
+    // under a random nonce, so two versions of the same secret are not
+    // comparable byte for byte and nothing else links the rows.
+    //
+    // MINTED BY THE CLIENT, NOT BY THIS SERVER, because the client seals both
+    // fields under `secretAssociatedData({ environmentUid, secretUid, version,
+    // field })` and must know the id before the first write. The server never
+    // computes that associated data. Its job is to STORE EXACTLY the
+    // `secretUid` and `version` the client sealed under and hand both back, so
+    // a reader can rebuild the bytes. A row whose stored slot differs from the
+    // slot it was sealed under does not open, which is what turns a
+    // server-side splice (swapping ciphertext between rows, or rolling one
+    // back to an older version) into a loud failure instead of a wrong value.
+    // The id arrives from a client, so it is attacker-chosen: `createSecret`
+    // checks the shape and refuses an id any row already carries, through
+    // `by_secret_version`, in the same mutation as the insert.
+    secretUid: v.string(),
     // Both name and value are ciphertext. The name is encrypted because a
     // plaintext column full of STRIPE_LIVE_SECRET_KEY tells an attacker with
     // database access exactly which ciphertext to prioritise, and tells the
@@ -239,8 +258,13 @@ export default defineSchema({
     valueCiphertext: v.string(),
     valueNonce: v.string(),
     pdkVersion: v.number(),
+    // The version the client sealed THIS row under, bound into its associated
+    // data, stored exactly as sealed. 1 on create; on update exactly the
+    // current row's version plus one, enforced as a compare-and-set in
+    // `updateSecret`, so a write prepared against a version that is no longer
+    // current fails loudly instead of landing.
     version: v.number(),
-    // Set when a newer version of the same lineage replaces this row. Unset
+    // Set when a newer version of the same secret replaces this row. Unset
     // means current. There is deliberately no `isCurrent` boolean: it would
     // restate what this field already says and the two could disagree.
     supersededAt: v.optional(v.number()),
@@ -260,7 +284,7 @@ export default defineSchema({
       "supersededAt",
       "deletedAt",
     ])
-    .index("by_lineage_version", ["lineageId", "version"])
+    .index("by_secret_version", ["secretUid", "version"])
     .index("by_org", ["orgId"]),
 
   serviceTokens: defineTable({

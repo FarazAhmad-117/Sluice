@@ -70,6 +70,9 @@ export const modules = import.meta.glob("./**/*.ts");
 const WRAP = {
   wrappedPDK: "dd".repeat(48),
   pdkNonce: "0a1b2c3d4e5f60718293a4b5",
+  // The key version the wrap above was made under, which the client states
+  // and `createEnvironment` checks: a new environment starts at 1.
+  pdkVersion: 1,
 } as const;
 
 type Harness = ReturnType<typeof convexTest>;
@@ -187,6 +190,11 @@ function secretArgs(
   return {
     sessionToken: actor.sessionToken,
     environmentId,
+    // Minted fresh per call, as the client mints it, so two creates in one
+    // test are two secrets rather than a refused duplicate.
+    secretUid: newId("sec"),
+    // The only version a new secret is sealed under.
+    version: 1,
     nameCiphertext: NAME_CIPHERTEXT,
     nameNonce: NAME_NONCE,
     valueCiphertext: VALUE_CIPHERTEXT,
@@ -255,6 +263,7 @@ describe("secrets authorisation", () => {
       t.mutation(api.secrets.updateSecret, {
         sessionToken: alice.sessionToken,
         secretId: theirs.secretId,
+        version: 2,
         nameCiphertext: NAME_CIPHERTEXT,
         nameNonce: "ffffffffffffffffffffffff",
         valueCiphertext: VALUE_CIPHERTEXT,
@@ -414,6 +423,7 @@ describe("a write from a caller who holds no project data key", () => {
       t.mutation(api.secrets.updateSecret, {
         sessionToken: bob.sessionToken,
         secretId,
+        version: 2,
         nameCiphertext: "cc".repeat(24),
         nameNonce: "111111111111111111111111",
         valueCiphertext: "dd".repeat(40),
@@ -441,6 +451,7 @@ describe("a write from a caller who holds no project data key", () => {
       t.mutation(api.secrets.updateSecret, {
         sessionToken: bob.sessionToken,
         secretId: first.secretId,
+        version: 2,
         nameCiphertext: "cc".repeat(24),
         nameNonce: "111111111111111111111111",
         valueCiphertext: "dd".repeat(40),
@@ -573,6 +584,7 @@ describe("a write from a caller who holds no project data key", () => {
     const updated = await t.mutation(api.secrets.updateSecret, {
       sessionToken: bob.sessionToken,
       secretId: created.secretId,
+      version: 2,
       nameCiphertext: "cc".repeat(24),
       nameNonce: "111111111111111111111111",
       valueCiphertext: "dd".repeat(40),
@@ -632,7 +644,7 @@ describe("the ciphertext-only surface", () => {
       "sessionToken",
       "environmentId",
       "secretId",
-      "lineageId",
+      "secretUid",
       "version",
       "pdkVersion",
       "nameCiphertext",
@@ -663,11 +675,16 @@ describe("the ciphertext-only surface", () => {
         "environmentId",
         "nameCiphertext",
         "valueNonce",
-        "lineageId",
+        "secretUid",
       ]),
     );
     expect(validatorFields("listSecrets")).toEqual(
-      expect.arrayContaining(["environmentId", "valueCiphertext", "version"]),
+      expect.arrayContaining([
+        "environmentId",
+        "valueCiphertext",
+        "secretUid",
+        "version",
+      ]),
     );
 
     for (const name of names) {
@@ -729,6 +746,7 @@ describe("the ciphertext-only surface", () => {
     const second = await t.mutation(api.secrets.updateSecret, {
       sessionToken: alice.sessionToken,
       secretId: first.secretId,
+      version: 2,
       nameCiphertext: "cc".repeat(24),
       nameNonce: "333333333333333333333333",
       valueCiphertext: "dd".repeat(40),
@@ -793,6 +811,7 @@ describe("the ciphertext-only surface", () => {
       t.mutation(api.secrets.updateSecret, {
         sessionToken: alice.sessionToken,
         secretId: first.secretId,
+        version: 2,
         nameCiphertext: "cc".repeat(24),
         nameNonce: "555555555555555555555555",
         valueCiphertext: "dd".repeat(40),
@@ -889,7 +908,7 @@ describe("the ciphertext-only surface", () => {
     ).rejects.toThrow("nonce");
   });
 
-  it("rejects an update that repeats a nonce already used in the lineage", async () => {
+  it("rejects an update that repeats a nonce already used in the secret's history", async () => {
     const t = convexTest(schema, modules);
     const { alice, a } = await world(t);
     const { secretId } = await t.mutation(
@@ -901,6 +920,7 @@ describe("the ciphertext-only surface", () => {
       t.mutation(api.secrets.updateSecret, {
         sessionToken: alice.sessionToken,
         secretId,
+        version: 2,
         nameCiphertext: "cc".repeat(24),
         nameNonce: NAME_NONCE,
         valueCiphertext: "dd".repeat(40),
@@ -911,55 +931,334 @@ describe("the ciphertext-only surface", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Lineage and versioning
+// The secret's permanent id, and the version it was sealed under.
 // ---------------------------------------------------------------------------
 
-describe("versioning", () => {
-  it("gives every new secret its own lineage id", async () => {
+/**
+ * The client seals every row under associated data naming the environment's
+ * uid, the secret's permanent `sec_` id, the version and the field. The server
+ * never computes those bytes. It must store exactly the id and version the
+ * client sealed under, hand both back on every read, and refuse a write whose
+ * stated version is not the next one, so a stale write fails loudly instead of
+ * landing a row that names a slot it does not occupy.
+ */
+describe("the secret's permanent id", () => {
+  it("stores the client's secretUid at version 1 and returns both on every read", async () => {
     const t = convexTest(schema, modules);
     const { alice, a } = await world(t);
+    const secretUid = newId("sec");
 
-    const one = await t.mutation(
+    const created = await t.mutation(
       api.secrets.createSecret,
-      secretArgs(alice, a.production),
+      secretArgs(alice, a.production, { secretUid }),
     );
-    const two = await t.mutation(
-      api.secrets.createSecret,
-      secretArgs(alice, a.production, {
-        nameNonce: "111111111111111111111111",
-        valueNonce: "222222222222222222222222",
-      }),
-    );
+    expect(created.secretUid).toBe(secretUid);
+    expect(created.version).toBe(1);
 
-    expect(one.lineageId).not.toBe(two.lineageId);
-    expect(one.lineageId).toMatch(/^[0-9a-f]{32}$/);
+    const row = await t.run(async (ctx) => getSecretRow(ctx, created.secretId));
+    expect(row?.secretUid).toBe(secretUid);
+    expect(row?.version).toBe(1);
+
+    const got = await t.query(api.secrets.getSecret, {
+      sessionToken: alice.sessionToken,
+      secretId: created.secretId,
+    });
+    const listed = await t.query(api.secrets.listSecrets, {
+      sessionToken: alice.sessionToken,
+      environmentId: a.production,
+    });
+    const history = await t.query(api.secrets.listSecretVersions, {
+      sessionToken: alice.sessionToken,
+      secretId: created.secretId,
+    });
+    for (const view of [got, ...listed, ...history]) {
+      expect({ secretUid: view.secretUid, version: view.version }).toEqual({
+        secretUid,
+        version: 1,
+      });
+    }
   });
 
-  /**
-   * Nothing mints a lineage id but `createSecret`, and no function accepts
-   * one. That is the whole answer to "two unrelated secrets share a lineage
-   * and their histories merge": the client cannot name a lineage, so it cannot
-   * name someone else's.
-   */
-  it("accepts a lineage id from nobody", () => {
-    for (const name of ["createSecret", "updateSecret", "deleteSecret"] as const) {
-      const args = JSON.parse(
-        (
-          secretsModule[name] as unknown as { exportArgs: () => string }
-        ).exportArgs(),
-      );
-      expect(fieldNames(args)).not.toContain("lineageId");
+  describe("rejects a secretUid that is not a well-formed sec id, and writes nothing", () => {
+    const message = "secretUid must be a well-formed sec id";
+    const cases: Array<[string, () => string]> = [
+      ["empty", () => ""],
+      // The shape the server used to mint, before ids were client-minted.
+      ["bare 32 hex", () => "ab".repeat(16)],
+      ["an env id", () => newId("env")],
+      ["a user id", () => newId("usr")],
+      ["uppercase hex", () => "sec_" + "ABCDEF0123456789".repeat(2)],
+      ["too long", () => newId("sec") + "0"],
+      ["trailing newline", () => newId("sec") + "\n"],
+    ];
+
+    for (const [name, value] of cases) {
+      it(name, async () => {
+        const t = convexTest(schema, modules);
+        const { alice, a } = await world(t);
+        await expect(
+          t.mutation(
+            api.secrets.createSecret,
+            secretArgs(alice, a.production, { secretUid: value() }),
+          ),
+        ).rejects.toThrow(message);
+        expect(
+          await t.query(api.secrets.listSecrets, {
+            sessionToken: alice.sessionToken,
+            environmentId: a.production,
+          }),
+        ).toEqual([]);
+      });
     }
   });
 
   /**
-   * The failure mode the lineage decision exists to prevent, forced into
-   * existence by writing the row the public API cannot write. Two unrelated
-   * secrets sharing a lineage must be refused loudly, not silently merged into
-   * one history where an old value is served as current and a row vanishes
-   * from the listing.
+   * THE REASON THE ID USED TO BE SERVER-MINTED, ANSWERED. A client-chosen id
+   * can name an EXISTING secret, and a create that accepted it would add a
+   * version to somebody else's history with no compare-and-set having run.
+   * Refused, deployment wide: another environment, another org, and a deleted
+   * secret all keep their id for ever.
    */
-  it("refuses loudly if two secrets ever share a lineage", async () => {
+  it("rejects a secretUid any row already carries, wherever it lives", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, mallory, a, b } = await world(t);
+    const DUPLICATE = "A secret with that id already exists.";
+
+    const original = await t.mutation(
+      api.secrets.createSecret,
+      secretArgs(alice, a.production),
+    );
+    const fresh = {
+      nameNonce: "111111111111111111111111",
+      valueNonce: "222222222222222222222222",
+    };
+
+    // Same environment, a sibling environment, and another tenant entirely.
+    await expect(
+      t.mutation(
+        api.secrets.createSecret,
+        secretArgs(alice, a.production, { secretUid: original.secretUid, ...fresh }),
+      ),
+    ).rejects.toThrow(DUPLICATE);
+    await expect(
+      t.mutation(
+        api.secrets.createSecret,
+        secretArgs(alice, a.staging, { secretUid: original.secretUid, ...fresh }),
+      ),
+    ).rejects.toThrow(DUPLICATE);
+    await expect(
+      t.mutation(
+        api.secrets.createSecret,
+        secretArgs(mallory, b.production, { secretUid: original.secretUid, ...fresh }),
+      ),
+    ).rejects.toThrow(DUPLICATE);
+
+    // And after the secret is deleted, the id is still taken.
+    await t.mutation(api.secrets.deleteSecret, {
+      sessionToken: alice.sessionToken,
+      secretId: original.secretId,
+    });
+    await expect(
+      t.mutation(
+        api.secrets.createSecret,
+        secretArgs(alice, a.production, { secretUid: original.secretUid, ...fresh }),
+      ),
+    ).rejects.toThrow(DUPLICATE);
+
+    // Nothing was written by any of the refusals: the one row is still the
+    // only row under that id, and it is still version 1.
+    const rows = await t.run(async (ctx) => getSecretRow(ctx, original.secretId));
+    expect(rows?.version).toBe(1);
+    for (const environmentId of [a.staging]) {
+      expect(
+        await t.query(api.secrets.listSecrets, {
+          sessionToken: alice.sessionToken,
+          environmentId,
+        }),
+      ).toEqual([]);
+    }
+    expect(
+      await t.query(api.secrets.listSecrets, {
+        sessionToken: mallory.sessionToken,
+        environmentId: b.production,
+      }),
+    ).toEqual([]);
+  });
+
+  it("rejects a create that states any version but 1", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, a } = await world(t);
+
+    for (const version of [0, 2, -1, 1.5, Number.NaN]) {
+      await expect(
+        t.mutation(
+          api.secrets.createSecret,
+          secretArgs(alice, a.production, { version }),
+        ),
+      ).rejects.toThrow("A new secret starts at version 1.");
+    }
+    expect(
+      await t.query(api.secrets.listSecrets, {
+        sessionToken: alice.sessionToken,
+        environmentId: a.production,
+      }),
+    ).toEqual([]);
+  });
+
+  /**
+   * `createSecret` is the ONLY function that accepts a secretUid. Update and
+   * delete resolve it from the row they are handed, so neither can be pointed
+   * at another secret's history by an argument.
+   */
+  it("is accepted by createSecret alone", () => {
+    const args = (name: "createSecret" | "updateSecret" | "deleteSecret") =>
+      fieldNames(
+        JSON.parse(
+          (
+            secretsModule[name] as unknown as { exportArgs: () => string }
+          ).exportArgs(),
+        ),
+      );
+    expect(args("createSecret")).toContain("secretUid");
+    expect(args("updateSecret")).not.toContain("secretUid");
+    expect(args("deleteSecret")).not.toContain("secretUid");
+  });
+});
+
+describe("the compare-and-set on update", () => {
+  const STALE =
+    "This secret changed since you opened it. Reload to see the latest version.";
+
+  function updateArgs(
+    actor: Actor,
+    secretId: Id<"secrets">,
+    version: number,
+  ) {
+    return {
+      sessionToken: actor.sessionToken,
+      secretId,
+      version,
+      nameCiphertext: "cc".repeat(24),
+      nameNonce: "111111111111111111111111",
+      valueCiphertext: "dd".repeat(40),
+      valueNonce: "222222222222222222222222",
+    };
+  }
+
+  it("accepts exactly the current version plus one, keeping the secretUid", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, a } = await world(t);
+    const first = await t.mutation(
+      api.secrets.createSecret,
+      secretArgs(alice, a.production),
+    );
+
+    const second = await t.mutation(
+      api.secrets.updateSecret,
+      updateArgs(alice, first.secretId, 2),
+    );
+    expect(second.version).toBe(2);
+    expect(second.secretUid).toBe(first.secretUid);
+
+    const row = await t.run(async (ctx) => getSecretRow(ctx, second.secretId));
+    expect(row?.secretUid).toBe(first.secretUid);
+    expect(row?.version).toBe(2);
+  });
+
+  // Equal to the current version (two writers raced from one starting point),
+  // a skipped version, and zero. Each refused with the same sentence, and
+  // none leaves a new row or a `supersededAt` behind.
+  for (const [name, version] of [
+    ["the current version (stale)", 1],
+    ["two ahead (skipped)", 3],
+    ["zero", 0],
+    ["negative", -1],
+    ["fractional", 1.5],
+  ] as const) {
+    it(`rejects ${name} and writes nothing`, async () => {
+      const t = convexTest(schema, modules);
+      const { alice, a } = await world(t);
+      const first = await t.mutation(
+        api.secrets.createSecret,
+        secretArgs(alice, a.production),
+      );
+
+      await expect(
+        t.mutation(api.secrets.updateSecret, updateArgs(alice, first.secretId, version)),
+      ).rejects.toThrow(STALE);
+
+      const live = await t.query(api.secrets.listSecrets, {
+        sessionToken: alice.sessionToken,
+        environmentId: a.production,
+      });
+      expect(live.map((row) => [row.secretId, row.version])).toEqual([
+        [first.secretId, 1],
+      ]);
+      const row = await t.run(async (ctx) => getSecretRow(ctx, first.secretId));
+      expect(row?.supersededAt).toBeUndefined();
+      const history = await t.query(api.secrets.listSecretVersions, {
+        sessionToken: alice.sessionToken,
+        secretId: first.secretId,
+      });
+      expect(history).toHaveLength(1);
+    });
+  }
+
+  /**
+   * The race the check exists for, end to end: two people open version 2,
+   * one saves version 3, and the other's version 3 must not land on top of
+   * it. The second writer addresses the now-current row, so the refusal is
+   * the compare-and-set and not "already replaced".
+   */
+  it("refuses the second of two writers who opened the same version", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, a } = await world(t);
+    const first = await t.mutation(
+      api.secrets.createSecret,
+      secretArgs(alice, a.production),
+    );
+    const second = await t.mutation(
+      api.secrets.updateSecret,
+      updateArgs(alice, first.secretId, 2),
+    );
+    const third = await t.mutation(api.secrets.updateSecret, {
+      ...updateArgs(alice, second.secretId, 3),
+      nameNonce: "333333333333333333333333",
+      valueNonce: "444444444444444444444444",
+    });
+    expect(third.version).toBe(3);
+
+    await expect(
+      t.mutation(api.secrets.updateSecret, {
+        ...updateArgs(alice, third.secretId, 3),
+        nameNonce: "555555555555555555555555",
+        valueNonce: "666666666666666666666666",
+      }),
+    ).rejects.toThrow(STALE);
+
+    const live = await t.query(api.secrets.listSecrets, {
+      sessionToken: alice.sessionToken,
+      environmentId: a.production,
+    });
+    expect(live.map((row) => [row.secretId, row.version])).toEqual([
+      [third.secretId, 3],
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Versioning
+// ---------------------------------------------------------------------------
+
+describe("versioning", () => {
+  /**
+   * The failure mode the uniqueness check exists to prevent, forced into
+   * existence by writing the row the public API cannot write. Two unrelated
+   * secrets sharing a `secretUid` must be refused loudly, not silently merged
+   * into one history where an old value is served as current and a row
+   * vanishes from the listing.
+   */
+  it("refuses loudly if two secrets ever share a secretUid", async () => {
     const t = convexTest(schema, modules);
     const { alice, a } = await world(t);
     const original = await t.mutation(
@@ -971,7 +1270,7 @@ describe("versioning", () => {
       insertSecretRow(ctx, {
         environmentId: a.production,
         orgId: a.orgId,
-        lineageId: original.lineageId,
+        secretUid: original.secretUid,
         nameCiphertext: "cc".repeat(24),
         nameNonce: "111111111111111111111111",
         valueCiphertext: "dd".repeat(40),
@@ -989,12 +1288,12 @@ describe("versioning", () => {
   });
 
   /**
-   * The same guard across environments. A lineage that spans two environments
-   * would make one environment's history readable through the other, which is
-   * precisely what the associated data binding is there to stop, arriving by a
-   * different route.
+   * The same guard across environments. One secret's history spanning two
+   * environments would make one environment's history readable through the
+   * other, which is precisely what the associated data binding is there to
+   * stop, arriving by a different route.
    */
-  it("refuses a lineage that spans two environments", async () => {
+  it("refuses a secret whose history spans two environments", async () => {
     const t = convexTest(schema, modules);
     const { alice, a } = await world(t);
     const original = await t.mutation(
@@ -1006,7 +1305,7 @@ describe("versioning", () => {
       insertSecretRow(ctx, {
         environmentId: a.staging,
         orgId: a.orgId,
-        lineageId: original.lineageId,
+        secretUid: original.secretUid,
         nameCiphertext: "cc".repeat(24),
         nameNonce: "111111111111111111111111",
         valueCiphertext: "dd".repeat(40),
@@ -1036,13 +1335,14 @@ describe("versioning", () => {
     const second = await t.mutation(api.secrets.updateSecret, {
       sessionToken: alice.sessionToken,
       secretId: first.secretId,
+      version: 2,
       nameCiphertext: "cc".repeat(24),
       nameNonce: "111111111111111111111111",
       valueCiphertext: "dd".repeat(40),
       valueNonce: "222222222222222222222222",
     });
 
-    expect(second.lineageId).toBe(first.lineageId);
+    expect(second.secretUid).toBe(first.secretUid);
     expect(second.secretId).not.toBe(first.secretId);
 
     const old = await t.query(api.secrets.getSecret, {
@@ -1078,6 +1378,7 @@ describe("versioning", () => {
     await t.mutation(api.secrets.updateSecret, {
       sessionToken: alice.sessionToken,
       secretId: first.secretId,
+      version: 2,
       nameCiphertext: "cc".repeat(24),
       nameNonce: "111111111111111111111111",
       valueCiphertext: "dd".repeat(40),
@@ -1088,6 +1389,7 @@ describe("versioning", () => {
       t.mutation(api.secrets.updateSecret, {
         sessionToken: alice.sessionToken,
         secretId: first.secretId,
+        version: 2,
         nameCiphertext: "ee".repeat(24),
         nameNonce: "333333333333333333333333",
         valueCiphertext: "ff".repeat(40),
@@ -1138,6 +1440,7 @@ describe("deleteSecret", () => {
     const second = await t.mutation(api.secrets.updateSecret, {
       sessionToken: alice.sessionToken,
       secretId: first.secretId,
+      version: 2,
       nameCiphertext: "cc".repeat(24),
       nameNonce: "111111111111111111111111",
       valueCiphertext: "dd".repeat(40),
@@ -1175,6 +1478,7 @@ describe("deleteSecret", () => {
       t.mutation(api.secrets.updateSecret, {
         sessionToken: alice.sessionToken,
         secretId,
+        version: 2,
         nameCiphertext: "cc".repeat(24),
         nameNonce: "111111111111111111111111",
         valueCiphertext: "dd".repeat(40),
@@ -1463,6 +1767,7 @@ describe("end to end", () => {
         projectId,
         name: "production",
         ...wrappedPdk,
+        pdkVersion: 1,
       });
 
       // ---- 7. Fetch the grant back and open it. ---------------------------
@@ -1495,6 +1800,8 @@ describe("end to end", () => {
       const created = await t.mutation(api.secrets.createSecret, {
         sessionToken,
         environmentId,
+        secretUid: newId("sec"),
+        version: 1,
         ...sealed,
       });
 
@@ -1528,6 +1835,7 @@ describe("end to end", () => {
           granteeType: "user",
           granteeId: session.userId,
         })),
+        pdkVersion: 1,
       });
       await expect(
         openSecret(openedPdk, { ...row, environmentId: other }),
@@ -1543,6 +1851,7 @@ describe("end to end", () => {
       await t.mutation(api.secrets.updateSecret, {
         sessionToken,
         secretId: created.secretId,
+        version: 2,
         ...resealed,
       });
 

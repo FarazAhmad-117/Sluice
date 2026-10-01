@@ -118,6 +118,22 @@ const EPOCH_NOT_MONOTONIC =
 const NO_GRANT =
   "You hold no key for this environment, so nothing you wrote here could ever be read.";
 
+/**
+ * THE COMPARE-AND-SET ON THE KEY VERSION.
+ *
+ * The client wraps the token's grant under `pdkAssociatedData({
+ * environmentUid, pdkVersion, granteeType: "token", granteeId })`, naming the
+ * key version it opened. The grant row stores the environment's CURRENT
+ * version, because that is the key the environment's secrets are under. If
+ * the two differ -- the client opened the environment, somebody re-keyed it,
+ * and the client wrapped the old key -- the row would claim a version its
+ * bytes do not name and the workload would fail at boot with a bare AEAD
+ * rejection. So the stated version must equal `environment.pdkVersion`, and
+ * anything else is refused with nothing written: no token row, no grant.
+ */
+const STALE_PDK_VERSION =
+  "This environment's key changed since you opened it. Reload and try again.";
+
 function refuse(): never {
   throw new ConvexError(NOT_PERMITTED);
 }
@@ -148,6 +164,10 @@ export const createServiceToken = mutation({
     // the client from the token secret and never transmitted.
     wrappedPDK: v.string(),
     pdkNonce: v.string(),
+    // The environment key version the client wrapped `wrappedPDK` under,
+    // which `pdkAssociatedData` binds. Compared with the environment's
+    // current version, never stored from here: see `STALE_PDK_VERSION`.
+    pdkVersion: v.number(),
     expiresAt: v.optional(v.number()),
   },
   returns: v.id("serviceTokens"),
@@ -181,6 +201,11 @@ export const createServiceToken = mutation({
     assertHexAtLeast("wrappedPDK", args.wrappedPDK, MIN_CIPHERTEXT_BYTES);
     if (args.expiresAt !== undefined) {
       assertNonNegativeSafeInteger("expiresAt", args.expiresAt);
+    }
+    // Before either insert, against the environment row this transaction
+    // read, so a stale wrap leaves neither a token nor a grant behind.
+    if (args.pdkVersion !== environment.pdkVersion) {
+      throw new ConvexError(STALE_PDK_VERSION);
     }
 
     // THE HASH, FROM THE SHARED PACKAGE. See the header.
@@ -226,8 +251,10 @@ export const createServiceToken = mutation({
       granteeId: hash,
       wrappedPDK: args.wrappedPDK,
       nonce: args.pdkNonce,
-      // Off the environment row, exactly as `secrets.ts` copies it. A re-key
-      // must bump `environments.pdkVersion` and re-wrap every grant in the one
+      // Off the environment row, exactly as `secrets.ts` copies it, and equal
+      // to the version the client wrapped under by the compare-and-set above,
+      // so the stored version is the one the bytes name. A re-key must bump
+      // `environments.pdkVersion` and re-wrap every grant in the one
       // mutation, or a token is handed a key the stored ciphertext is not
       // under.
       pdkVersion: environment.pdkVersion,

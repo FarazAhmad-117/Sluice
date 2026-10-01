@@ -36,16 +36,27 @@ const DUPLICATE_NAME =
 const DUPLICATE_UID = "An environment with that id already exists.";
 
 /**
- * The starting values, and they are not arguments.
+ * The starting values. Neither is chosen by the caller.
  *
  * `epoch` is the token replay defence: it is globally monotonic per token id
  * and must never reset, so the only safe starting point is one the caller
- * cannot choose. `pdkVersion` starts at 1 rather than 0 so that "which key
- * version encrypted this row" is never answered by a falsy number, which is
- * the value a partly written client leaves behind.
+ * cannot choose, and it is not an argument at all. `pdkVersion` starts at 1
+ * rather than 0 so that "which key version encrypted this row" is never
+ * answered by a falsy number, which is the value a partly written client
+ * leaves behind.
+ *
+ * `pdkVersion` IS an argument, and it is not a choice. The client wraps the
+ * first grant under associated data that names the key version, so it must
+ * state the version it wrapped under, and that must be 1. The server stores
+ * exactly what the client sealed under, and the one way to guarantee that is
+ * to refuse anything else rather than store 1 beside bytes that name 2: that
+ * row would list, sync and never unwrap.
  */
 const INITIAL_PDK_VERSION = 1;
 const INITIAL_EPOCH = 0;
+
+const NEW_ENVIRONMENT_PDK_VERSION =
+  "A new environment's key starts at version 1.";
 
 // AES-GCM nonce, 96 bits, the only width `@sluice/crypto` produces.
 const NONCE_BYTES = 12;
@@ -72,15 +83,20 @@ export const createEnvironment = mutation({
     // `wrappedRevocationKey`.
     //
     // The client wraps under `pdkAssociatedData({ environmentUid,
-    // granteeType: "user", granteeId: <the caller's usr_ uid> })` from
-    // `@sluice/crypto`: this environment's uid above, and the uid `login`
-    // returned as `userUid`. Both exist before this mutation runs, which is
-    // what lets the wrap name the environment at all. Nothing on this server
-    // computes or checks that associated data: the server cannot, and a
-    // server that could choose it could hand a client the bytes of a
-    // different grant.
+    // pdkVersion: 1, granteeType: "user", granteeId: <the caller's usr_ uid>
+    // })` from `@sluice/crypto`: this environment's uid above, the first key
+    // version, and the uid `login` returned as `userUid`. All three exist
+    // before this mutation runs, which is what lets the wrap name the
+    // environment at all. Nothing on this server computes or checks that
+    // associated data: the server cannot, and a server that could choose it
+    // could hand a client the bytes of a different grant. What the server
+    // does is store exactly the inputs the client wrapped under, so a reader
+    // can rebuild them.
     wrappedPDK: v.string(),
     pdkNonce: v.string(),
+    // The key version the client wrapped `wrappedPDK` under. Must be 1. See
+    // `NEW_ENVIRONMENT_PDK_VERSION`.
+    pdkVersion: v.number(),
   },
   returns: v.id("environments"),
   handler: async (ctx, args): Promise<Id<"environments">> => {
@@ -105,6 +121,9 @@ export const createEnvironment = mutation({
     // business, and the server has no way to check it beyond a length floor.
     assertHexBytes("pdkNonce", args.pdkNonce, NONCE_BYTES);
     assertHexAtLeast("wrappedPDK", args.wrappedPDK, MIN_CIPHERTEXT_BYTES);
+    if (args.pdkVersion !== INITIAL_PDK_VERSION) {
+      throw new ConvexError(NEW_ENVIRONMENT_PDK_VERSION);
+    }
 
     // An indexed lookup on `by_project_name`, which is what that index's
     // second column is for.
@@ -162,7 +181,9 @@ export const createEnvironment = mutation({
       granteeId: user.uid,
       wrappedPDK: args.wrappedPDK,
       nonce: args.pdkNonce,
-      // Off the row this mutation just wrote, so the two cannot disagree.
+      // Off the row this mutation just wrote, so the two cannot disagree, and
+      // equal to the version the client stated it wrapped under, by the check
+      // above.
       pdkVersion: INITIAL_PDK_VERSION,
     });
 
