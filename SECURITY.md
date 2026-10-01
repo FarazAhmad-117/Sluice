@@ -113,7 +113,7 @@ means nothing without naming the adversary, so the short version is here too.
 | Network attacker with TLS stripped | Payloads are already encrypted end to end |
 | Stolen service token | Instantly revocable, scoped to one environment |
 | A malicious server pushing fake revocations | Revocation notices are signed by customer-held keys |
-| An insider at a customer organisation | Role-based access control, audit log, per-environment key separation |
+| An insider at a customer organisation | Per-environment key separation. Audit events are recorded, but nothing reads them yet. Roles and teams are planned: today every org has only its owner |
 
 ### Not defended against
 
@@ -301,6 +301,13 @@ together", installs none of that bundle's secrets and keeps any last known good
 set. It still reads and acts on a revocation notice in that bundle, because the
 notice is read before any decryption.
 
+The reverse direction fails the same way. A CLI from before Phase 1 requires
+`environmentId` and treats the new bundle, which carries `environmentUid`
+instead, as malformed: it installs none of its secrets and keeps any last known
+good set. It still handles a revocation, because it reads the notice first and
+the new backend sends `secrets: []` beside a notice, so the old CLI stops
+before it reaches the decrypt.
+
 ### What revocation does and does not undo
 
 Revoking a service token stops **delivery**. Every live process holding that
@@ -325,8 +332,11 @@ provider too, which is the same thing you would do after any credential leak.
 
 ### Where the dashboard session token lives
 
-In `sessionStorage`, in plaintext, alongside the user id, the normalised email,
-both public keys and both wrapped key blobs. **Any script running on the
+In `sessionStorage`, in plaintext, alongside the user id, the account's
+permanent `userUid`, its `accountSalt`, the normalised email, both public keys
+and both wrapped key blobs (see `apps/admin/src/lib/auth/session-store.ts`).
+The uid and the salt are public: the server returns the uid at login and the
+salt to anyone who asks to log in as the account. **Any script running on the
 dashboard origin can read all of it.** One cross-site scripting flaw, in the
 dashboard or in any dependency it loads, takes a live session for its full
 lifetime.
@@ -342,6 +352,12 @@ subscriptions that make instant revocation work.
 What is never stored anywhere in the browser: the master unlock key, the
 unwrapped private keys, the password, or any decrypted secret. A page refresh
 leaves you signed in and locked, and unlocking needs the password again.
+
+Unlock re-derives the master key from the password and the stored salt, without
+asking the server. A script that tampers with the stored salt therefore makes
+unlock derive the wrong key, fail to open the wrapped private keys, and stop
+with an error. It sends nothing anywhere, so a tampered salt is a failed unlock,
+not a leak.
 
 No obfuscation has been applied to the stored token, deliberately. An encoding
 that only looks like protection changes what a reviewer believes without

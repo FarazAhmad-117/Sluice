@@ -978,11 +978,22 @@ Recorded 2026-10-01, on branch `phase-1-freeze-protocol` (commits `16a3e92` onwa
 
 **The critical fix found during review.** A bundle carrying a revocation notice beside a `secrets` field of `null` made the `sluice run` supervisor throw inside the Convex websocket callback, and the process exited. With a forged or replayed notice, the child kept running with its secrets and could no longer be revoked; with a genuine notice, the SIGKILL escalation was lost. It is fixed in layers (the shape is handled, handler exceptions are contained at the subscription boundary, any failure in the shutdown logic is fatal, tries to persist the revocation floor and SIGKILLs the child with exit code 70, and a process-level last-resort handler SIGKILLs the child and exits 70), and disclosed in `SECURITY.md`.
 
+**How it was verified, and what is still pending.** The end-to-end exit criterion was met by the automated contract test `convex/bundle.contract.test.ts`, not by hand. `pnpm build` passed at `151188e` (`apps/admin`: `tsc --noEmit` and `vite build`; `apps/web`: `next build`; `packages/cli`: `vite build`). PENDING, and not claimed: clearing the dev Convex deployment (Task 0 Step 2) and the manual steps 1 to 3 of Task 15 Step 3. Steps 4 and 5 wait on the token surface decision filed under Phase 3 in the roadmap.
+
+**Notes for anyone reading the history.**
+
+- The dashboard's "rekeying" state is defensive. It handles a grant whose `pdkVersion` differs from the environment's, as it would mid re-key or after a database edit. No re-key mutation exists, and re-keying an environment is not supported.
+- `apps/admin` is red from `43afd99` up to `99e49a8`: `43afd99` changed the associated data functions it calls, and the dashboard caught up only at `99e49a8`. When bisecting across that range, use `git bisect skip` on those commits or scope the test run to the package under suspicion.
+- `packages/sdk` has no changes in Phase 1. It computes no associated data and opens no ciphertext, so nothing in it depended on the bindings.
+
 **Left open, and where each one is tracked.** All are in `docs/plans/2026-09-30-roadmap.md` under the phase named.
 
 - Phase 2: the `apps/admin` vitest aliases duplicate `vite.config.ts`.
+- Phase 3: the decision, open with the user, on a surface for issuing and revoking tokens and displaying the org revocation public key (a dev script, a dashboard screen, or skipping the manual check).
 - Phase 3: the single-string token carries the environment uid, so the CLI pins name to uid instead of trusting the server's mapping; and, near-term, each device remembers the salt for every account that has logged in on it, so a server can hand out a shared salt only on a device's first login. The random salt is what gave the server that choice: under v1 the client computed the salt from the address.
 - Phase 5: a hard requirement that every client that signs a revocation calls `revocationKeyMatches` before signing.
 - Phase 6: a client-side version ratchet against wholesale rollback; audit events carry `secretUid` and version once the audit metadata validator exists; key rotation bumps secret versions rather than re-sealing at the same version; the dashboard pins the environment name to uid mapping; a client-held secret key in the 1Password style.
+- Phase 6: revocation triggers a re-key of the token's environment.
 - Phase 7: a render test for the `AuthProvider` if a DOM test library is added.
+- Phase 8: rate-limiting `auth.getLoginSalt`, once it is a mutation or an HTTP action.
 - Architecture design, section 13: any path that moves or imports an org between cells rejects a uid already present in the target and never upserts by uid.

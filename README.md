@@ -15,7 +15,7 @@ This repository is early. Read this before you do anything with it:
 
 - The protocol is frozen at `v2`. First versions of the crypto core, backend,
   dashboard, workload SDK core and a TypeScript CLI exist.
-  Recovery, teams, audit and the Rust CLI are not built yet.
+  Recovery, teams, an audit log reader and the Rust CLI are not built yet.
 - There has been **no third-party cryptographic review**.
 - There is no release, no published package and no upgrade path.
 - **Do not put production secrets in Sluice yet.** This is not modesty, it is
@@ -101,7 +101,8 @@ built-ins, and `@types/node` is deliberately absent so that a `node:` import
 fails to compile.
 
 Not built yet: wrapping a key to another member's public key, so there are no
-teams; recovery; the audit log; and the Rust CLI. The plan is in
+teams; recovery; a reader for the audit log (audit events are recorded; nothing
+reads them yet); and the Rust CLI. The plan is in
 [`docs/plans/2026-09-30-roadmap.md`](./docs/plans/2026-09-30-roadmap.md).
 
 ## Architecture sketch
