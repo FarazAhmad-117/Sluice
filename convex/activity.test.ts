@@ -414,6 +414,42 @@ describe("listProjectActivity", () => {
     expect(JSON.stringify(theirs)).not.toContain(w.apiSecretV2);
   });
 
+  /**
+   * THE SCAN CAP, PINNED. The feed reads the newest 1000 events of the org and
+   * no more, so a project's events older than that do not appear, however
+   * short the feed is. The filler is written in one transaction through the
+   * repo layer, newer than everything in the world and naming no project.
+   */
+  it.each([
+    // 997 filler events leave room for this project's newest three.
+    [997, ["environment.create", "secret.update", "secret.create"]],
+    // 1000 leave room for none.
+    [1000, []],
+  ])("with %i newer org events, shows only what falls inside the newest 1000", async (filler, expected) => {
+    const t = convexTest(schema, modules);
+    const w = await world(t);
+    tick();
+    await t.run(async (ctx) => {
+      for (let i = 0; i < filler; i += 1) {
+        await insertAuditEvent(ctx, {
+          orgId: w.orgA,
+          actorType: "user",
+          actorId: w.alice.userId,
+          action: "org.create",
+          targetId: w.orgA,
+          ts: Date.now() + i,
+        });
+      }
+    });
+
+    const events = await t.query(api.activity.listProjectActivity, {
+      sessionToken: w.alice.sessionToken,
+      projectId: w.api,
+      limit: 100,
+    });
+    expect(events.map((e) => e.action)).toEqual(expected);
+  });
+
   it("does not show the org's other project, or the org itself", async () => {
     const t = convexTest(schema, modules);
     const w = await world(t);

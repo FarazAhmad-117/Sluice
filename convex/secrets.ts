@@ -958,15 +958,37 @@ export const updateSharedSecret = mutation({
       throw new ConvexError(SHARED_ROWS_MISMATCH);
     }
 
+    // ONE ROW PER ENVIRONMENT, among the rows about to be written. The client
+    // reseals one value N times and a conforming one may reuse a nonce across
+    // those N rows: that is safe ONLY because each row is under a different
+    // environment's key, so the same nonce under two keys is not reuse.
+    // Two of them in one environment would be the same nonce twice under one
+    // key -- `assertNoncesAreNew` checks a row's own history, not its
+    // neighbour's -- and two current values under one label besides.
+    // `createSharedSecret` makes such a group impossible, so meeting one is
+    // corruption, answered as `historyOf` answers corruption.
+    const environmentsNamed = new Set(
+      named.map(({ live }) => live.environmentId),
+    );
+    if (environmentsNamed.size !== named.length) {
+      throw new ConvexError(INCONSISTENT);
+    }
+    // The environment each live row is in, from the set read above. Every
+    // group row was already checked to be in that set, so a miss here is a
+    // broken invariant, refused rather than cast away.
+    const environmentOf = (live: Doc<"secrets">): Doc<"environments"> => {
+      const environment = environmentsById.get(live.environmentId);
+      if (environment === undefined) throw new ConvexError(INCONSISTENT);
+      return environment;
+    };
+
     // Then, per row, what `updateSecret` checks before reading further: both
     // org copies on the path agree with the walked org, and the caller holds
     // a key for the environment the row already lives in. A missing grant on
     // ANY of them refuses the whole edit, because the alternative is a group
     // whose shared value changed in only some of its environments.
     for (const { live } of named) {
-      const environment = environmentsById.get(
-        live.environmentId,
-      ) as Doc<"environments">;
+      const environment = environmentOf(live);
       assertOrgLink(live.orgId, org);
       assertOrgLink(environment.orgId, org);
       await requirePDKGrant(ctx, environment._id, user.uid);
@@ -980,9 +1002,7 @@ export const updateSharedSecret = mutation({
       current: Doc<"secrets">;
     }> = [];
     for (const { row, live } of named) {
-      const environment = environmentsById.get(
-        live.environmentId,
-      ) as Doc<"environments">;
+      const environment = environmentOf(live);
       const { versions, current } = await historyOf(ctx, live);
       if (current.deletedAt !== undefined) refuse();
       // THE COMPARE-AND-SET, per row, in both forms staleness takes: the row

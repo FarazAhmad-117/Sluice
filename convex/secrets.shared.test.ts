@@ -13,7 +13,10 @@ import {
 } from "./lib/errors";
 import { insertUser } from "./repo/users";
 import { insertSession } from "./repo/sessions";
-import { listSecretsByEnvironment } from "./repo/secrets";
+import {
+  insertSecret as insertSecretRow,
+  listSecretsByEnvironment,
+} from "./repo/secrets";
 import { listAuditEventsByActor } from "./repo/audit";
 import { patchEnvironment } from "./repo/environments";
 import { insertOrgMember } from "./repo/orgs";
@@ -1042,6 +1045,94 @@ describe("updateSharedSecret", () => {
       ).rejects.toThrow(SHARED_ROWS_MISMATCH);
       expect(await currentRows(t, g.w.api.environments)).toEqual(before);
     });
+  });
+
+  it("refuses a row from a different shared group in the same project", async () => {
+    const t = convexTest(schema, modules);
+    const g = await group(t);
+    const other = await t.mutation(
+      api.secrets.createSharedSecret,
+      sharedArgs(
+        g.w.alice,
+        g.w.api.projectId,
+        g.w.api.environments.map((e) => row(e)),
+      ),
+    );
+    const otherStaging = other.find(
+      (c) => c.environmentId === g.staging.environmentId,
+    )!;
+    const before = await currentRows(t, g.w.api.environments);
+
+    await expect(
+      t.mutation(
+        api.secrets.updateSharedSecret,
+        updateArgs(g.w.alice, g.w.api.projectId, g.shareUid, [
+          edit(g.dev.secretId),
+          edit(otherStaging.secretId),
+        ]),
+      ),
+    ).rejects.toThrow(SHARED_ROWS_MISMATCH);
+    expect(await currentRows(t, g.w.api.environments)).toEqual(before);
+  });
+
+  it("refuses a group that has been deleted", async () => {
+    const t = convexTest(schema, modules);
+    const g = await group(t);
+    await t.mutation(api.secrets.deleteSharedSecret, {
+      sessionToken: g.w.alice.sessionToken,
+      projectId: g.w.api.projectId,
+      shareUid: g.shareUid,
+    });
+
+    await expect(
+      t.mutation(
+        api.secrets.updateSharedSecret,
+        updateArgs(g.w.alice, g.w.api.projectId, g.shareUid, [
+          edit(g.dev.secretId),
+          edit(g.staging.secretId),
+        ]),
+      ),
+    ).rejects.toThrow(NOT_PERMITTED);
+  });
+
+  /**
+   * Two shared rows of one group in ONE environment cannot be made through
+   * the API, so the second is forged through the repo layer. Writing both
+   * would put two values under one label in one environment, and the two rows
+   * may carry equal nonces, which is safe across environments (different
+   * keys) and is nonce reuse within one. Refused as corruption.
+   */
+  it("refuses a group with two shared rows in one environment", async () => {
+    const t = convexTest(schema, modules);
+    const g = await group(t);
+    const forged = await t.run(async (ctx) =>
+      insertSecretRow(ctx, {
+        environmentId: g.dev.environmentId,
+        orgId: g.w.orgId,
+        secretUid: newId("sec"),
+        nameCiphertext: "aa".repeat(24),
+        nameNonce: "0c0d0e0f1011121314151617",
+        valueCiphertext: "bb".repeat(40),
+        valueNonce: "17161514131211100f0e0d0c",
+        pdkVersion: 1,
+        version: 1,
+        shareUid: g.shareUid,
+        overridden: false,
+      }),
+    );
+    const before = await currentRows(t, g.w.api.environments);
+
+    await expect(
+      t.mutation(
+        api.secrets.updateSharedSecret,
+        updateArgs(g.w.alice, g.w.api.projectId, g.shareUid, [
+          edit(g.dev.secretId),
+          edit(g.staging.secretId),
+          edit(forged),
+        ]),
+      ),
+    ).rejects.toThrow("This secret's version history is inconsistent.");
+    expect(await currentRows(t, g.w.api.environments)).toEqual(before);
   });
 
   it("refuses a stale version on any row, and writes nothing", async () => {
