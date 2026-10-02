@@ -24,8 +24,20 @@ export const focusRing =
  */
 export const inputControl = `w-full rounded-input border border-hairline bg-surface-base px-3 py-3 text-base text-text-primary transition-colors placeholder:text-text-muted hover:border-brand/60 ${focusRing}`;
 
-export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
-export type ButtonSize = "md" | "lg";
+/**
+ * THE ONE COMPACT HEIGHT. 34px on a desktop with a mouse, where the Round 3
+ * mocks draw their header buttons, toolbar fields and sidebar rows; 44px
+ * below 1024px and on any coarse pointer, which is the touch-target floor in
+ * PRODUCT.md. Every compact control uses this string, so a header button, a
+ * filter field and a sidebar row can never disagree about how tall they are.
+ */
+export const compactHeight = "min-h-11 lg:min-h-[34px] lg:pointer-coarse:min-h-11";
+
+/** The page gutter: 28px on a desktop, 16px on a phone. Shared by the header bar and the page body. */
+export const pageGutter = "px-4 sm:px-7";
+
+export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger" | "danger-outline";
+export type ButtonSize = "sm" | "md" | "lg";
 
 const BUTTON_BASE = `inline-flex shrink-0 cursor-pointer items-center justify-center gap-2 rounded-input font-semibold whitespace-nowrap no-underline transition-colors disabled:cursor-not-allowed disabled:opacity-55 aria-disabled:cursor-not-allowed aria-disabled:opacity-55 ${focusRing}`;
 
@@ -43,10 +55,16 @@ const BUTTON_VARIANT: Record<ButtonVariant, string> = {
   ghost: "bg-transparent text-text-muted hover:bg-surface-card hover:text-text-primary",
   danger:
     "bg-status-danger text-surface-base hover:bg-status-danger/90 light:text-text-primary",
+  // The detail panel's Delete: it says what it does in words, outlined so it
+  // does not shout beside Edit. On light the label goes near-black, because
+  // this red on white is under AA at 14px; the red border stays.
+  "danger-outline":
+    "border border-status-danger/50 bg-transparent text-status-danger hover:bg-status-danger/8 light:text-text-primary",
 };
 
-/** 44px and 48px: both at or above the touch-target floor in PRODUCT.md. */
+/** `sm` is {@link compactHeight}; `md` 44px; `lg` 48px. */
 const BUTTON_SIZE: Record<ButtonSize, string> = {
+  sm: `${compactHeight} px-3.5 text-sm lg:px-3`,
   md: "min-h-11 px-4 text-sm",
   lg: "min-h-12 px-5 text-base",
 };

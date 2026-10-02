@@ -5,7 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Callout, Skeleton } from "@/components/ui/feedback";
 import { IconPlus, IconSearch, IconUpload } from "@/components/ui/icons";
 import { EnvPill } from "@/components/ui/pill";
-import { focusRing } from "@/components/ui/styles";
+import { PageHeader } from "@/components/shell/page-header";
+import { focusRing, pageGutter } from "@/components/ui/styles";
 import { useCurrentOrg } from "@/lib/orgs/use-current-org";
 import type { CurrentOrgStatus } from "@/lib/orgs/use-current-org";
 import { filterProjects, secretsLabel } from "@/lib/projects/project-overview";
@@ -184,11 +185,14 @@ export function ProjectsView({
 
 function Page({ children }: { readonly children: ReactNode }) {
   return (
-    <div className="flex flex-col gap-6 py-6 sm:py-10">
+    <>
+    <PageHeader title="Projects" />
+    <div className={`flex flex-col gap-6 py-6 sm:py-10 ${pageGutter}`}>
       {/* The tab says "Projects" on wider screens; on a phone there is no tab bar label in view, so the heading shows. */}
       <h1 className="m-0 text-2xl font-semibold tracking-[-0.02em] text-text-primary sm:sr-only">Projects</h1>
       {children}
     </div>
+    </>
   );
 }
 
@@ -208,7 +212,7 @@ function ProjectCardLink({ project }: { readonly project: ProjectCard }) {
 
   return (
     <Link
-      to={`/projects/${project.slug}/secrets`}
+      to={`/projects/${project.slug}`}
       className={`flex min-w-0 flex-col gap-2.5 rounded-card border border-hairline bg-surface-panel p-4 text-inherit no-underline transition-colors hover:border-hairline-strong hover:bg-surface-card sm:gap-[18px] sm:p-[22px] ${focusRing}`}
     >
       <div className="flex min-w-0 items-center gap-3">

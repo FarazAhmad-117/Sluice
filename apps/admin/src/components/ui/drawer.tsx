@@ -41,6 +41,12 @@ function focusables(root: HTMLElement): HTMLElement[] {
   );
 }
 
+/**
+ * `side="left"` is the phone navigation drawer: 300px from the left edge, full
+ * height, its title read to a screen reader but not drawn (the sidebar inside
+ * is its own heading), and the close button floated top-right over the body
+ * rather than in a title bar. The body is the caller's, unpadded.
+ */
 export function Drawer({
   open,
   onClose,
@@ -48,6 +54,7 @@ export function Drawer({
   children,
   footer,
   initialFocus,
+  side = "right",
 }: {
   readonly open: boolean;
   readonly onClose: () => void;
@@ -56,6 +63,7 @@ export function Drawer({
   /** Pinned below the scrolling body: the note and the actions. */
   readonly footer?: ReactNode;
   readonly initialFocus?: RefObject<HTMLElement | null>;
+  readonly side?: "right" | "left";
 }) {
   const titleId = useId();
   const panel = useRef<HTMLDivElement>(null);
@@ -88,6 +96,10 @@ export function Drawer({
     const onKeyDown = (event: KeyboardEvent) => {
       const current = panel.current;
       if (current === null) return;
+      // A menu opened from inside the drawer (the org switcher in the phone
+      // navigation) renders in its own portal and handles its own Escape,
+      // arrows and Tab; Escape there closes the menu, not the drawer.
+      if (event.target instanceof Element && event.target.closest('[role="menu"]') !== null) return;
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
@@ -131,6 +143,38 @@ export function Drawer({
   }, [open, initialFocus]);
 
   if (!open) return null;
+
+  if (side === "left") {
+    return createPortal(
+      <div className="fixed inset-0 z-50">
+        <div
+          aria-hidden="true"
+          onClick={onClose}
+          className="sluice-backdrop absolute inset-0 bg-surface-base/70 light:bg-text-primary/40"
+        />
+        <div
+          ref={panel}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby={titleId}
+          tabIndex={-1}
+          className="sluice-drawer-left absolute inset-y-0 left-0 flex w-[300px] max-w-[85vw] flex-col border-r border-hairline-strong bg-surface-panel pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] outline-none"
+        >
+          <h2 id={titleId} className="sr-only">
+            {title}
+          </h2>
+          {/* Level with the org switcher, the sidebar's first 44px row. */}
+          <div className="absolute top-[calc(env(safe-area-inset-top)+12px)] right-1.5 z-10">
+            <IconButton label="Close" onClick={onClose}>
+              <IconClose className="size-[18px]" />
+            </IconButton>
+          </div>
+          {children}
+        </div>
+      </div>,
+      document.body,
+    );
+  }
 
   return createPortal(
     <div className="fixed inset-0 z-50">

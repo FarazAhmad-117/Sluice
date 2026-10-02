@@ -54,6 +54,12 @@ export type ProjectSecrets =
       readonly namesByEnvironment: ReadonlyMap<string, ReadonlyMap<string, string>>;
       /** Environments whose listing failed, by name. */
       readonly failedListings: readonly string[];
+      /**
+       * Every environment's rows, in environment order; `rows: null` for a
+       * listing that failed and `loading` while it is on its way. What the
+       * overview, the compare matrix and each row's environment chips read.
+       */
+      readonly listings: readonly (Listing<ListedSecret> & { readonly loading: boolean })[];
     };
 
 /** A stable small id per key object, so a key's identity can go into a string. */
@@ -134,7 +140,13 @@ function useNamesByEnvironment(sources: readonly NameSource[]): ReadonlyMap<stri
 
 const IDLE: ProjectDataKeyState = { status: "idle" };
 
-export function useProjectSecrets(slug: string): ProjectSecrets {
+/**
+ * `slug` is `null` off a project route: the app shell calls this once for
+ * every signed-in page, so the sidebar, the palette and the project pages
+ * share one set of listings, keys and opened names rather than each page
+ * opening its own. With no slug nothing project-specific is fetched.
+ */
+export function useProjectSecrets(slug: string | null): ProjectSecrets {
   const { session } = useAuth();
   const { org } = useCurrentOrg();
   const sessionToken = session?.sessionToken ?? null;
@@ -144,7 +156,7 @@ export function useProjectSecrets(slug: string): ProjectSecrets {
     api.projects.listProjects,
     sessionToken === null || org === null ? "skip" : { sessionToken, orgId: org.orgId },
   );
-  const project = projects?.find((row) => row.slug === slug) ?? null;
+  const project = slug === null ? null : (projects?.find((row) => row.slug === slug) ?? null);
 
   const environments = useQuery(
     api.environments.listEnvironments,
@@ -234,6 +246,7 @@ export function useProjectSecrets(slug: string): ProjectSecrets {
     failedListings: listings
       .filter((listing) => !listing.loading && listing.rows === null)
       .map((listing) => listing.environmentName),
+    listings,
   };
 }
 

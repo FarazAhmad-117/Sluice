@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useMutation } from "convex/react";
 import { AddSecretDrawer } from "@/components/secrets/add-secret-drawer";
 import type { AddSecretPlan } from "@/components/secrets/add-secret-drawer";
-import { useParams } from "react-router";
+import { PageHeader } from "@/components/shell/page-header";
 import { api } from "@convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -12,14 +12,15 @@ import { IconCopy, IconEye, IconEyeOff, IconMore, IconPlus, IconSearch } from "@
 import { Menu, MenuItem } from "@/components/ui/menu";
 import { ScopePill } from "@/components/ui/pill";
 import { Segmented } from "@/components/ui/segmented";
-import { focusRing } from "@/components/ui/styles";
+import { focusRing, pageGutter } from "@/components/ui/styles";
 import { useAuth } from "@/lib/auth/auth-context";
+import { useProject } from "@/lib/projects/project-context";
+import { useShell } from "@/lib/shell/shell-context";
 import { VALUE_MASK, openSecretValue } from "@/lib/secrets/decrypt";
 import type { ProjectDataKeyState } from "@/lib/secrets/environment-key";
 import type { LabelledRow } from "@/lib/secrets/project-secrets";
 import { countScopes } from "@/lib/secrets/scope";
 import type { SecretScope } from "@/lib/secrets/scope";
-import { useProjectSecrets } from "@/lib/secrets/use-project-secrets";
 import type { EnvironmentRow, ListedSecret, ProjectSecrets } from "@/lib/secrets/use-project-secrets";
 import { newSecretSlot, sealSecret } from "@/lib/secrets/seal";
 import { sealSharedSecret } from "@/lib/secrets/shared";
@@ -44,27 +45,6 @@ import type { Id } from "@convex/_generated/dataModel";
  */
 
 const REVEAL_MS = 30_000;
-/** How long an announcement stays in the live region. */
-const ANNOUNCE_MS = 5_000;
-
-/**
- * The page's one polite live region: the latest message only, cleared after a
- * few seconds so an old result is never read out again after a newer action.
- * A repeat of the same message is cleared first, so it is announced again.
- */
-function useAnnouncer(): [string, (message: string) => void] {
-  const [message, setMessage] = useState("");
-  useEffect(() => {
-    if (message === "") return;
-    const timer = setTimeout(() => setMessage(""), ANNOUNCE_MS);
-    return () => clearTimeout(timer);
-  }, [message]);
-  const announce = useCallback((next: string) => {
-    setMessage("");
-    requestAnimationFrame(() => setMessage(next));
-  }, []);
-  return [message, announce];
-}
 
 /** Revealed plaintext for one environment, by secret id. */
 interface Revealed {
@@ -82,8 +62,8 @@ type Ready = Extract<ProjectSecrets, { status: "ready" }>;
 type Filter = "all" | SecretScope;
 
 export default function ProjectSecretsRoute() {
-  const { projectSlug = "" } = useParams();
-  const data = useProjectSecrets(projectSlug);
+  const { slug: projectSlug, data } = useProject();
+  const { announce } = useShell();
   const { session } = useAuth();
   const deleteSecret = useMutation(api.secrets.deleteSecret);
   const deleteSharedSecret = useMutation(api.secrets.deleteSharedSecret);
@@ -112,7 +92,6 @@ export default function ProjectSecretsRoute() {
 
   const [adding, setAdding] = useState(false);
   const [highlight, setHighlight] = useState<ReadonlySet<string>>(new Set());
-  const [announcement, announce] = useAnnouncer();
   useEffect(() => {
     if (highlight.size === 0) return;
     const timer = setTimeout(() => setHighlight(new Set()), HIGHLIGHT_MS);
@@ -168,25 +147,27 @@ export default function ProjectSecretsRoute() {
 
   return (
     <>
-      <ProjectSecretsView
-        slug={projectSlug}
-        data={data}
-        onReveal={reveal}
-        onDelete={remove}
-        onAnnounce={announce}
-        highlight={highlight}
-        toolbarAction={
-          ready === null ? undefined : (
-            <Button icon={<IconPlus className="size-3.5" />} onClick={() => setAdding(true)}>
-              Add secret
-            </Button>
-          )
-        }
+      <PageHeader
+        title="Secrets"
+        crumbs={[{ label: data.status === "ready" ? data.project.name : projectSlug, to: `/projects/${projectSlug}` }]}
       />
-      {/* The page's one live region: the latest result only, cleared after a few seconds. */}
-      <p role="status" aria-live="polite" className="sr-only">
-        {announcement}
-      </p>
+      <div className={pageGutter}>
+        <ProjectSecretsView
+          slug={projectSlug}
+          data={data}
+          onReveal={reveal}
+          onDelete={remove}
+          onAnnounce={announce}
+          highlight={highlight}
+          toolbarAction={
+            ready === null ? undefined : (
+              <Button icon={<IconPlus className="size-3.5" />} onClick={() => setAdding(true)}>
+                Add secret
+              </Button>
+            )
+          }
+        />
+      </div>
       {adding && ready !== null && ready.environment !== null ? (
         <AddSecretDrawer
           environments={ready.environments}

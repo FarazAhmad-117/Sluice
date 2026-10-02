@@ -2,6 +2,8 @@ import { useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { DerivationProgress } from "@/components/auth/derivation";
+import { PageHeader } from "@/components/shell/page-header";
+import { pageGutter } from "@/components/ui/styles";
 import { Button } from "@/components/ui/button";
 import { TextField } from "@/components/ui/field";
 import { messageForUser } from "@/lib/auth/auth-errors";
@@ -19,7 +21,15 @@ import { useAuth } from "@/lib/auth/auth-context";
 export function UnlockGate({ children }: { readonly children: ReactNode }) {
   const { locked } = useAuth();
   if (!locked) return <>{children}</>;
-  return <UnlockCard />;
+  return (
+    <>
+      {/* The page's own header is behind the gate, so the gate brings one: on a phone it is the only way to the menu. */}
+      <PageHeader title="Unlock" />
+      <div className={pageGutter}>
+        <UnlockCard />
+      </div>
+    </>
+  );
 }
 
 function UnlockCard() {
