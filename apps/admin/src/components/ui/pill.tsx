@@ -19,16 +19,30 @@ const SCOPE_CLASS: Record<SecretScope, string> = {
   shared: "border border-hairline-strong text-text-primary",
   overridden: "bg-status-warning/12 text-status-warning light:text-text-primary",
   only: "bg-brand-subtle text-brand-hover light:text-text-primary",
+  // A group that does not cover every environment: the warning tint, and the
+  // label says where it is missing.
+  partial:
+    "border border-status-warning/50 text-status-warning light:text-text-primary",
 };
 
 export function ScopePill({
   scope,
   environmentName,
+  missingIn,
 }: {
   readonly scope: SecretScope;
   readonly environmentName: string;
+  /** For a `partial` scope: the environments the group has no row in. */
+  readonly missingIn?: readonly string[];
 }) {
-  return <span className={`${PILL} ${SCOPE_CLASS[scope]}`}>{scopeLabel(scope, environmentName)}</span>;
+  const label = scopeLabel(scope, environmentName, missingIn);
+  // A partial label names environments and can be long: it wraps rather than
+  // being cut, because the cut-off part is the part that matters.
+  const shape =
+    scope === "partial"
+      ? "inline-flex min-h-[26px] items-center rounded-[13px] px-2.5 py-1 text-[13px] leading-tight"
+      : PILL;
+  return <span className={`${shape} max-w-full ${SCOPE_CLASS[scope]}`}>{label}</span>;
 }
 
 /**

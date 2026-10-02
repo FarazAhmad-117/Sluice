@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import type { KeyboardEvent, ReactNode } from "react";
 import { focusRing } from "./styles";
 
@@ -40,6 +40,12 @@ export function Segmented<T extends string>({
 }) {
   const tabs = useRef<(HTMLButtonElement | null)[]>([]);
   const hasSelection = options.some((option) => option.value === value);
+
+  // On a narrow screen the row scrolls; keep the selected tab in view.
+  const selectedIndex = options.findIndex((option) => option.value === value);
+  useEffect(() => {
+    tabs.current[selectedIndex]?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [selectedIndex]);
 
   const move = (event: KeyboardEvent<HTMLDivElement>) => {
     const current = options.findIndex((option) => option.value === value);

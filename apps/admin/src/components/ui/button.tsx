@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, ReactNode } from "react";
+import type { ButtonHTMLAttributes, ComponentPropsWithRef, ReactNode } from "react";
 import { Link } from "react-router";
 import type { LinkProps } from "react-router";
 import { IconSpinner } from "./icons";
@@ -30,7 +30,7 @@ interface CommonProps {
 }
 
 type AsButton = CommonProps &
-  Omit<ButtonHTMLAttributes<HTMLButtonElement>, keyof CommonProps> & {
+  Omit<ComponentPropsWithRef<"button">, keyof CommonProps> & {
     readonly to?: undefined;
     /**
      * Shows a spinner and refuses clicks, WITHOUT the `disabled` attribute.
