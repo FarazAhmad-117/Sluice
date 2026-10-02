@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useMutation } from "convex/react";
 import { AddSecretDrawer } from "@/components/secrets/add-secret-drawer";
@@ -25,6 +25,7 @@ import { newSecretSlot, sealSecret } from "@/lib/secrets/seal";
 import { sealSharedSecret } from "@/lib/secrets/shared";
 import type { SharedSecretEnvironment } from "@/lib/secrets/shared";
 import { describeWriteFailure } from "@/lib/secrets/write-errors";
+import { listOf } from "@/lib/list-of";
 import type { Id } from "@convex/_generated/dataModel";
 
 /**
@@ -43,6 +44,37 @@ import type { Id } from "@convex/_generated/dataModel";
  */
 
 const REVEAL_MS = 30_000;
+/** How long an announcement stays in the live region. */
+const ANNOUNCE_MS = 5_000;
+
+/**
+ * The page's one polite live region: the latest message only, cleared after a
+ * few seconds so an old result is never read out again after a newer action.
+ * A repeat of the same message is cleared first, so it is announced again.
+ */
+function useAnnouncer(): [string, (message: string) => void] {
+  const [message, setMessage] = useState("");
+  useEffect(() => {
+    if (message === "") return;
+    const timer = setTimeout(() => setMessage(""), ANNOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [message]);
+  const announce = useCallback((next: string) => {
+    setMessage("");
+    requestAnimationFrame(() => setMessage(next));
+  }, []);
+  return [message, announce];
+}
+
+/** Revealed plaintext for one environment, by secret id. */
+interface Revealed {
+  readonly environmentId: string;
+  readonly values: ReadonlyMap<string, string>;
+  readonly failed: ReadonlySet<string>;
+}
+
+const EMPTY_VALUES: ReadonlyMap<string, string> = new Map();
+const EMPTY_FAILED: ReadonlySet<string> = new Set();
 /** How long a just-added row stays marked. */
 const HIGHLIGHT_MS = 4_000;
 
@@ -80,7 +112,7 @@ export default function ProjectSecretsRoute() {
 
   const [adding, setAdding] = useState(false);
   const [highlight, setHighlight] = useState<ReadonlySet<string>>(new Set());
-  const [added, setAdded] = useState("");
+  const [announcement, announce] = useAnnouncer();
   useEffect(() => {
     if (highlight.size === 0) return;
     const timer = setTimeout(() => setHighlight(new Set()), HIGHLIGHT_MS);
@@ -141,6 +173,7 @@ export default function ProjectSecretsRoute() {
         data={data}
         onReveal={reveal}
         onDelete={remove}
+        onAnnounce={announce}
         highlight={highlight}
         toolbarAction={
           ready === null ? undefined : (
@@ -150,8 +183,9 @@ export default function ProjectSecretsRoute() {
           )
         }
       />
+      {/* The page's one live region: the latest result only, cleared after a few seconds. */}
       <p role="status" aria-live="polite" className="sr-only">
-        {added}
+        {announcement}
       </p>
       {adding && ready !== null && ready.environment !== null ? (
         <AddSecretDrawer
@@ -164,7 +198,7 @@ export default function ProjectSecretsRoute() {
             setAdding(false);
             if (saved !== undefined) {
               setHighlight(new Set(saved.secretIds));
-              setAdded(`Added ${saved.name}.`);
+              announce(`Added ${saved.name}.`);
             }
           }}
         />
@@ -179,6 +213,7 @@ export function ProjectSecretsView({
   data,
   onReveal,
   onDelete,
+  onAnnounce,
   toolbarAction,
   highlight,
 }: {
@@ -186,6 +221,8 @@ export function ProjectSecretsView({
   readonly data: ProjectSecrets;
   readonly onReveal: (secret: ListedSecret) => Promise<string>;
   readonly onDelete: (row: LabelledRow<ListedSecret>) => Promise<void>;
+  /** Says a result out loud, through the page's one live region. */
+  readonly onAnnounce: (message: string) => void;
   /** The page's primary action, beside the environment switcher. */
   readonly toolbarAction?: ReactNode | undefined;
   /** Secret ids to mark as just added. */
@@ -212,6 +249,7 @@ export function ProjectSecretsView({
       data={data}
       onReveal={onReveal}
       onDelete={onDelete}
+      onAnnounce={onAnnounce}
       toolbarAction={toolbarAction}
       highlight={highlight}
     />
@@ -261,23 +299,37 @@ function ReadyPage({
   data,
   onReveal,
   onDelete,
+  onAnnounce,
   toolbarAction,
   highlight,
 }: {
   readonly data: Ready;
   readonly onReveal: (secret: ListedSecret) => Promise<string>;
   readonly onDelete: (row: LabelledRow<ListedSecret>) => Promise<void>;
+  readonly onAnnounce: (message: string) => void;
   readonly toolbarAction?: ReactNode | undefined;
   readonly highlight?: ReadonlySet<string> | undefined;
 }) {
   const { environment, environments, rows, keyState, counts } = data;
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
-  const [announcement, setAnnouncement] = useState("");
+  /**
+   * REVEALED PLAINTEXT, AND THE ONLY PLACE ANY OF IT LIVES: held here, keyed
+   * by secret id, and TAGGED with the environment it was opened in. The tag is
+   * checked during render, so switching environment shows every row masked at
+   * once (no frame of the old environment's values, and no row that thinks it
+   * is already revealed), and a reveal that resolves after a switch is dropped.
+   */
+  const [revealed, setRevealed] = useState<Revealed | null>(null);
   const [pending, setPending] = useState<LabelledRow<ListedSecret> | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const list = useRef<HTMLDivElement>(null);
+  /** The environment on screen now, for a reveal that resolves after a switch. */
+  const shownEnvironment = useRef<string | null>(null);
+  useEffect(() => {
+    shownEnvironment.current = data.environment?.environmentId ?? null;
+  });
 
   if (environment === null) {
     return (
@@ -288,6 +340,33 @@ function ReadyPage({
   }
 
   const envName = environment.name;
+  const environmentId = environment.environmentId;
+  const current = revealed !== null && revealed.environmentId === environmentId ? revealed : null;
+  const values = current?.values ?? EMPTY_VALUES;
+  const failed = current?.failed ?? EMPTY_FAILED;
+
+  const update = (change: (values: Map<string, string>, failed: Set<string>) => void) =>
+    setRevealed((previous) => {
+      const base = previous !== null && previous.environmentId === environmentId ? previous : null;
+      const nextValues = new Map(base?.values ?? []);
+      const nextFailed = new Set(base?.failed ?? []);
+      change(nextValues, nextFailed);
+      return { environmentId, values: nextValues, failed: nextFailed };
+    });
+
+  const hide = (secretId: string) => update((v) => v.delete(secretId));
+  const reveal = async (secret: ListedSecret) => {
+    try {
+      const value = await onReveal(secret);
+      if (shownEnvironment.current !== environmentId) return;
+      update((v, f) => {
+        v.set(secret.secretId, value);
+        f.delete(secret.secretId);
+      });
+    } catch {
+      update((_v, f) => f.add(secret.secretId));
+    }
+  };
   const problem = keyProblem(keyState, envName);
   const scopeCounts = rows === undefined ? null : countScopes(rows.map((row) => ({ ...row.secret, partial: row.scope === "partial" })), (row) => !row.partial);
   const needle = query.trim().toLowerCase();
@@ -316,7 +395,7 @@ function ReadyPage({
     try {
       await onDelete(pending);
       const name = pending.name ?? "The secret";
-      setAnnouncement(
+      onAnnounce(
         pending.secret.shareUid === undefined ? `Deleted ${name} from ${envName}.` : `Deleted ${name} from all environments.`,
       );
       setPending(null);
@@ -327,8 +406,6 @@ function ReadyPage({
       setDeleting(false);
     }
   };
-
-  const others = environments.filter((row) => row.environmentId !== environment.environmentId).map((row) => row.name);
 
   return (
     <div className="flex flex-col gap-[18px] py-6 sm:py-8">
@@ -440,12 +517,23 @@ function ReadyPage({
               <ul aria-label={`Secrets in ${envName}`} className="m-0 list-none p-0">
                 {shown.map((row) => (
                   <SecretItem
-                    key={`${environment.environmentId}:${row.secret.secretId}`}
+                    key={row.secret.secretId}
                     row={row}
                     environmentName={envName}
                     highlighted={highlight?.has(row.secret.secretId) === true}
-                    onReveal={onReveal}
-                    onAnnounce={setAnnouncement}
+                    value={values.get(row.secret.secretId) ?? null}
+                    failed={failed.has(row.secret.secretId)}
+                    onShow={() => reveal(row.secret)}
+                    onHide={() => hide(row.secret.secretId)}
+                    onCopy={async () => {
+                      const label = row.name ?? "the secret";
+                      try {
+                        await navigator.clipboard.writeText(await onReveal(row.secret));
+                        onAnnounce(`Copied the value of ${label}.`);
+                      } catch {
+                        onAnnounce(`The value of ${label} could not be copied.`);
+                      }
+                    }}
                     onDelete={() => {
                       setDeleteError(null);
                       setPending(row);
@@ -465,10 +553,6 @@ function ReadyPage({
         </>
       )}
 
-      <p role="status" aria-live="polite" className="sr-only">
-        {announcement}
-      </p>
-
       <ConfirmDialog
         open={pending !== null}
         title={
@@ -487,8 +571,8 @@ function ReadyPage({
         ) : (
           <>
             <span className="font-mono text-text-primary">{pending.name ?? "This secret"}</span> is shared, so it
-            is removed from {[envName, ...others].join(", ")}, including any overridden values. This cannot be
-            undone.
+            is removed from {listOf(environments.map((row) => row.name))}, including any overridden values. This
+            cannot be undone.
           </>
         )}
       </ConfirmDialog>
@@ -500,58 +584,46 @@ function SecretItem({
   row,
   environmentName,
   highlighted,
-  onReveal,
-  onAnnounce,
+  value,
+  failed,
+  onShow,
+  onHide,
+  onCopy,
   onDelete,
 }: {
   readonly row: LabelledRow<ListedSecret>;
   readonly environmentName: string;
   readonly highlighted: boolean;
-  readonly onReveal: (secret: ListedSecret) => Promise<string>;
-  readonly onAnnounce: (message: string) => void;
+  /** The revealed plaintext, or `null` while masked. Held by the page, not here. */
+  readonly value: string | null;
+  readonly failed: boolean;
+  readonly onShow: () => Promise<void>;
+  readonly onHide: () => void;
+  readonly onCopy: () => Promise<void>;
   readonly onDelete: () => void;
 }) {
-  /** Plaintext lives here, for this row only, until hidden, timed out or unmounted. */
-  const [value, setValue] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
   const sealed = row.name === undefined;
   const label = row.name ?? "sealed secret";
 
+  // Masks again on its own after 30 seconds.
+  const revealedNow = value !== null;
+  const hideLatest = useRef(onHide);
   useEffect(() => {
-    if (value === null) return;
-    const timer = setTimeout(() => setValue(null), REVEAL_MS);
+    hideLatest.current = onHide;
+  });
+  useEffect(() => {
+    if (!revealedNow) return;
+    const timer = setTimeout(() => hideLatest.current(), REVEAL_MS);
     return () => clearTimeout(timer);
-  }, [value]);
-
-  const toggle = async () => {
-    if (value !== null) {
-      setValue(null);
-      return;
-    }
-    try {
-      setFailed(false);
-      setValue(await onReveal(row.secret));
-    } catch {
-      setFailed(true);
-    }
-  };
-
-  const copy = async () => {
-    try {
-      const plaintext = await onReveal(row.secret);
-      await navigator.clipboard.writeText(plaintext);
-      onAnnounce(`Copied the value of ${label}.`);
-    } catch {
-      onAnnounce(`The value of ${label} could not be copied.`);
-    }
-  };
+  }, [revealedNow]);
 
   return (
     <li
-      className={`grid grid-cols-[minmax(0,1fr)_44px] items-center gap-x-3 gap-y-1 border-t border-hairline py-2.5 pr-2 pl-4 transition-colors first:border-t-0 md:min-h-[52px] md:grid-cols-[minmax(0,260px)_minmax(0,1fr)_minmax(0,230px)_44px] md:gap-x-4 md:py-1.5 md:pr-2 md:pl-[18px] md:first:border-t ${
+      className={`grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 border-t border-hairline py-1.5 pr-2 pl-4 transition-colors first:border-t-0 md:min-h-[52px] md:grid-cols-[minmax(0,260px)_minmax(0,1fr)_minmax(0,230px)_44px] md:gap-x-4 md:pl-[18px] md:first:border-t ${
         highlighted ? "bg-brand-subtle" : ""
       }`}
     >
+      {/* Phone: key and actions on line one; value, reveal and scope on line two. */}
       <span
         className={`min-w-0 truncate font-mono text-[13px] ${sealed ? "text-text-muted italic" : "text-text-primary"}`}
         title={row.name}
@@ -559,7 +631,7 @@ function SecretItem({
         {row.name ?? `sealed ${row.secret.secretUid.slice(0, 12)}`}
       </span>
 
-      <span className="col-span-2 flex min-w-0 items-center gap-1 md:col-span-1 md:col-start-2 md:row-start-1">
+      <span className="col-start-1 row-start-2 flex min-w-0 items-center gap-1 md:col-start-2 md:row-start-1">
         <span
           className={`min-w-0 font-mono text-[13px] ${
             value === null
@@ -577,14 +649,14 @@ function SecretItem({
           aria-label={value === null ? `Show value of ${label}` : `Hide value of ${label}`}
           aria-pressed={value !== null}
           disabled={sealed}
-          onClick={() => void toggle()}
+          onClick={() => (value === null ? void onShow() : onHide())}
           className={`inline-flex size-11 shrink-0 cursor-pointer items-center justify-center rounded-input text-text-muted transition-colors hover:bg-surface-card hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40 ${focusRing}`}
         >
           {value === null ? <IconEye className="size-[15px]" /> : <IconEyeOff className="size-[15px]" />}
         </button>
       </span>
 
-      <span className="col-span-2 flex min-w-0 md:col-span-1 md:col-start-3 md:row-start-1">
+      <span className="col-start-2 row-start-2 flex min-w-0 justify-end md:col-start-3 md:row-start-1 md:justify-start">
         <ScopePill scope={row.scope} environmentName={environmentName} missingIn={row.missingIn} />
       </span>
 
@@ -596,7 +668,7 @@ function SecretItem({
           trigger={<IconMore className="size-4" />}
         >
           {sealed ? null : (
-            <MenuItem onSelect={() => void copy()}>
+            <MenuItem onSelect={() => void onCopy()}>
               <IconCopy className="size-4 text-text-muted" />
               Copy value
             </MenuItem>

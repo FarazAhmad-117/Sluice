@@ -63,7 +63,7 @@ const USER = {
   granteeId: USER_UID,
 } as const;
 
-/** A key in hand for `ENVIRONMENT_UID`, as `useProjectDataKey` hands one out. */
+/** A key in hand for `ENVIRONMENT_UID`, as `useEnvironmentKeys` hands one out. */
 function environmentKey(pdk = createProjectDataKey()): EnvironmentKey {
   return { pdk, environmentUid: ENVIRONMENT_UID, pdkVersion: 1 };
 }

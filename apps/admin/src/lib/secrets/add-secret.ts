@@ -1,3 +1,4 @@
+import { listOf } from "@/lib/list-of";
 import type { ProjectDataKeyState } from "./environment-key";
 import { environmentsWithName } from "./project-secrets";
 
@@ -19,12 +20,6 @@ export function secretKeyProblem(name: string): string | null {
     return "Use letters, digits and underscores, not starting with a digit.";
   }
   return null;
-}
-
-/** "a", "a and b", "a, b and c". */
-function listOf(names: readonly string[]): string {
-  if (names.length <= 1) return names[0] ?? "";
-  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
 
 /** `NAME already exists in development.`, or `null`. */

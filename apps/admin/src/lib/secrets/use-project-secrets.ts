@@ -77,8 +77,8 @@ interface NameSource {
 /**
  * Opened names for each source, tagged with the signature they were opened
  * for and served only while it still matches, so a lock, a key change or new
- * rows can never pair old names with new rows (the same tagging as
- * `useSecretNames`). A row that does not open is absent: it renders sealed.
+ * rows can never pair old names with new rows. A row that does not open is
+ * absent: it renders sealed.
  */
 function useNamesByEnvironment(sources: readonly NameSource[]): ReadonlyMap<string, ReadonlyMap<string, string>> {
   const signature = sources

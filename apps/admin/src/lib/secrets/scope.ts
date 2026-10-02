@@ -25,6 +25,8 @@
  * nothing confirms it holds the secret.
  */
 
+import { listOf } from "@/lib/list-of";
+
 export type SecretScope = "shared" | "overridden" | "only" | "partial";
 
 export interface ScopedRow {
@@ -41,12 +43,6 @@ export function scopeOf(row: ScopedRow, coversAllEnvironments = true): SecretSco
   if (row.shareUid === undefined) return "only";
   if (!coversAllEnvironments) return "partial";
   return row.overridden === true ? "overridden" : "shared";
-}
-
-/** "a", "a and b", "a, b and c". */
-function listOf(names: readonly string[]): string {
-  if (names.length <= 1) return names[0] ?? "";
-  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
 
 export function scopeLabel(

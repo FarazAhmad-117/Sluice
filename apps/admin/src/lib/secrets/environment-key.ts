@@ -10,13 +10,67 @@ import type { EnvironmentKey } from "./pdk";
  * ONE ENVIRONMENT'S KEY, FETCHED AND OPENED, AS A STATE A SCREEN CAN RENDER.
  *
  * The steps and checks every hook that hands out an {@link EnvironmentKey}
- * goes through, lifted out of `useProjectDataKey` unchanged so that
- * `useEnvironmentKeys` loads a whole project's keys the same way. What the
- * unwrap proves, what it cannot, and why this is a one-shot fetch rather than
- * a subscription are stated in the header of `use-project-data-key.ts`.
+ * goes through (today, `useEnvironmentKeys`). It fetches the environment and
+ * the caller's own grant, and opens the grant with the master unlock key.
+ * Every secret name on screen, every revealed value and every secret written
+ * depends on this key, and there is no other route to it.
  *
  * It never throws: every outcome, including a refusal and a transport
  * failure, comes back as a {@link ProjectDataKeyState}.
+ *
+ * THE GRANT IS OPENED FOR ONE EXACT SLOT. Its associated data names the
+ * environment's permanent uid, the key version, and the grantee, and all three
+ * are supplied here rather than trusted from the blob:
+ *
+ *   environmentUid  `uid` off `environments.getEnvironment`. The ENVIRONMENT'S
+ *                   record, never a column on a secret row.
+ *   pdkVersion      the grant's own `pdkVersion` off `getMyPdkGrant`.
+ *   grantee         `"user"` and the caller's permanent `usr_` id. Never
+ *                   `session.userId`, the Convex document id, which no grant is
+ *                   keyed by and `pdkAssociatedData` refuses by shape.
+ *
+ * WHAT THE UNWRAP PROVES, SCOPED EXACTLY. Every input above except the grantee
+ * arrived from the server. A successful unwrap proves only that this user once
+ * wrapped this key for that uid, that version and this grantee: a uid the
+ * server invented, or a grant moved onto another environment's row, does not
+ * open. The ready state hands out an {@link EnvironmentKey} carrying that uid
+ * and version beside the key, so everything sealed or opened from it is bound
+ * to them and to no others.
+ *
+ * It does NOT prove that the uid is the environment the user SELECTED, or the
+ * one named on screen. A hostile server asked about "production" can answer
+ * with staging's uid and this user's genuine staging grant; the unwrap
+ * succeeds, the page says production, and writes are sealed into staging. The
+ * checks below catch the server's answers DISAGREEING (with each other, with
+ * the selected id, with the listing the selection came from), which turns a
+ * server bug into a clean failure. They cannot catch a server that lies
+ * consistently, because every one of those answers is the server's word. See
+ * `pdk.ts` and "WHAT PINNING THE CONSTRUCTION DOES NOT PIN" in
+ * `packages/crypto/src/protocol.ts`; pinning name to uid on the client is
+ * follow-up work.
+ *
+ * WHY THIS IS A ONE-SHOT FETCH RATHER THAN `useQuery`, which is what every
+ * other read in this dashboard uses. Two reasons, and the first is the one that
+ * forces it.
+ *
+ *   1. `useQuery` RE-THROWS. A member of an org who holds no grant is a normal,
+ *      expected state, it is the state of every colleague because nothing wraps
+ *      an existing key to a second member, and `getMyPdkGrant` answers them
+ *      with a refusal. Through `useQuery` that refusal becomes an exception
+ *      thrown during render, which takes down the page. A state that common
+ *      must be a value this surface can render, not a crash.
+ *   2. A grant is not live data. It changes when the environment is re-keyed
+ *      and at no other time, so a subscription buys a redraw nobody will ever
+ *      observe, in exchange for putting key material on a reactive channel.
+ *      The cost is stated rather than hidden: if another client re-keys this
+ *      environment, this tab keeps the key it opened until the list changes or
+ *      the page is reloaded, and its writes are refused by the server with
+ *      "This environment's key changed since you opened it", which the forms
+ *      show as written, with a way to reload.
+ *
+ * THE KEY NEVER LEAVES MEMORY. It is not persisted and not logged, and the
+ * hook that holds it tags each result with the master unlock key it was
+ * opened under, so a key from before a lock is unrenderable after it.
  */
 
 export type ProjectDataKeyState =

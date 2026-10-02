@@ -36,7 +36,8 @@ const BUTTON_BASE = `inline-flex shrink-0 cursor-pointer items-center justify-ce
  * AA on this red, so the light theme uses the near-black primary text.
  */
 const BUTTON_VARIANT: Record<ButtonVariant, string> = {
-  primary: "bg-control-solid text-text-on-control-solid hover:bg-control-solid-hover",
+  // `sluice-primary` carries the disabled look; see `app.css`.
+  primary: "sluice-primary bg-control-solid text-text-on-control-solid hover:bg-control-solid-hover",
   secondary:
     "border border-hairline-strong bg-transparent text-text-primary hover:bg-surface-card",
   ghost: "bg-transparent text-text-muted hover:bg-surface-card hover:text-text-primary",

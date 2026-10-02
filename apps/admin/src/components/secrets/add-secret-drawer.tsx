@@ -5,6 +5,7 @@ import { Callout } from "@/components/ui/feedback";
 import { RadioCard, TextField } from "@/components/ui/field";
 import { IconEye, IconEyeOff } from "@/components/ui/icons";
 import { focusRing, inputControl } from "@/components/ui/styles";
+import { listOf } from "@/lib/list-of";
 import { duplicateProblem, secretKeyProblem, unavailableEnvironments } from "@/lib/secrets/add-secret";
 import type { ProjectDataKeyState } from "@/lib/secrets/environment-key";
 import { describeWriteFailure } from "@/lib/secrets/write-errors";
@@ -237,7 +238,7 @@ export function AddSecretDrawer({
                           id={switchId}
                           type="checkbox"
                           role="switch"
-                          aria-checked={own !== undefined}
+                          aria-label={`Own value for ${environment.name}`}
                           checked={own !== undefined}
                           onChange={(event) =>
                             setOverrides((currentOverrides) => {
@@ -247,20 +248,11 @@ export function AddSecretDrawer({
                               return next;
                             })
                           }
-                          className={`peer sr-only`}
+                          // The input IS the visible switch (track drawn by the
+                          // input, thumb by its ::before), so it is the click
+                          // target itself, not a hidden box behind a picture.
+                          className={`relative m-0 h-5 w-[34px] shrink-0 cursor-pointer appearance-none rounded-full bg-hairline-strong transition-colors before:absolute before:top-0.5 before:left-0.5 before:size-4 before:rounded-full before:bg-surface-base before:transition-[left] before:content-[''] checked:bg-status-warning checked:before:left-4 motion-reduce:before:transition-none ${focusRing}`}
                         />
-                        <span
-                          aria-hidden="true"
-                          className={`relative inline-block h-5 w-[34px] rounded-full transition-colors peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-brand ${
-                            own === undefined ? "bg-hairline-strong" : "bg-status-warning"
-                          }`}
-                        >
-                          <span
-                            className={`absolute top-0.5 size-4 rounded-full bg-surface-base transition-[left] motion-reduce:transition-none ${
-                              own === undefined ? "left-0.5" : "left-4"
-                            }`}
-                          />
-                        </span>
                       </label>
                     </div>
                     {own === undefined ? null : (
@@ -299,11 +291,6 @@ export function AddSecretDrawer({
       </form>
     </Drawer>
   );
-}
-
-function listOf(names: readonly string[]): string {
-  if (names.length <= 1) return names[0] ?? "";
-  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
 
 function capitalise(text: string): string {

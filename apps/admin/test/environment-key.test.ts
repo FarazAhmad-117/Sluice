@@ -10,8 +10,8 @@ import type { KeyQueryClient } from "../src/lib/secrets/environment-key";
 /**
  * ONE ENVIRONMENT'S KEY, LOADED WITH THE CHECKS THE DASHBOARD HAS ALWAYS MADE.
  *
- * The loader was lifted out of `useProjectDataKey` so that a whole project's
- * keys can be loaded with the same steps. These tests pin that its answers
+ * The loader was lifted out of the old single-environment hook so that a whole
+ * project's keys can be loaded with the same steps. These tests pin that its answers
  * did not change on the way out: a re-key in progress, a server whose answers
  * disagree, a refusal, and a grant that does not open are each reported as
  * the same state they always were.

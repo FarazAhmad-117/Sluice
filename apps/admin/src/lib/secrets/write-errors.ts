@@ -16,7 +16,7 @@ import { ConvexError } from "convex/values";
  * Neither is an error the user can fix by trying again. Retrying would send
  * the same stale slot and be refused the same way, for ever, because the key
  * and the version this tab holds are fetched once (see
- * `use-project-data-key.ts`). What fixes it is reloading, which fetches the
+ * `environment-key.ts`). What fixes it is reloading, which fetches the
  * current version and re-opens the current key. So both sentences are shown
  * EXACTLY AS WRITTEN, because the server wrote them for a person and they say
  * what happened, and they come with a reload control. Swallowing them into a

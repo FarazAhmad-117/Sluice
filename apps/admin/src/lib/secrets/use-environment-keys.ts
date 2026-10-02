@@ -12,9 +12,9 @@ import type { ProjectDataKeyState } from "./environment-key";
  * A secret set for "All environments" is sealed once per environment, under
  * each environment's own key, so the add-secret drawer needs every key of the
  * project at once. Each one is loaded by {@link loadEnvironmentKey}, with
- * exactly the fetch, consistency checks and unwrap `useProjectDataKey` makes
- * for one; see that hook's header for what the unwrap proves and why it is a
- * one-shot fetch.
+ * its fetch, consistency checks and unwrap; see the header of
+ * `environment-key.ts` for what the unwrap proves and why it is a one-shot
+ * fetch.
  *
  * `uid` on each input is the environment's `uid` from `listEnvironments`, and
  * is checked against what `getEnvironment` says, exactly as the single hook
