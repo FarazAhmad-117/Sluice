@@ -12,6 +12,7 @@ import {
   requireSecret,
 } from "./lib/authz";
 import {
+  DELETE_SHARED_ROW,
   DUPLICATE_SHARE_UID,
   SHARED_NEEDS_SHARED_ROW,
   SHARED_ROWS_MISMATCH,
@@ -601,6 +602,12 @@ export const deleteSecret = mutation({
     // the caller never saw. The same refusal, and the same identity test, as
     // `updateSecret`: one answer for "you are not looking at the latest".
     if (secret._id !== current._id) throw new ConvexError(STALE_VERSION);
+    // A row of a shared secret is deleted with its group or not at all.
+    // Deleting it alone would leave the rest of the group labelled "All
+    // environments" over an environment that no longer has the value.
+    if (current.shareUid !== undefined) {
+      throw new ConvexError(DELETE_SHARED_ROW);
+    }
 
     await patchSecret(ctx, current._id, { deletedAt: Date.now() });
 
@@ -825,12 +832,9 @@ export const deleteSharedSecret = mutation({
     const inProject = new Set(environments.map((env) => env._id));
     if (rows.some((row) => !inProject.has(row.environmentId))) refuse();
 
-    // The same rule as `createSharedSecret`: a group is acted on whole, so a
-    // caller missing a key for any of its environments acts on none of it.
-    for (const row of rows) {
-      await requirePDKGrant(ctx, row.environmentId, user.uid);
-    }
-
+    // No grant check, deliberately, as in `deleteSecret`: a delete seals
+    // nothing, so there is no key a missing grant would make it write under.
+    // Membership, checked by `requireProject`, is the authorisation.
     const now = Date.now();
     for (const row of rows) {
       await patchSecret(ctx, row._id, { deletedAt: now });

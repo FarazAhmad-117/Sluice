@@ -51,6 +51,15 @@ export const SHARED_NEEDS_SHARED_ROW =
 export const DUPLICATE_SHARE_UID = "That shared secret id is already in use.";
 
 /**
+ * `secrets.deleteSecret`'s refusal for a row of a shared secret. Deleting one
+ * row would leave the group labelled "All environments" over an environment
+ * that no longer holds the value; a group is deleted whole, through
+ * `deleteSharedSecret`.
+ */
+export const DELETE_SHARED_ROW =
+  "This secret is set for all environments. Delete it from all environments instead.";
+
+/**
  * `projects.createProjectWithEnvironments`'s refusal when none of the
  * environments is named `development`. The dashboard always creates one, and
  * relies on it existing as the place a new project opens to.

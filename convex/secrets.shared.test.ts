@@ -6,6 +6,7 @@ import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { normaliseEmail } from "./lib/email";
 import {
+  DELETE_SHARED_ROW,
   DUPLICATE_SHARE_UID,
   SHARED_NEEDS_SHARED_ROW,
   SHARED_ROWS_MISMATCH,
@@ -513,6 +514,87 @@ describe("deleteSharedSecret", () => {
       (r) => r.deletedAt === undefined,
     );
     expect(live).toHaveLength(3);
+  });
+});
+
+/**
+ * THE TWO DELETE PATHS AGREE. A delete seals nothing, so neither needs a key
+ * grant; and a shared row is deleted with its group or not at all, because a
+ * group with a hole in it is labelled "All environments" over an environment
+ * that no longer has the value.
+ */
+describe("deleting shared rows", () => {
+  it("lets a member who holds no key delete the group, as deleteSecret would", async () => {
+    const t = convexTest(schema, modules);
+    const w = await world(t);
+    const shareUid = newId("shr");
+    await t.mutation(
+      api.secrets.createSharedSecret,
+      sharedArgs(
+        w.alice,
+        w.api.projectId,
+        w.api.environments.map((e) => row(e)),
+        shareUid,
+      ),
+    );
+    const bob = await seedUser(t, "bob@example.test");
+    await t.run(async (ctx) =>
+      insertOrgMember(ctx, { orgId: w.orgId, userId: bob.userId, role: "member" }),
+    );
+
+    await t.mutation(api.secrets.deleteSharedSecret, {
+      sessionToken: bob.sessionToken,
+      projectId: w.api.projectId,
+      shareUid,
+    });
+    const live = (await allRows(t, w.api.environments)).filter(
+      (r) => r.deletedAt === undefined,
+    );
+    expect(live).toEqual([]);
+  });
+
+  it("refuses deleteSecret on one row of a group, and deletes nothing", async () => {
+    const t = convexTest(schema, modules);
+    const w = await world(t);
+    const created = await t.mutation(
+      api.secrets.createSharedSecret,
+      sharedArgs(
+        w.alice,
+        w.api.projectId,
+        w.api.environments.map((e) => row(e)),
+      ),
+    );
+
+    await expect(
+      t.mutation(api.secrets.deleteSecret, {
+        sessionToken: w.alice.sessionToken,
+        secretId: created[0]!.secretId,
+      }),
+    ).rejects.toThrow(DELETE_SHARED_ROW);
+    const live = (await allRows(t, w.api.environments)).filter(
+      (r) => r.deletedAt === undefined,
+    );
+    expect(live).toHaveLength(3);
+  });
+
+  it("still lets deleteSecret delete a plain secret", async () => {
+    const t = convexTest(schema, modules);
+    const w = await world(t);
+    const plain = await t.mutation(
+      api.secrets.createSecret,
+      plainArgs(w.alice, w.api.environments[0]!),
+    );
+
+    await t.mutation(api.secrets.deleteSecret, {
+      sessionToken: w.alice.sessionToken,
+      secretId: plain.secretId,
+    });
+    expect(
+      await t.query(api.secrets.listSecrets, {
+        sessionToken: w.alice.sessionToken,
+        environmentId: w.api.environments[0]!,
+      }),
+    ).toEqual([]);
   });
 });
 
