@@ -17,8 +17,8 @@ export function ProjectTile({ name, size = "sm" }: { readonly name: string; read
   return (
     <span
       aria-hidden="true"
-      className={`flex shrink-0 items-center justify-center border border-hairline-strong bg-surface-base font-semibold text-text-primary ${
-        size === "sm" ? "size-[22px] rounded-[6px] text-xs" : "size-12 rounded-card bg-surface-card text-xl"
+      className={`flex shrink-0 items-center justify-center border border-hairline-strong font-semibold text-text-primary ${
+        size === "sm" ? "size-[22px] rounded-[6px] bg-surface-base text-xs" : "size-12 rounded-card bg-surface-card text-xl"
       }`}
     >
       {name.slice(0, 1).toUpperCase()}

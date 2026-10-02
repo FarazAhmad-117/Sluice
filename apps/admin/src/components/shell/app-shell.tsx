@@ -1,15 +1,20 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Outlet, useLocation, useMatch } from "react-router";
+import { AddSecretFlow } from "@/components/secrets/add-secret-flow";
 import { Drawer } from "@/components/ui/drawer";
 import { focusRing } from "@/components/ui/styles";
 import { UnlockGate } from "@/components/layout/unlock-gate";
-import { ProjectContext } from "@/lib/projects/project-context";
-import type { ProjectScope } from "@/lib/projects/project-context";
+import { ProjectActionsContext, ProjectContext } from "@/lib/projects/project-context";
+import type { AddRequest, ProjectActions, ProjectScope } from "@/lib/projects/project-context";
 import { useProjectSecrets } from "@/lib/secrets/use-project-secrets";
 import { ShellContext, useAnnouncer } from "@/lib/shell/shell-context";
 import type { Shell } from "@/lib/shell/shell-context";
 import { DESKTOP, useMediaQuery } from "@/lib/use-media-query";
 import { SidebarContent } from "./sidebar";
+
+const NONE: ReadonlySet<string> = new Set();
+/** How long a just-added row stays marked. */
+const HIGHLIGHT_MS = 4_000;
 
 /**
  * EVERY SIGNED-IN PAGE: THE SIDEBAR, AND THE PAGE BESIDE IT.
@@ -51,9 +56,24 @@ export function ShellFrame({ scope }: { readonly scope: ProjectScope | null }) {
     [announce, locationKey],
   );
 
+  // The one add-secret drawer, and the rows it just wrote, marked for a moment.
+  const [adding, setAdding] = useState<AddRequest | null>(null);
+  const [highlight, setHighlight] = useState<ReadonlySet<string>>(NONE);
+  useEffect(() => {
+    if (highlight.size === 0) return;
+    const timer = setTimeout(() => setHighlight(NONE), HIGHLIGHT_MS);
+    return () => clearTimeout(timer);
+  }, [highlight]);
+  const actions = useMemo(
+    (): ProjectActions => ({ openAdd: (request = {}) => setAdding(request), highlight }),
+    [highlight],
+  );
+  const ready = scope !== null && scope.data.status === "ready" ? scope.data : null;
+
   return (
     <ShellContext.Provider value={shell}>
       <ProjectContext.Provider value={scope}>
+      <ProjectActionsContext.Provider value={actions}>
         <div className="flex min-h-[100dvh] bg-surface-base text-text-body">
           <a
             href="#main"
@@ -82,6 +102,20 @@ export function ShellFrame({ scope }: { readonly scope: ProjectScope | null }) {
         <p role="status" aria-live="polite" className="sr-only">
           {announcement}
         </p>
+        {adding !== null && ready !== null ? (
+          <AddSecretFlow
+            data={ready}
+            request={adding}
+            onClose={(added) => {
+              setAdding(null);
+              if (added !== undefined) {
+                setHighlight(new Set(added.secretIds));
+                announce(`Added ${added.name}.`);
+              }
+            }}
+          />
+        ) : null}
+      </ProjectActionsContext.Provider>
       </ProjectContext.Provider>
     </ShellContext.Provider>
   );

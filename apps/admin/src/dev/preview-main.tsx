@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { Navigate, RouterProvider, createHashRouter } from "react-router";
 import NewProjectRoute from "@/routes/new-project";
+import ProjectOverviewRoute from "@/routes/project-overview";
 import ProjectSecretsRoute from "@/routes/project-secrets";
 import { PreviewProjects, PreviewProviders, PreviewShell } from "./preview-app";
 import "../app.css";
@@ -20,7 +21,7 @@ const router = createHashRouter([
         children: [
           { path: "projects", element: <PreviewProjects /> },
           { path: "projects/new", element: <NewProjectRoute /> },
-          { path: "projects/:projectSlug", element: <Navigate to="secrets" replace /> },
+          { path: "projects/:projectSlug", element: <ProjectOverviewRoute /> },
           { path: "projects/:projectSlug/secrets", element: <ProjectSecretsRoute /> },
         ],
       },

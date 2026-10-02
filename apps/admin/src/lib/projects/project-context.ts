@@ -17,6 +17,32 @@ export interface ProjectScope {
   readonly data: ProjectSecrets;
 }
 
+/** What "Add secret" opens with: a target environment and a key, for "Add here". */
+export interface AddRequest {
+  /** The environment the drawer treats as current. Defaults to the selected one. */
+  readonly environmentId?: string;
+  /** Prefills the key, and starts on "Only <environment>". */
+  readonly name?: string;
+}
+
+/**
+ * The one add-secret drawer, owned by the shell so every project page opens
+ * the same one, and the rows it just wrote, for a page to mark.
+ */
+export interface ProjectActions {
+  openAdd(request?: AddRequest): void;
+  /** Secret ids written by the last add, for a few seconds. */
+  readonly highlight: ReadonlySet<string>;
+}
+
+export const ProjectActionsContext = createContext<ProjectActions | null>(null);
+
+export function useProjectActions(): ProjectActions {
+  const value = useContext(ProjectActionsContext);
+  if (value === null) throw new Error("useProjectActions must be used inside the app shell");
+  return value;
+}
+
 export const ProjectContext = createContext<ProjectScope | null>(null);
 
 export function useProjectScope(): ProjectScope | null {

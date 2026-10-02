@@ -51,9 +51,15 @@ export function AddSecretDrawer({
   namesByEnvironment,
   onSave,
   onClose,
+  initialName = "",
+  initialScope,
 }: {
   readonly environments: readonly DrawerEnvironment[];
   readonly current: DrawerEnvironment;
+  /** A key to start with: "Add here" on a key another environment has. */
+  readonly initialName?: string;
+  /** Defaults to "all" when there is more than one environment. */
+  readonly initialScope?: "all" | "only";
   readonly keys: ReadonlyMap<string, ProjectDataKeyState>;
   readonly namesByEnvironment: ReadonlyMap<string, ReadonlyMap<string, string>>;
   /** Seals and writes. Resolves to the new secret ids. */
@@ -62,10 +68,13 @@ export function AddSecretDrawer({
 }) {
   const formId = useId();
   const keyField = useRef<HTMLInputElement>(null);
-  const [name, setName] = useState("");
+  const valueField = useRef<HTMLTextAreaElement>(null);
+  const [name, setName] = useState(initialName);
   const [value, setValue] = useState("");
   const [shown, setShown] = useState(false);
-  const [scope, setScope] = useState<"all" | "only">(environments.length > 1 ? "all" : "only");
+  const [scope, setScope] = useState<"all" | "only">(
+    environments.length > 1 ? (initialScope ?? "all") : "only",
+  );
   const [overrides, setOverrides] = useState<ReadonlyMap<string, string>>(new Map());
   const [touched, setTouched] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -105,8 +114,9 @@ export function AddSecretDrawer({
       onClose={() => {
         if (!busy) onClose();
       }}
-      title="Add a secret"
-      initialFocus={keyField}
+      title={initialName === "" ? "Add a secret" : `Add ${initialName} to ${current.name}`}
+      // With the key already given, the value is the next thing to type.
+      initialFocus={initialName === "" ? keyField : valueField}
       footer={
         <>
           <span className="text-[13px] text-text-muted">Encrypted in this browser before it's saved</span>
@@ -165,6 +175,7 @@ export function AddSecretDrawer({
             </button>
           </div>
           <textarea
+            ref={valueField}
             id={`${formId}-value`}
             rows={2}
             value={value}
