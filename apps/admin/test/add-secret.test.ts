@@ -41,6 +41,13 @@ describe("duplicateProblem", () => {
     );
   });
 
+  it("refuses only when a target environment already has the key", () => {
+    // "Add here": the key exists in development and production, and the one
+    // target, staging, does not have it. That is the point, not a duplicate.
+    expect(duplicateProblem("API_URL", [stg], names)).toBeNull();
+    expect(duplicateProblem("API_URL", [stg, prod], names)).toBe("API_URL already exists in production.");
+  });
+
   it("is null for a new key, and is case sensitive like the environment", () => {
     expect(duplicateProblem("NEW", [dev, prod, stg], names)).toBeNull();
     expect(duplicateProblem("api_url", [dev], names)).toBeNull();

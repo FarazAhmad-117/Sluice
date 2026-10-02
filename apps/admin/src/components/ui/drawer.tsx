@@ -100,6 +100,16 @@ export function Drawer({
       // navigation) renders in its own portal and handles its own Escape,
       // arrows and Tab; Escape there closes the menu, not the drawer.
       if (event.target instanceof Element && event.target.closest('[role="menu"]') !== null) return;
+      // Likewise a dialog opened on top of this one (the edit drawer over the
+      // detail sheet, a delete confirmation): its keys are its own. Without
+      // this, Escape there would close this drawer underneath instead.
+      if (
+        event.target instanceof Element &&
+        !current.contains(event.target) &&
+        event.target.closest('[role="dialog"], dialog') !== null
+      ) {
+        return;
+      }
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
