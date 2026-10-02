@@ -9,6 +9,7 @@ import { insertUser } from "./repo/users";
 import { insertSession } from "./repo/sessions";
 import { listAuditEventsByActor } from "./repo/audit";
 import { SESSION_LIFETIME_MS, hashSessionToken } from "./lib/session";
+import * as activityModule from "./activity";
 import * as orgsModule from "./orgs";
 import * as projectsModule from "./projects";
 import * as environmentsModule from "./environments";
@@ -70,6 +71,7 @@ const NOT_AUTHENTICATED = "Your session is not valid. Sign in again.";
  * question of the credential the bundle actually takes.
  */
 const SURFACE = {
+  activity: activityModule,
   orgs: orgsModule,
   projects: projectsModule,
   environments: environmentsModule,
@@ -292,6 +294,10 @@ const CALLS: Record<
   string,
   (w: World, sessionToken: string) => Record<string, unknown>
 > = {
+  "activity.listProjectActivity": (w, sessionToken) => ({
+    sessionToken,
+    projectId: w.projectId,
+  }),
   "orgs.createOrg": (_w, sessionToken) => ({
     sessionToken,
     // Fresh per call, like the slug below, so the valid call is not refused
@@ -466,11 +472,12 @@ const FUNCTIONS = exportedFunctions();
 
 describe("the enumeration this file is built on", () => {
   it("finds every public function in the hierarchy", () => {
-    // Twenty-two, written as a number as well as a list, so that an
+    // Twenty-three, written as a number as well as a list, so that an
     // enumeration which silently starts returning nothing cannot make every
     // assertion below pass vacuously.
-    expect(FUNCTIONS.length).toBe(22);
+    expect(FUNCTIONS.length).toBe(23);
     expect(FUNCTIONS).toEqual([
+      "activity.listProjectActivity",
       "environments.createEnvironment",
       "environments.getEnvironment",
       "environments.getMyPdkGrant",
