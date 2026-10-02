@@ -1,8 +1,11 @@
-import { createContext, useContext, useEffect, useId, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { KeyboardEvent, ReactNode } from "react";
 import { Link } from "react-router";
 import type { LinkProps } from "react-router";
 import { IconCheck } from "./icons";
+import { placeMenu } from "./place-menu";
+import type { Placement } from "./place-menu";
 import { focusRing } from "./styles";
 
 /**
@@ -16,6 +19,18 @@ import { focusRing } from "./styles";
  * Items are real buttons and links (`role="menuitem"` on them, not on a
  * wrapper), each at least 44px tall. A `MenuNote` is a non-interactive line
  * (the signed-in email) and is skipped by the arrow keys.
+ *
+ * THE MENU RENDERS IN A PORTAL ON `document.body`, positioned `fixed` against
+ * the trigger. A menu rendered beside its trigger is clipped by any ancestor
+ * with `overflow: hidden` (the secrets table's rounded container is one) and
+ * can be painted under the content that follows it. From the body it sits
+ * above the page, and the trigger's own row never changes layout when it
+ * opens. It opens below the trigger, or above when there is not enough room
+ * below; it is kept inside the viewport horizontally; and it follows the
+ * trigger on scroll and resize. Because it is no longer next to the trigger in
+ * the DOM, Tab from inside the menu first returns focus to the trigger and
+ * then lets the browser move on, so Tab still continues from where the menu
+ * was opened.
  */
 
 const ITEM_SELECTOR = '[role="menuitem"], [role="menuitemradio"]';
@@ -58,11 +73,45 @@ export function Menu({
   const list = useRef<HTMLDivElement>(null);
   /** Which item takes focus on opening: the first, or (opened with ArrowUp) the last. */
   const focusOnOpen = useRef<"first" | "last">("first");
+  const [placement, setPlacement] = useState<Placement | null>(null);
 
   const close = (returnFocus: boolean) => {
     setOpen(false);
+    setPlacement(null);
     if (returnFocus) button.current?.focus();
   };
+
+  // Measure and place before paint, then follow the trigger. Until placed the
+  // menu is invisible, so it never flashes at the wrong spot.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const trigger = button.current;
+      const menu = list.current;
+      if (trigger === null || menu === null) return;
+      // Natural height, not the height a previous max-height capped it at.
+      const previous = menu.style.maxHeight;
+      menu.style.maxHeight = "none";
+      const size = { width: menu.offsetWidth, height: menu.scrollHeight };
+      menu.style.maxHeight = previous;
+      setPlacement(
+        placeMenu(
+          trigger.getBoundingClientRect(),
+          size,
+          { width: window.innerWidth, height: window.innerHeight },
+          align,
+        ),
+      );
+    };
+    place();
+    window.addEventListener("resize", place);
+    // Capture, so a scroll inside any scrolling ancestor moves it too.
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open, align]);
 
   useEffect(() => {
     if (!open) return;
@@ -71,8 +120,15 @@ export function Menu({
     (target ?? list.current)?.focus();
 
     const onPointerDown = (event: PointerEvent) => {
-      if (event.target instanceof Node && root.current?.contains(event.target) === true) return;
+      const target = event.target;
+      if (
+        target instanceof Node &&
+        (root.current?.contains(target) === true || list.current?.contains(target) === true)
+      ) {
+        return;
+      }
       setOpen(false);
+      setPlacement(null);
     };
     document.addEventListener("pointerdown", onPointerDown);
     return () => document.removeEventListener("pointerdown", onPointerDown);
@@ -109,7 +165,12 @@ export function Menu({
         close(true);
         return;
       case "Tab":
+        // Back to the trigger first, synchronously, and NOT prevented: the
+        // browser's Tab then moves on from the trigger, as it did when the
+        // menu sat beside it in the DOM.
+        button.current?.focus();
         setOpen(false);
+        setPlacement(null);
         return;
       default:
         return;
@@ -130,28 +191,37 @@ export function Menu({
           aria-label={label}
           onClick={() => {
             focusOnOpen.current = "first";
-            setOpen((value) => !value);
+            if (open) close(false);
+            else setOpen(true);
           }}
           onKeyDown={onTriggerKeyDown}
           className={`${focusRing} ${triggerClassName}`}
         >
           {trigger}
         </button>
-        {open ? (
-          <div
-            ref={list}
-            id={menuId}
-            role="menu"
-            aria-label={label}
-            tabIndex={-1}
-            onKeyDown={onMenuKeyDown}
-            className={`absolute top-full z-40 mt-2 flex max-h-[70dvh] w-64 max-w-[calc(100vw-32px)] flex-col overflow-y-auto rounded-card border border-hairline-strong bg-surface-card p-1.5 outline-none ${
-              align === "end" ? "right-0" : "left-0"
-            }`}
-          >
-            {children}
-          </div>
-        ) : null}
+        {open
+          ? createPortal(
+              <div
+                ref={list}
+                id={menuId}
+                role="menu"
+                aria-label={label}
+                tabIndex={-1}
+                onKeyDown={onMenuKeyDown}
+                style={
+                  placement === null
+                    ? // Transparent, not `visibility: hidden`: the first item takes focus
+                      // in the same tick, and a hidden element cannot.
+                      { top: 0, left: 0, opacity: 0, pointerEvents: "none" }
+                    : { top: placement.top, left: placement.left, maxHeight: placement.maxHeight }
+                }
+                className="fixed z-50 flex w-64 max-w-[calc(100vw-16px)] flex-col overflow-y-auto rounded-card border border-hairline-strong bg-surface-card p-1.5 outline-none"
+              >
+                {children}
+              </div>,
+              document.body,
+            )
+          : null}
       </div>
     </MenuContext.Provider>
   );
