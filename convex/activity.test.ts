@@ -256,6 +256,49 @@ describe("listProjectActivity", () => {
     expect(asBob[1]?.actorIsYou).toBe(false);
   });
 
+  /**
+   * An email is shown only for a person who is a member of this org NOW. An
+   * event naming anybody else -- no handler writes one, so it is forged here
+   * through the repo layer -- must not become a way to read the address of a
+   * user outside the org. A token or system actor is nobody's email and never
+   * the caller, even when its actor id happens to spell the caller's user id.
+   */
+  it("shows an email only for a current member, and never for a token or system actor", async () => {
+    const t = convexTest(schema, modules);
+    const w = await world(t);
+    const forge = async (
+      actorType: "user" | "token" | "system",
+      actorId: string,
+    ) => {
+      tick();
+      await t.run(async (ctx) =>
+        insertAuditEvent(ctx, {
+          orgId: w.orgA,
+          actorType,
+          actorId,
+          action: "secret.update",
+          targetId: w.apiSecretV2,
+          ts: Date.now(),
+        }),
+      );
+    };
+    await forge("user", w.mallory.userId);
+    await forge("token", w.alice.userId);
+    await forge("system", w.alice.userId);
+
+    const events = await t.query(api.activity.listProjectActivity, {
+      sessionToken: w.alice.sessionToken,
+      projectId: w.api,
+      limit: 3,
+    });
+    expect(events.map((e) => [e.actorIsYou, e.actorEmail])).toEqual([
+      [false, null],
+      [false, null],
+      [false, null],
+    ]);
+    expect(JSON.stringify(events)).not.toContain("mallory");
+  });
+
   it("returns ids and timestamps only, never ciphertext or a nonce", async () => {
     const t = convexTest(schema, modules);
     const w = await world(t);

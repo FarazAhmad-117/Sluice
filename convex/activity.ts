@@ -5,6 +5,7 @@ import type { QueryCtx } from "./_generated/server";
 import { sessionArg, requireProject } from "./lib/authz";
 import { getAuditSubject, listAuditEventsByOrg } from "./repo/audit";
 import { listEnvironmentsByProject } from "./repo/environments";
+import { getOrgMember } from "./repo/orgs";
 
 /**
  * WHAT HAPPENED IN ONE PROJECT, READ BACK OUT OF THE AUDIT LOG.
@@ -24,7 +25,8 @@ import { listEnvironmentsByProject } from "./repo/environments";
  * keeps emails out of the append-only table so that erasing a person from
  * `users` erases them everywhere. Looking the address up here keeps that
  * true: once the user row is gone, its events answer `actorEmail: null`.
- * Only a member of the org sees it, and only for events in their own org.
+ * Only a member of the org sees it, only for events in their own org, and
+ * only for an actor who is a member of that org now; see `emailOf`.
  *
  * WHY THIS READS THE ORG'S EVENTS AND FILTERS, AND WHAT THAT COSTS. An event
  * carries its org and its target id, not its project, so there is no index
@@ -134,7 +136,7 @@ export const listProjectActivity = query({
         actorIsYou: event.actorType === "user" && event.actorId === user._id,
         actorEmail:
           event.actorType === "user"
-            ? await emailOf(ctx, emails, event.actorId)
+            ? await emailOf(ctx, emails, org._id, event.actorId)
             : null,
         targetKind: placed.kind,
         targetId: placed.targetId,
@@ -198,15 +200,30 @@ async function placeInProject(
     : null;
 }
 
+/**
+ * The actor's email, ONLY IF THE ACTOR IS A MEMBER OF THIS ORG RIGHT NOW.
+ *
+ * An event's actor id is a string in an append-only table, and nothing in
+ * this query proves it names one of the caller's colleagues. Every honest
+ * event in an org was written by a member of it, but "was" is not "is", and a
+ * bad migration, a hand edit or a future writer that gets it wrong would
+ * otherwise turn this feed into a way to read the address of any user in the
+ * deployment. So the address is released only on the same evidence that lets
+ * the caller see colleagues at all: a membership row in this org, read now.
+ * A former member, or anyone else, answers null. Cached per call by actor id.
+ */
 async function emailOf(
   ctx: QueryCtx,
   cache: Map<string, string | null>,
+  orgId: Id<"orgs">,
   actorId: string,
 ): Promise<string | null> {
   const cached = cache.get(actorId);
   if (cached !== undefined) return cached;
   const actor = await getAuditSubject(ctx, "users", actorId);
-  const email = actor === null ? null : actor.email;
+  const member =
+    actor === null ? null : await getOrgMember(ctx, orgId, actor._id);
+  const email = actor !== null && member !== null ? actor.email : null;
   cache.set(actorId, email);
   return email;
 }
