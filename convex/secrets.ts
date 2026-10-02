@@ -330,6 +330,11 @@ const secretShape = {
   valueCiphertext: v.string(),
   valueNonce: v.string(),
   supersededAt: v.optional(v.number()),
+  // When this row was written, which for the current row is when the secret
+  // last changed: an update inserts a new row rather than editing one, so
+  // there is no separate "modified" column to keep in step. Read off
+  // `_creationTime`, which Convex sets and no caller can.
+  updatedAt: v.number(),
   // Present only on a row of a shared secret. Plaintext grouping metadata,
   // bound into nothing: see `shr_` in `packages/crypto/src/ids.ts`.
   shareUid: v.optional(v.string()),
@@ -353,6 +358,7 @@ function view(secret: Doc<"secrets">) {
     nameNonce: secret.nameNonce,
     valueCiphertext: secret.valueCiphertext,
     valueNonce: secret.valueNonce,
+    updatedAt: secret._creationTime,
     ...(secret.supersededAt === undefined
       ? {}
       : { supersededAt: secret.supersededAt }),

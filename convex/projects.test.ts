@@ -10,6 +10,7 @@ import { insertSession } from "./repo/sessions";
 import { SESSION_LIFETIME_MS, hashSessionToken } from "./lib/session";
 import { listAuditEventsByActor } from "./repo/audit";
 import { getEnvironmentByUid } from "./repo/environments";
+import { getProject as getProjectRow } from "./repo/projects";
 import {
   PROJECT_NEEDS_DEVELOPMENT,
   TOO_MANY_ENVIRONMENTS,
@@ -174,6 +175,7 @@ describe("createProject", () => {
       slug: "payments-api",
     });
 
+    const row = await t.run(async (ctx) => getProjectRow(ctx, projectId));
     expect(
       await t.query(api.projects.getProject, { sessionToken: owner.sessionToken, projectId }),
     ).toEqual({
@@ -181,7 +183,30 @@ describe("createProject", () => {
       orgId,
       name: "Payments API",
       slug: "payments-api",
+      // The row's own creation time, so the dashboard can say when a project
+      // was made without a column that could disagree with it.
+      createdAt: row?._creationTime,
     });
+  });
+
+  it("lists each project with its creation time", async () => {
+    const t = convexTest(schema, modules);
+    const owner = await seedUser(t, "owner@example.test");
+    const orgId = await seedOrg(t, owner, "acme");
+    const projectId = await t.mutation(api.projects.createProject, {
+      sessionToken: owner.sessionToken,
+      orgId,
+      name: "Payments API",
+      slug: "payments-api",
+    });
+
+    const row = await t.run(async (ctx) => getProjectRow(ctx, projectId));
+    const [listed] = await t.query(api.projects.listProjects, {
+      sessionToken: owner.sessionToken,
+      orgId,
+    });
+    expect(typeof listed?.createdAt).toBe("number");
+    expect(listed?.createdAt).toBe(row?._creationTime);
   });
 
   it("rejects a duplicate slug within one org", async () => {

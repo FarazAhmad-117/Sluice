@@ -681,6 +681,10 @@ describe("the ciphertext-only surface", () => {
       "valueCiphertext",
       "valueNonce",
       "createdAt",
+      // When the secret last changed: the current row's `_creationTime`,
+      // because an update inserts a new row. A timestamp, not a name or a
+      // value, and the dashboard shows it per row.
+      "updatedAt",
       "supersededAt",
       // Shared-secret grouping metadata. Plaintext on purpose and bound into
       // no associated data: a random `shr_` id and a boolean, neither of which
@@ -2257,4 +2261,53 @@ describe("end to end", () => {
     // real failure.
     120_000,
   );
+});
+
+// ---------------------------------------------------------------------------
+// When a secret last changed.
+// ---------------------------------------------------------------------------
+
+describe("updatedAt", () => {
+  /**
+   * An update inserts a new row, so the current row's creation time IS the
+   * moment the secret last changed. The dashboard shows it per row; nothing
+   * about it is a name or a value.
+   */
+  it("is the current row's creation time, and moves forward on an update", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, a } = await world(t);
+    const { secretId } = await t.mutation(
+      api.secrets.createSecret,
+      secretArgs(alice, a.production),
+    );
+    const [before] = await t.query(api.secrets.listSecrets, {
+      sessionToken: alice.sessionToken,
+      environmentId: a.production,
+    });
+    const created = await t.run(async (ctx) => getSecretRow(ctx, secretId));
+    expect(before?.updatedAt).toBe(created?._creationTime);
+
+    const updated = await t.mutation(api.secrets.updateSecret, {
+      sessionToken: alice.sessionToken,
+      secretId,
+      version: 2,
+      pdkVersion: 1,
+      nameCiphertext: NAME_CIPHERTEXT,
+      nameNonce: "c0c1c2c3c4c5c6c7c8c9cacb",
+      valueCiphertext: VALUE_CIPHERTEXT,
+      valueNonce: "cbcac9c8c7c6c5c4c3c2c1c0",
+    });
+    const [after] = await t.query(api.secrets.listSecrets, {
+      sessionToken: alice.sessionToken,
+      environmentId: a.production,
+    });
+    const replacement = await t.run(async (ctx) =>
+      getSecretRow(ctx, updated.secretId),
+    );
+    expect(after?.secretId).toBe(updated.secretId);
+    expect(after?.updatedAt).toBe(replacement?._creationTime);
+    expect(after?.updatedAt).toBeGreaterThanOrEqual(
+      before?.updatedAt ?? Number.POSITIVE_INFINITY,
+    );
+  });
 });
