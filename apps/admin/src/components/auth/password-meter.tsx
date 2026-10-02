@@ -38,8 +38,8 @@ export function PasswordMeter({ assessment }: { assessment: PasswordAssessment }
       </div>
 
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-        <span className={`text-base font-medium ${tone.text}`}>{tone.label}</span>
-        <span className="font-mono text-sm text-text-muted">
+        <span className={`text-sm font-medium ${tone.text}`}>{tone.label}</span>
+        <span className="font-mono text-xs text-text-muted">
           {assessment.verdict === "empty"
             ? `${MIN_PASSWORD_LENGTH} characters and ${MIN_PASSWORD_BITS} bits minimum`
             : `${Math.round(assessment.bits)} bits estimated, ${MIN_PASSWORD_BITS} needed`}
@@ -47,20 +47,18 @@ export function PasswordMeter({ assessment }: { assessment: PasswordAssessment }
       </div>
 
       {assessment.problems.length === 0 ? null : (
-        <ul className="flex flex-col gap-1" aria-live="polite">
+        <ul className="m-0 flex list-none flex-col gap-1 p-0" aria-live="polite">
           {assessment.problems.map((problem) => (
-            <li key={problem} className="text-base text-text-muted">
+            <li key={problem} className="text-sm text-text-muted">
               {problem}
             </li>
           ))}
         </ul>
       )}
 
-      <p className="text-base text-text-muted">
-        This estimate has no dictionary and no breach corpus behind it, and nothing about your
-        password leaves this tab. It catches short and repetitive choices. It will not catch a
-        common phrase, so do not treat a green bar as a promise.
-      </p>
+      {/* Short on purpose; the honest limits (no dictionary, no breach list)
+          are in `lib/auth/password.ts`. "Rough" is the claim the code backs. */}
+      <p className="m-0 text-[13px] text-text-muted">A rough strength check, done in this browser.</p>
     </div>
   );
 }

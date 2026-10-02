@@ -57,9 +57,10 @@ function Below({
   return (
     <>
       {hintId === undefined ? null : (
-        <p id={hintId} className="m-0 text-sm text-text-muted">
+        // A div, not a p: a hint can be a block (the password meter).
+        <div id={hintId} className="m-0 text-sm text-text-muted">
           {hint}
-        </p>
+        </div>
       )}
       {errorId === undefined ? null : (
         <p id={errorId} role="alert" className="m-0 text-sm text-status-danger">
