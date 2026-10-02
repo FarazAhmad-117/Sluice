@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useMutation } from "convex/react";
+import { AddSecretDrawer } from "@/components/secrets/add-secret-drawer";
+import type { AddSecretPlan } from "@/components/secrets/add-secret-drawer";
 import { useParams } from "react-router";
 import { api } from "@convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Callout, Skeleton } from "@/components/ui/feedback";
-import { IconCopy, IconEye, IconEyeOff, IconMore, IconSearch } from "@/components/ui/icons";
+import { IconCopy, IconEye, IconEyeOff, IconMore, IconPlus, IconSearch } from "@/components/ui/icons";
 import { Menu, MenuItem } from "@/components/ui/menu";
 import { ScopePill } from "@/components/ui/pill";
 import { Segmented } from "@/components/ui/segmented";
@@ -19,7 +21,11 @@ import { countScopes } from "@/lib/secrets/scope";
 import type { SecretScope } from "@/lib/secrets/scope";
 import { useProjectSecrets } from "@/lib/secrets/use-project-secrets";
 import type { EnvironmentRow, ListedSecret, ProjectSecrets } from "@/lib/secrets/use-project-secrets";
+import { newSecretSlot, sealSecret } from "@/lib/secrets/seal";
+import { sealSharedSecret } from "@/lib/secrets/shared";
+import type { SharedSecretEnvironment } from "@/lib/secrets/shared";
 import { describeWriteFailure } from "@/lib/secrets/write-errors";
+import type { Id } from "@convex/_generated/dataModel";
 
 /**
  * ONE PROJECT'S SECRETS, ONE ENVIRONMENT AT A TIME.
@@ -37,6 +43,8 @@ import { describeWriteFailure } from "@/lib/secrets/write-errors";
  */
 
 const REVEAL_MS = 30_000;
+/** How long a just-added row stays marked. */
+const HIGHLIGHT_MS = 4_000;
 
 type Ready = Extract<ProjectSecrets, { status: "ready" }>;
 type Filter = "all" | SecretScope;
@@ -47,6 +55,8 @@ export default function ProjectSecretsRoute() {
   const { session } = useAuth();
   const deleteSecret = useMutation(api.secrets.deleteSecret);
   const deleteSharedSecret = useMutation(api.secrets.deleteSharedSecret);
+  const createSecret = useMutation(api.secrets.createSecret);
+  const createSharedSecret = useMutation(api.secrets.createSharedSecret);
 
   const reveal = async (secret: ListedSecret) => {
     if (data.status !== "ready" || data.keyState.status !== "ready") {
@@ -58,6 +68,9 @@ export default function ProjectSecretsRoute() {
   const remove = async (row: LabelledRow<ListedSecret>) => {
     if (session === null || data.status !== "ready") return;
     const sessionToken = session.sessionToken;
+    // A row with a share id is one row of a secret that lives in every
+    // environment, so it is deleted everywhere; `deleteSecret` refuses such a
+    // row on the server.
     if (row.secret.shareUid !== undefined) {
       await deleteSharedSecret({ sessionToken, projectId: data.project.projectId, shareUid: row.secret.shareUid });
     } else {
@@ -65,7 +78,99 @@ export default function ProjectSecretsRoute() {
     }
   };
 
-  return <ProjectSecretsView slug={projectSlug} data={data} onReveal={reveal} onDelete={remove} />;
+  const [adding, setAdding] = useState(false);
+  const [highlight, setHighlight] = useState<ReadonlySet<string>>(new Set());
+  const [added, setAdded] = useState("");
+  useEffect(() => {
+    if (highlight.size === 0) return;
+    const timer = setTimeout(() => setHighlight(new Set()), HIGHLIGHT_MS);
+    return () => clearTimeout(timer);
+  }, [highlight]);
+
+  const save = async (plan: AddSecretPlan) => {
+    if (session === null || data.status !== "ready" || data.environment === null) {
+      throw new Error("Not ready.");
+    }
+    const sessionToken = session.sessionToken;
+    const keyOf = (environmentId: string) => {
+      const state = data.keys.get(environmentId);
+      if (state?.status !== "ready") throw new Error("A key is not open.");
+      return state.key;
+    };
+    if (plan.scope === "all") {
+      const payload = await sealSharedSecret({
+        name: plan.name,
+        value: plan.value,
+        environments: data.environments.map((environment): SharedSecretEnvironment => {
+          const own = plan.overrides.get(environment.environmentId);
+          const key = keyOf(environment.environmentId);
+          return own === undefined
+            ? { environmentId: environment.environmentId, key }
+            : { environmentId: environment.environmentId, key, override: own };
+        }),
+      });
+      const rows = await createSharedSecret({
+        sessionToken,
+        projectId: data.project.projectId,
+        shareUid: payload.shareUid,
+        rows: payload.rows.map((row) => ({ ...row, environmentId: row.environmentId as Id<"environments"> })),
+      });
+      return { name: plan.name, secretIds: rows.map((row) => row.secretId) };
+    }
+    const environmentId = data.environment.environmentId;
+    const key = keyOf(environmentId);
+    const slot = newSecretSlot();
+    const sealed = await sealSecret(key, { ...slot, name: plan.name, value: plan.value });
+    const created = await createSecret({
+      sessionToken,
+      environmentId,
+      secretUid: slot.secretUid,
+      version: slot.version,
+      pdkVersion: key.pdkVersion,
+      ...sealed,
+    });
+    return { name: plan.name, secretIds: [created.secretId] };
+  };
+
+  const ready = data.status === "ready" && data.environment !== null ? data : null;
+
+  return (
+    <>
+      <ProjectSecretsView
+        slug={projectSlug}
+        data={data}
+        onReveal={reveal}
+        onDelete={remove}
+        highlight={highlight}
+        toolbarAction={
+          ready === null ? undefined : (
+            <Button icon={<IconPlus className="size-3.5" />} onClick={() => setAdding(true)}>
+              Add secret
+            </Button>
+          )
+        }
+      />
+      <p role="status" aria-live="polite" className="sr-only">
+        {added}
+      </p>
+      {adding && ready !== null && ready.environment !== null ? (
+        <AddSecretDrawer
+          environments={ready.environments}
+          current={ready.environment}
+          keys={ready.keys}
+          namesByEnvironment={ready.namesByEnvironment}
+          onSave={save}
+          onClose={(saved) => {
+            setAdding(false);
+            if (saved !== undefined) {
+              setHighlight(new Set(saved.secretIds));
+              setAdded(`Added ${saved.name}.`);
+            }
+          }}
+        />
+      ) : null}
+    </>
+  );
 }
 
 /** The page from its data and actions, with no queries of its own. */
