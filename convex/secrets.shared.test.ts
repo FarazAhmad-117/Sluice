@@ -119,6 +119,33 @@ async function world(t: Harness) {
   };
 }
 
+/** A separate org, owned by `actor`, with one project and one environment. */
+async function otherTenant(t: Harness, actor: Actor) {
+  const orgId = await t.mutation(api.orgs.createOrg, {
+    sessionToken: actor.sessionToken,
+    orgUid: newId("org"),
+    name: "Other Org",
+    slug: "other-org",
+    revocationPublicKey: "ab".repeat(32),
+    wrappedRevocationKey: "7b3f1c9a5e8d2046b1f7c3a9e5d80264b7f1c3a9e5d80264",
+    revocationKeyNonce: "0f1e2d3c4b5a69788796a5b4",
+  });
+  const projectId = await t.mutation(api.projects.createProject, {
+    sessionToken: actor.sessionToken,
+    orgId,
+    name: "Theirs",
+    slug: "theirs",
+  });
+  const environmentId = await t.mutation(api.environments.createEnvironment, {
+    sessionToken: actor.sessionToken,
+    environmentUid: newId("env"),
+    projectId,
+    name: "development",
+    ...WRAP,
+  });
+  return { orgId, projectId, environmentId };
+}
+
 const NOT_PERMITTED = "Not found, or you do not have access to it.";
 const DUPLICATE_SECRET_UID = "A secret with that id already exists.";
 const NO_GRANT =
@@ -288,6 +315,93 @@ describe("createSharedSecret", () => {
     await expect(
       t.mutation(api.secrets.createSharedSecret, sharedArgs(w.alice, bare, [])),
     ).rejects.toThrow(SHARED_ROWS_MISMATCH);
+  });
+
+  it("refuses a row naming an environment in another org", async () => {
+    const t = convexTest(schema, modules);
+    const w = await world(t);
+    const theirs = await otherTenant(t, w.mallory);
+    const [dev, staging] = w.api.environments as Id<"environments">[];
+
+    await expect(
+      t.mutation(
+        api.secrets.createSharedSecret,
+        sharedArgs(w.alice, w.api.projectId, [
+          row(dev!),
+          row(staging!),
+          row(theirs.environmentId),
+        ]),
+      ),
+    ).rejects.toThrow(SHARED_ROWS_MISMATCH);
+    expect(
+      await allRows(t, [...w.api.environments, theirs.environmentId]),
+    ).toEqual([]);
+  });
+
+  describe("applies createSecret's per-row checks to every row, and writes nothing", () => {
+    it.each([
+      ["a version other than 1", { version: 2 }, "A new secret starts at version 1."],
+      [
+        "a malformed secretUid",
+        { secretUid: "sec_not-hex" },
+        "secretUid must be a well-formed sec id",
+      ],
+      [
+        "one nonce used for both fields",
+        { valueNonce: "000102030405060708090a0b" },
+        "nameNonce and valueNonce must not be the same nonce.",
+      ],
+    ])("%s", async (_label, overrides, message) => {
+      const t = convexTest(schema, modules);
+      const w = await world(t);
+      const [dev, staging, prod] = w.api.environments as Id<"environments">[];
+
+      await expect(
+        t.mutation(
+          api.secrets.createSharedSecret,
+          sharedArgs(w.alice, w.api.projectId, [
+            row(dev!),
+            row(staging!, overrides),
+            row(prod!),
+          ]),
+        ),
+      ).rejects.toThrow(message);
+      expect(await allRows(t, w.api.environments)).toEqual([]);
+    });
+  });
+
+  it("refuses the shareUid of a group that has since been deleted", async () => {
+    const t = convexTest(schema, modules);
+    const w = await world(t);
+    const shareUid = newId("shr");
+    await t.mutation(
+      api.secrets.createSharedSecret,
+      sharedArgs(
+        w.alice,
+        w.api.projectId,
+        w.api.environments.map((e) => row(e)),
+        shareUid,
+      ),
+    );
+    await t.mutation(api.secrets.deleteSharedSecret, {
+      sessionToken: w.alice.sessionToken,
+      projectId: w.api.projectId,
+      shareUid,
+    });
+
+    // Deleted rows still carry the id, so reusing it would fold a new group
+    // into the deleted one's history.
+    await expect(
+      t.mutation(
+        api.secrets.createSharedSecret,
+        sharedArgs(
+          w.alice,
+          w.api.projectId,
+          w.api.environments.map((e) => row(e)),
+          shareUid,
+        ),
+      ),
+    ).rejects.toThrow(DUPLICATE_SHARE_UID);
   });
 
   it("refuses a group in which every environment is overridden", async () => {
@@ -495,7 +609,67 @@ describe("deleteSharedSecret", () => {
     expect(events.filter((e) => e.action === "secret.delete")).toHaveLength(3);
   });
 
-  it("refuses a shareUid with no live rows, and one addressed through another project", async () => {
+  it("refuses a second delete of the same group", async () => {
+    const t = convexTest(schema, modules);
+    const w = await world(t);
+    const shareUid = newId("shr");
+    await t.mutation(
+      api.secrets.createSharedSecret,
+      sharedArgs(
+        w.alice,
+        w.api.projectId,
+        w.api.environments.map((e) => row(e)),
+        shareUid,
+      ),
+    );
+    const del = {
+      sessionToken: w.alice.sessionToken,
+      projectId: w.api.projectId,
+      shareUid,
+    };
+    await t.mutation(api.secrets.deleteSharedSecret, del);
+
+    await expect(
+      t.mutation(api.secrets.deleteSharedSecret, del),
+    ).rejects.toThrow(NOT_PERMITTED);
+  });
+
+  /**
+   * Mallory owns an org of her own, so she passes membership for HER project.
+   * Neither through her project nor through alice's can she reach alice's
+   * group.
+   */
+  it("refuses the owner of another org, through either project", async () => {
+    const t = convexTest(schema, modules);
+    const w = await world(t);
+    const theirs = await otherTenant(t, w.mallory);
+    const shareUid = newId("shr");
+    await t.mutation(
+      api.secrets.createSharedSecret,
+      sharedArgs(
+        w.alice,
+        w.api.projectId,
+        w.api.environments.map((e) => row(e)),
+        shareUid,
+      ),
+    );
+
+    for (const projectId of [theirs.projectId, w.api.projectId]) {
+      await expect(
+        t.mutation(api.secrets.deleteSharedSecret, {
+          sessionToken: w.mallory.sessionToken,
+          projectId,
+          shareUid,
+        }),
+      ).rejects.toThrow(NOT_PERMITTED);
+    }
+    const live = (await allRows(t, w.api.environments)).filter(
+      (r) => r.deletedAt === undefined,
+    );
+    expect(live).toHaveLength(3);
+  });
+
+  it("refuses an unknown shareUid, one addressed through another project, and a non-member", async () => {
     const t = convexTest(schema, modules);
     const w = await world(t);
     const shareUid = newId("shr");

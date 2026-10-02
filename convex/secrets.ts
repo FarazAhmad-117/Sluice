@@ -730,7 +730,8 @@ export const createSharedSecret = mutation({
       await requirePDKGrant(ctx, environment._id, user.uid);
     }
 
-    // Shape checks, per row, in `createSecret`'s order.
+    // Shape checks, per row, in `createSecret`'s order. Equal nonces ACROSS
+    // rows are not reuse: each row is sealed under a different environment's key.
     const shareUid = requireId("shr", "shareUid", args.shareUid);
     for (const { row, environment } of pairs) {
       requireId("sec", "secretUid", row.secretUid);

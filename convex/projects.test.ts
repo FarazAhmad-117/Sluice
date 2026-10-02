@@ -428,6 +428,21 @@ describe("createProjectWithEnvironments", () => {
     await expectNothingWritten(t, alice, orgA, envs);
   });
 
+  it("refuses two environments with one environmentUid", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, orgA } = await twoOrgs(t);
+    const environmentUid = newId("env");
+    const envs = [
+      environment("development", { environmentUid }),
+      environment("production", { environmentUid }),
+    ];
+
+    await expect(
+      t.mutation(api.projects.createProjectWithEnvironments, args(alice, orgA, envs)),
+    ).rejects.toThrow("An environment with that id already exists.");
+    await expectNothingWritten(t, alice, orgA, envs);
+  });
+
   it("refuses more than ten environments", async () => {
     const t = convexTest(schema, modules);
     const { alice, orgA } = await twoOrgs(t);
