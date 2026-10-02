@@ -80,3 +80,24 @@ export const PROJECT_NEEDS_DEVELOPMENT =
  */
 export const TOO_MANY_ENVIRONMENTS =
   "A project can start with at most 10 environments.";
+
+/**
+ * The refusal for a secret value whose plaintext is over 64 KiB (65536
+ * bytes), enforced on the ciphertext in `secrets.ts`, which is all the server
+ * sees. The cap exists because every listing, the bundle and the activity
+ * feed read whole rows, and a handful of oversized rows would push those
+ * reads past Convex's per-query limits for everyone in the environment.
+ * "64 KB" in the sentence because that is how a person reads it.
+ */
+export const SECRET_VALUE_TOO_LARGE = "A secret value can be at most 64 KB.";
+
+/**
+ * The refusal for a secret name whose plaintext is over 256 BYTES of UTF-8.
+ * The sentence says "characters" because for the names people actually use,
+ * `STRIPE_LIVE_SECRET_KEY` and its kind, ASCII, the two are the same number;
+ * a name in another script reaches the cap sooner, and that is accepted. The
+ * server cannot count characters: it sees only ciphertext, whose length
+ * follows the encoded bytes.
+ */
+export const SECRET_NAME_TOO_LONG =
+  "A secret name can be at most 256 characters.";

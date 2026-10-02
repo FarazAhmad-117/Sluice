@@ -105,6 +105,7 @@ export const listProjectActivity = query({
     const events = await listAuditEventsByOrg(ctx, org._id, SCAN_LIMIT);
 
     const emails = new Map<string, string | null>();
+    const homes = new Map<string, Id<"environments"> | null>();
     const out: Array<{
       at: number;
       action: string;
@@ -117,7 +118,13 @@ export const listProjectActivity = query({
 
     for (const event of events) {
       if (out.length >= limit) break;
-      const placed = await placeInProject(ctx, event, project, environments);
+      const placed = await placeInProject(
+        ctx,
+        event,
+        project,
+        environments,
+        homes,
+      );
       if (placed === null) continue;
       out.push({
         at: event.ts,
@@ -145,12 +152,18 @@ export const listProjectActivity = query({
  * set read from `by_project_name`; the project by being this project. The
  * target row is read, never trusted from the event alone, so an event whose
  * target is gone, or names a row in another project, is simply not shown.
+ *
+ * `homes` caches, per call, the environment each target lives in (null for a
+ * target that is gone), so a row named by several events -- a secret created
+ * and later deleted, say -- is read once rather than once per event. A secret row can be up to the 64 KiB value cap,
+ * and this query reads up to `SCAN_LIMIT` events.
  */
 async function placeInProject(
   ctx: QueryCtx,
   event: Doc<"auditLog">,
   project: Doc<"projects">,
   environments: Set<string>,
+  homes: Map<string, Id<"environments"> | null>,
 ): Promise<{
   kind: TargetKind;
   targetId: string;
@@ -165,15 +178,23 @@ async function placeInProject(
       ? { kind, targetId, environmentId: null }
       : null;
   }
-  if (kind === "environment") {
-    const environment = await getAuditSubject(ctx, "environments", targetId);
-    return environment !== null && environments.has(environment._id)
-      ? { kind, targetId, environmentId: environment._id }
-      : null;
+  // Keyed by kind as well as id, so a string that is somehow both is never
+  // answered from the wrong table.
+  const key = `${kind}:${targetId}`;
+  if (!homes.has(key)) {
+    let home: Id<"environments"> | null = null;
+    if (kind === "environment") {
+      const environment = await getAuditSubject(ctx, "environments", targetId);
+      home = environment === null ? null : environment._id;
+    } else {
+      const secret = await getAuditSubject(ctx, "secrets", targetId);
+      home = secret === null ? null : secret.environmentId;
+    }
+    homes.set(key, home);
   }
-  const secret = await getAuditSubject(ctx, "secrets", targetId);
-  return secret !== null && environments.has(secret.environmentId)
-    ? { kind, targetId, environmentId: secret.environmentId }
+  const environmentId = homes.get(key) ?? null;
+  return environmentId !== null && environments.has(environmentId)
+    ? { kind, targetId, environmentId }
     : null;
 }
 

@@ -14,6 +14,8 @@ import {
 import {
   DELETE_SHARED_ROW,
   DUPLICATE_SHARE_UID,
+  SECRET_NAME_TOO_LONG,
+  SECRET_VALUE_TOO_LARGE,
   SHARED_NEEDS_SHARED_ROW,
   SHARED_ROWS_MISMATCH,
 } from "./lib/errors";
@@ -80,6 +82,32 @@ import {
 // to read it.
 const MIN_CIPHERTEXT_BYTES = 16;
 const NONCE_BYTES = 12;
+
+/**
+ * THE SIZE CAPS, AS THE SERVER CAN SEE THEM.
+ *
+ * Without a cap a member could store a secret of whatever size a Convex
+ * argument allows, around a megabyte, and every read that loads whole rows --
+ * the listing, the bundle every workload syncs, the activity feed -- would
+ * carry it. A few such rows push those reads past Convex's per-query limits,
+ * which breaks them for every member and every token in the environment, so
+ * one write is a denial of service on everybody else's reads.
+ *
+ * The caps are on PLAINTEXT, 64 KiB for a value and 256 bytes for a name,
+ * because that is what a person chose. The server never sees plaintext, so
+ * each is enforced as the ciphertext length it implies. `seal` returns the
+ * AES-GCM output, which is exactly the plaintext plus a 16 byte tag (the
+ * nonce travels in its own field), and the client sends it through `toHex`,
+ * two characters per byte. So the largest ciphertext accepted is
+ * (plaintext cap + 16) * 2 hex characters, and one byte more is refused.
+ * Checked after the hex shape, so the length is known to be a whole number of
+ * bytes.
+ */
+const GCM_TAG_BYTES = 16;
+const MAX_VALUE_PLAINTEXT_BYTES = 64 * 1024;
+const MAX_NAME_PLAINTEXT_BYTES = 256;
+const MAX_VALUE_CIPHERTEXT_HEX = (MAX_VALUE_PLAINTEXT_BYTES + GCM_TAG_BYTES) * 2;
+const MAX_NAME_CIPHERTEXT_HEX = (MAX_NAME_PLAINTEXT_BYTES + GCM_TAG_BYTES) * 2;
 
 /**
  * WHERE A SECRET'S PERMANENT ID COMES FROM, AND WHY THAT IS NOW THE CLIENT.
@@ -249,6 +277,12 @@ function assertSealed(fields: SealedFields): void {
   );
   assertHexBytes("nameNonce", fields.nameNonce, NONCE_BYTES);
   assertHexBytes("valueNonce", fields.valueNonce, NONCE_BYTES);
+  if (fields.nameCiphertext.length > MAX_NAME_CIPHERTEXT_HEX) {
+    throw new ConvexError(SECRET_NAME_TOO_LONG);
+  }
+  if (fields.valueCiphertext.length > MAX_VALUE_CIPHERTEXT_HEX) {
+    throw new ConvexError(SECRET_VALUE_TOO_LARGE);
+  }
 
   // Both fields of a row are sealed under the same project data key, so one
   // nonce used twice is nonce reuse under one key: it leaks the XOR of the two
