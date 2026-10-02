@@ -455,10 +455,13 @@ function ReadyPage({
               </ul>
             )}
           </div>
-          <p className="m-0 text-[13px] text-text-muted">
-            Shared secrets have one value in every environment. Override one to give {envName} its own value; the
-            others keep the shared one.
-          </p>
+          {/* Only where it explains something on screen. */}
+          {rows.some((row) => row.secret.shareUid !== undefined) ? (
+            <p className="m-0 text-[13px] text-text-muted">
+              Shared secrets have one value in every environment. Override one to give {envName} its own value; the
+              others keep the shared one.
+            </p>
+          ) : null}
         </>
       )}
 
@@ -559,10 +562,15 @@ function SecretItem({
       <span className="col-span-2 flex min-w-0 items-center gap-1 md:col-span-1 md:col-start-2 md:row-start-1">
         <span
           className={`min-w-0 font-mono text-[13px] ${
-            value === null ? "truncate tracking-[0.12em] text-text-muted" : "break-all text-text-primary"
+            value === null
+              ? "truncate tracking-[0.12em] text-text-muted"
+              : value === ""
+                ? "text-text-muted"
+                : "break-all text-text-primary"
           }`}
         >
-          {value ?? (failed ? "Could not be opened" : VALUE_MASK)}
+          {/* A revealed empty string would otherwise render as nothing, which looks broken. */}
+          {value === "" ? "Empty value" : (value ?? (failed ? "Could not be opened" : VALUE_MASK))}
         </span>
         <button
           type="button"

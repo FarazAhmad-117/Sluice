@@ -31,9 +31,8 @@ import { describeWriteFailure } from "@/lib/secrets/write-errors";
  * Every environment's key is minted and wrapped in this browser and the
  * project and its environments are created in ONE mutation, so there is no
  * half-made project to clean up if that call is refused. An import runs after
- * it, one sealed secret at a time into development only (the person chooses
- * what to share afterwards); if it stops part way, the project exists and the
- * page says how far it got.
+ * it, one sealed secret at a time, into development only; if it stops part
+ * way, the project exists and the page says how far it got.
  *
  * The .env is read and parsed here and never leaves the tab as plaintext.
  * Nothing on this page shows a value: the import lists names only.
@@ -355,7 +354,6 @@ export function NewProjectView({
               />
             ))}
           </div>
-          <span className="text-[13px] text-text-muted">You can add, rename or remove environments later.</span>
         </fieldset>
 
         <fieldset className="m-0 flex min-w-0 flex-col gap-2.5 border-0 p-0">
@@ -371,7 +369,7 @@ export function NewProjectView({
             <RadioCard
               name="start"
               label="Import a .env file"
-              description="Into development. Shared or not, you choose after."
+              description="Imported into development only."
               checked={start === "import"}
               onChange={() => setStart("import")}
             />
