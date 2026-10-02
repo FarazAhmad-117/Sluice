@@ -1,6 +1,6 @@
 import { newId } from "@sluice/crypto";
 import type { MasterUnlockKey } from "@sluice/crypto";
-import { MAX_SLUG_LENGTH } from "@/lib/naming";
+import { MAX_SLUG_LENGTH, isSlug } from "@/lib/naming";
 import { createProjectDataKey, wrapProjectDataKey } from "@/lib/secrets/pdk";
 import type { EnvironmentKey } from "@/lib/secrets/pdk";
 
@@ -34,6 +34,43 @@ export function slugFromName(name: string): string {
     .replace(/^-+|-+$/g, "");
   // Cut, then trim again: the cut can land just after a hyphen.
   return slug.slice(0, MAX_SLUG_LENGTH).replace(/-+$/, "");
+}
+
+/** The longest display name the server accepts (`convex/lib/naming.ts`). */
+export const MAX_PROJECT_NAME_LENGTH = 100;
+
+/**
+ * Slugs the dashboard's own routes use. `/projects/new` is the create page, so
+ * a project slugged `new` could never be opened. The server does not know the
+ * dashboard's routes, so this is checked here.
+ */
+const RESERVED_SLUGS: readonly string[] = ["new"];
+
+/** What is wrong with a project name, for the field, or `null`. Checked on the trimmed name. */
+export function projectNameProblem(name: string): string | null {
+  const trimmed = name.trim();
+  if (trimmed.length === 0) return "Give the project a name.";
+  if (trimmed.length > MAX_PROJECT_NAME_LENGTH) {
+    return `Use at most ${MAX_PROJECT_NAME_LENGTH} characters.`;
+  }
+  return null;
+}
+
+/**
+ * What is wrong with a slug, or `null`. `fromName` says whether the slug was
+ * proposed from the name (the message then points at the name) or typed.
+ */
+export function projectSlugProblem(slug: string, fromName: boolean): string | null {
+  if (slug.length === 0) {
+    return fromName
+      ? "The name needs at least one letter or digit to make a slug. Or change the slug."
+      : "Enter a slug.";
+  }
+  if (!isSlug(slug)) {
+    return "Use lowercase letters and digits, with single hyphens between them.";
+  }
+  if (RESERVED_SLUGS.includes(slug)) return `"${slug}" is reserved. Choose another slug.`;
+  return null;
 }
 
 /** `development` first, always, then the chosen extras in display order, once each. */

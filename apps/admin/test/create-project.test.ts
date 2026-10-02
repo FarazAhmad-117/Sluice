@@ -4,7 +4,10 @@ import { MAX_SLUG_LENGTH, isSlug } from "../src/lib/naming";
 import { PdkUnwrapError, unwrapProjectDataKey } from "../src/lib/secrets/pdk";
 import {
   OPTIONAL_ENVIRONMENTS,
+  MAX_PROJECT_NAME_LENGTH,
   environmentNames,
+  projectNameProblem,
+  projectSlugProblem,
   sealProjectEnvironments,
   slugFromName,
 } from "../src/lib/projects/create-project";
@@ -49,6 +52,42 @@ describe("slugFromName", () => {
       const slug = slugFromName(name);
       expect({ name, ok: slug === "" || isSlug(slug) }).toEqual({ name, ok: true });
     }
+  });
+});
+
+describe("projectNameProblem", () => {
+  it("needs a name that is not blank", () => {
+    expect(projectNameProblem("")).toMatch(/name/);
+    expect(projectNameProblem("   ")).toMatch(/name/);
+    expect(projectNameProblem(" Storefront ")).toBeNull();
+  });
+
+  it("refuses a name the server would refuse for length, measured trimmed", () => {
+    expect(projectNameProblem("a".repeat(MAX_PROJECT_NAME_LENGTH))).toBeNull();
+    expect(projectNameProblem(` ${"a".repeat(MAX_PROJECT_NAME_LENGTH)} `)).toBeNull();
+    expect(projectNameProblem("a".repeat(MAX_PROJECT_NAME_LENGTH + 1))).toMatch(/at most/);
+  });
+});
+
+describe("projectSlugProblem", () => {
+  it("accepts a slug the server accepts", () => {
+    expect(projectSlugProblem("storefront-api", true)).toBeNull();
+    expect(projectSlugProblem("api2", false)).toBeNull();
+  });
+
+  it("explains an empty slug by where it came from", () => {
+    expect(projectSlugProblem("", true)).toMatch(/name needs at least one letter/);
+    expect(projectSlugProblem("", false)).toBe("Enter a slug.");
+  });
+
+  it("refuses a typed slug that is not a slug", () => {
+    for (const bad of ["Storefront", "a--b", "-a", "a-", "a b", "a_b"]) {
+      expect(projectSlugProblem(bad, false)).toMatch(/lowercase/);
+    }
+  });
+
+  it("refuses the slug the create page's own route uses", () => {
+    expect(projectSlugProblem("new", true)).toMatch(/reserved/);
   });
 });
 
