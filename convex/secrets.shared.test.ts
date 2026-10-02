@@ -269,6 +269,27 @@ describe("createSharedSecret", () => {
     });
   });
 
+  /**
+   * A project with no environments has an empty set, and an empty `rows`
+   * matches it exactly. Without its own refusal that call would get as far as
+   * the overridden check and be refused for the wrong reason, or, if that
+   * check ever moved, write a group of nothing.
+   */
+  it("refuses an empty row set, even for a project with no environments", async () => {
+    const t = convexTest(schema, modules);
+    const w = await world(t);
+    const bare = await t.mutation(api.projects.createProject, {
+      sessionToken: w.alice.sessionToken,
+      orgId: w.orgId,
+      name: "Bare",
+      slug: "bare",
+    });
+
+    await expect(
+      t.mutation(api.secrets.createSharedSecret, sharedArgs(w.alice, bare, [])),
+    ).rejects.toThrow(SHARED_ROWS_MISMATCH);
+  });
+
   it("refuses a group in which every environment is overridden", async () => {
     const t = convexTest(schema, modules);
     const w = await world(t);

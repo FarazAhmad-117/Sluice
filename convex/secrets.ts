@@ -703,7 +703,11 @@ export const createSharedSecret = mutation({
     const environments = await listEnvironmentsByProject(ctx, project._id);
     const byId = new Map(environments.map((env) => [env._id, env]));
     const named = new Set(args.rows.map((row) => row.environmentId));
+    // An empty `rows` is refused on its own: for a project with no
+    // environments it would otherwise match the (empty) set exactly, and a
+    // group of nothing is not a secret.
     if (
+      args.rows.length === 0 ||
       args.rows.length !== environments.length ||
       named.size !== args.rows.length ||
       args.rows.some((row) => !byId.has(row.environmentId))
