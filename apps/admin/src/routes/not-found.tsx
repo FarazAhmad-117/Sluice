@@ -24,7 +24,7 @@ export default function NotFoundRoute() {
           That address is not part of the admin panel.
         </p>
         <div className="flex flex-wrap items-center gap-4">
-          <Link to="/app" className={`${primaryButton} w-auto`}>
+          <Link to="/projects" className={`${primaryButton} w-auto`}>
             Go to the dashboard
           </Link>
           <a href={SITE_URL} className={textLink}>

@@ -1,5 +1,5 @@
 import { useId } from "react";
-import type { InputHTMLAttributes, ReactNode, TextareaHTMLAttributes } from "react";
+import type { ComponentPropsWithRef, InputHTMLAttributes, ReactNode } from "react";
 import { focusRing, inputControl } from "./styles";
 
 /**
@@ -10,6 +10,9 @@ import { focusRing, inputControl } from "./styles";
  * them when the control takes focus rather than only when somebody happens to
  * reach them. An error also sets `aria-invalid` and is announced as it
  * appears (`role="alert"`).
+ *
+ * `ref` reaches the control itself (React 19 passes it as a prop), so a form
+ * can move focus to the field that needs attention.
  *
  * Errors here must never contain a secret value. The fields cannot enforce
  * that; the messages handed to them are written not to.
@@ -81,7 +84,7 @@ export function TextField({
   className = "",
   "aria-describedby": ownDescribedBy,
   ...input
-}: FieldChrome & Omit<InputHTMLAttributes<HTMLInputElement>, "children">) {
+}: FieldChrome & Omit<ComponentPropsWithRef<"input">, "children">) {
   const { id, hintId, errorId, describedBy } = useDescribedBy(hint, error, ownDescribedBy);
   const inputId = ownId ?? `${id}-input`;
   return (
@@ -111,7 +114,7 @@ export function TextArea({
   rows = 3,
   "aria-describedby": ownDescribedBy,
   ...textarea
-}: FieldChrome & Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, "children">) {
+}: FieldChrome & Omit<ComponentPropsWithRef<"textarea">, "children">) {
   const { id, hintId, errorId, describedBy } = useDescribedBy(hint, error, ownDescribedBy);
   const inputId = ownId ?? `${id}-input`;
   return (
