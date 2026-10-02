@@ -1,5 +1,5 @@
-import { Link } from "react-router";
-import { primaryButton, textLink } from "@/components/app/controls";
+import { Button } from "@/components/ui/button";
+import { focusRing } from "@/components/ui/styles";
 import { SITE_URL } from "@/lib/site-url";
 
 /**
@@ -19,15 +19,14 @@ export default function NotFoundRoute() {
   return (
     <main className="flex min-h-[100dvh] flex-col items-center justify-center gap-5 bg-surface-base px-5 text-text-primary">
       <div className="flex w-full max-w-md flex-col gap-4">
-        <h1 className="text-2xl font-medium">No such page</h1>
-        <p className="text-base text-text-muted">
-          That address is not part of the admin panel.
-        </p>
+        <h1 className="m-0 text-2xl font-semibold tracking-[-0.02em]">No such page</h1>
+        <p className="m-0 text-sm text-text-muted">That address is not part of the admin panel.</p>
         <div className="flex flex-wrap items-center gap-4">
-          <Link to="/app" className={`${primaryButton} w-auto`}>
-            Go to the dashboard
-          </Link>
-          <a href={SITE_URL} className={textLink}>
+          <Button to="/projects">Go to your projects</Button>
+          <a
+            href={SITE_URL}
+            className={`rounded-input text-sm text-brand underline underline-offset-4 hover:text-brand-hover ${focusRing}`}
+          >
             Back to the site
           </a>
         </div>

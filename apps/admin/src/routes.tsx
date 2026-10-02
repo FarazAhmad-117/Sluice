@@ -3,20 +3,23 @@ import type { RouteObject } from "react-router";
 import { Providers } from "@/components/providers";
 import { RequireSession } from "@/components/require-session";
 import { RouteError } from "@/components/route-error";
-import DashboardRoute from "@/routes/dashboard";
+import { AppLayout } from "@/components/layout/app-layout";
 import LoginRoute from "@/routes/login";
+import NewProjectRoute from "@/routes/new-project";
 import NotFoundRoute from "@/routes/not-found";
+import ProjectSecretsRoute from "@/routes/project-secrets";
+import ProjectsRoute from "@/routes/projects";
 import SignupRoute from "@/routes/signup";
 
 /**
  * THE ROUTE TABLE.
  *
- * The URLs are the ones the Next application served -- `/login`, `/signup`,
- * `/app` -- because they are in people's bookmarks and in the marketing site's
- * "sign in" link. Changing them would have been free at the moment of the move
- * and expensive forever afterwards.
+ * `/login` and `/signup` are the URLs the Next application served, because they
+ * are in people's bookmarks and in the marketing site's "sign in" link. The
+ * dashboard itself lives under `/projects`, one URL per screen; `/app`, the
+ * old single-screen dashboard, still answers and redirects there.
  *
- * ONE GUARD, ONE PLACE. `/app` and everything added under it sits inside
+ * ONE GUARD, ONE PLACE. Every dashboard route sits inside
  * `RequireSession`, so a route added later is protected by where it is declared
  * rather than by somebody remembering to add a check inside it. The server
  * refuses without a token regardless; see `components/require-session.tsx` for
@@ -67,12 +70,23 @@ export const router = createBrowserRouter([
       // The application has no landing page of its own; that is the marketing
       // site. Anyone who reaches the root is on their way to the dashboard, and
       // the guard sends them to sign in from there if they need to.
-      { index: true, element: <Navigate to="/app" replace /> },
+      { index: true, element: <Navigate to="/projects" replace /> },
       { path: "login", element: <LoginRoute /> },
       { path: "signup", element: <SignupRoute /> },
       {
         element: <RequireSession />,
-        children: [{ path: "app", element: <DashboardRoute /> }],
+        children: [
+          { path: "app", element: <Navigate to="/projects" replace /> },
+          {
+            element: <AppLayout />,
+            children: [
+              { path: "projects", element: <ProjectsRoute /> },
+              { path: "projects/new", element: <NewProjectRoute /> },
+              { path: "projects/:projectSlug", element: <Navigate to="secrets" replace /> },
+              { path: "projects/:projectSlug/secrets", element: <ProjectSecretsRoute /> },
+            ],
+          },
+        ],
       },
       ...devRoutes,
       { path: "*", element: <NotFoundRoute /> },

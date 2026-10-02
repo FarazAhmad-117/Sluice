@@ -168,6 +168,33 @@
   --radius-modal: 16px;
 }
 
+/* `light:` applies a utility on the light theme only. For the few places a
+   token that reads well on dark falls below AA on white (tinted 13px text), or
+   a scrim that must darken rather than whiten. `data-theme` is always set
+   before first paint, so this never misses. */
+@custom-variant light (&:where([data-theme="light"], [data-theme="light"] *));
+
+::selection {
+  background-color: color-mix(in srgb, var(--brand) 35%, transparent);
+  color: var(--text-primary);
+}
+
+/* ---------------------------------------------------------------------------
+   A disabled primary button. Fading the whole button (the opacity every other
+   variant uses) turns near-white-on-black into a muddy grey with grey text.
+   Instead the fill is the same control colour at reduced strength and the
+   label switches to the primary text colour, which stays readable on that
+   fill in both themes (roughly 7:1 dark, 9:1 light). A busy button keeps its
+   normal look: it is working, not unavailable.
+
+   Unlayered on purpose, so it wins over the utilities without `!important`.
+   --------------------------------------------------------------------------- */
+.sluice-primary:is(:disabled, [aria-disabled="true"]):not([aria-busy="true"]) {
+  opacity: 1;
+  background-color: color-mix(in srgb, var(--control-solid) 30%, transparent);
+  color: var(--text-primary);
+}
+
 body {
   margin: 0;
   min-height: 100dvh;
@@ -204,5 +231,49 @@ body {
   .sluice-sweep {
     animation: none;
     width: 100%;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   The drawer's entrance: up from the bottom as a sheet on narrow screens, in
+   from the right at 768px and up (the same breakpoint as Tailwind's `md`).
+   Entrance only; it closes instantly. Off entirely under reduced motion.
+   --------------------------------------------------------------------------- */
+@keyframes sluice-sheet-in {
+  from {
+    transform: translateY(100%);
+  }
+}
+
+@keyframes sluice-drawer-in {
+  from {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes sluice-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.sluice-drawer {
+  animation: sluice-sheet-in 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.sluice-backdrop {
+  animation: sluice-fade-in 180ms ease-out;
+}
+
+@media (min-width: 48rem) {
+  .sluice-drawer {
+    animation-name: sluice-drawer-in;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sluice-drawer,
+  .sluice-backdrop {
+    animation: none;
   }
 }

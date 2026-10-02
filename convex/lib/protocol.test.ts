@@ -157,7 +157,15 @@ describe("the secret associated data rule", () => {
     const files = walk(ADMIN_SRC, [], ADMIN_SOURCE_EXTENSIONS);
     // Not vacuous: the files that call every one of these rules must have been
     // read, or the root resolved somewhere else.
-    const callers = ["decrypt.ts", "seal.ts", "pdk.ts", "revocation-key.ts", "create-forms.tsx"];
+    const callers = [
+      "decrypt.ts",
+      "seal.ts",
+      "pdk.ts",
+      "revocation-key.ts",
+      "shared.ts",
+      // A .tsx caller, so the scan provably reads components and not only lib.
+      "add-secret-drawer.tsx",
+    ];
     for (const expected of callers) {
       expect(`${expected} ${String(files.some((file) => file.endsWith(expected)))}`).toBe(
         `${expected} true`,

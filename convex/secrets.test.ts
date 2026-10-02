@@ -682,12 +682,25 @@ describe("the ciphertext-only surface", () => {
       "valueNonce",
       "createdAt",
       "supersededAt",
+      // Shared-secret grouping metadata. Plaintext on purpose and bound into
+      // no associated data: a random `shr_` id and a boolean, neither of which
+      // says anything about a name or a value. See `shr_` in
+      // `packages/crypto/src/ids.ts`.
+      "shareUid",
+      "overridden",
+      // `createSharedSecret` and `deleteSharedSecret`: the project a group
+      // spans, and the array of per-environment rows, each of which is made
+      // of the fields above.
+      "projectId",
+      "rows",
     ]);
 
     const names = [
       "createSecret",
+      "createSharedSecret",
       "updateSecret",
       "deleteSecret",
+      "deleteSharedSecret",
       "getSecret",
       "listSecrets",
       "listSecretVersions",
@@ -979,6 +992,26 @@ describe("the ciphertext-only surface", () => {
  * landing a row that names a slot it does not occupy.
  */
 describe("the secret's permanent id", () => {
+  /**
+   * A secret created in one environment is not part of any shared secret, so
+   * it carries neither share field, not even as `undefined`: a dashboard that
+   * groups rows by `shareUid` must see "absent" on every plain secret. The
+   * shared shape is pinned in `secrets.shared.test.ts`.
+   */
+  it("lists a plain secret with no shareUid and no overridden field", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, a } = await world(t);
+    await t.mutation(api.secrets.createSecret, secretArgs(alice, a.production));
+
+    const [row] = await t.query(api.secrets.listSecrets, {
+      sessionToken: alice.sessionToken,
+      environmentId: a.production,
+    });
+    expect(row).toBeDefined();
+    expect(row).not.toHaveProperty("shareUid");
+    expect(row).not.toHaveProperty("overridden");
+  });
+
   it("stores the client's secretUid at version 1 and returns both on every read", async () => {
     const t = convexTest(schema, modules);
     const { alice, a } = await world(t);
@@ -1753,7 +1786,9 @@ describe("the secrets surface", () => {
   it("exports exactly the functions it is supposed to", () => {
     expect(Object.keys(secretsModule).sort()).toEqual([
       "createSecret",
+      "createSharedSecret",
       "deleteSecret",
+      "deleteSharedSecret",
       "getSecret",
       "listSecretVersions",
       "listSecrets",

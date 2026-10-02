@@ -269,6 +269,13 @@ export default defineSchema({
     // restate what this field already says and the two could disagree.
     supersededAt: v.optional(v.number()),
     deletedAt: v.optional(v.number()),
+    // Links the per-environment rows of ONE shared secret ("All environments").
+    // Absent on a secret that lives in one environment only. Plaintext metadata,
+    // bound into nothing: see packages/crypto/src/ids.ts on `shr_`.
+    shareUid: v.optional(v.string()),
+    // On a shared row: true when this environment keeps its own value instead of
+    // the shared one. Absent on non-shared rows.
+    overridden: v.optional(v.boolean()),
   })
     // One index serves three queries by prefix, which is why there is no
     // separate `by_environment`:
@@ -285,6 +292,10 @@ export default defineSchema({
       "deletedAt",
     ])
     .index("by_secret_version", ["secretUid", "version"])
+    // Every row of one shared secret, across the project's environments. Read
+    // for `createSharedSecret`'s uniqueness check and `deleteSharedSecret`'s
+    // fan-out.
+    .index("by_share", ["shareUid"])
     .index("by_org", ["orgId"]),
 
   serviceTokens: defineTable({

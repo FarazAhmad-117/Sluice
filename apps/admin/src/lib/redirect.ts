@@ -12,7 +12,7 @@
  * `unknown` rather than a cast, because navigation state is whatever the last
  * caller put there and one of those callers is the browser restoring a history
  * entry from a previous build. An absolute in-app path is accepted and
- * everything else falls back to the dashboard.
+ * everything else falls back to the projects home.
  *
  * THE LEADING-SLASH-BUT-NOT-DOUBLE CHECK IS AN OPEN REDIRECT GUARD. `//evil.example`
  * is a protocol-relative URL: it starts with a slash, looks like an in-app
@@ -25,5 +25,5 @@ export function redirectAfterAuth(state: unknown): string {
       return from;
     }
   }
-  return "/app";
+  return "/projects";
 }

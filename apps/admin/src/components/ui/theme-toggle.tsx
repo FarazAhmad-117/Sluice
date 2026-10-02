@@ -1,4 +1,3 @@
-import { focusRing } from "@/components/app/controls";
 import { useTheme } from "@/lib/theme";
 import type { ThemeChoice } from "@/lib/theme";
 
@@ -10,7 +9,8 @@ import type { ThemeChoice } from "@/lib/theme";
  *
  * A radio group rather than three buttons, because that is what it is: one
  * choice from a fixed set. Screen readers announce the group name and the
- * selected option, and arrow keys move between them, for free.
+ * selected option, and arrow keys move between them, for free. Each option is
+ * 44px tall, the touch-target floor.
  */
 const OPTIONS: ReadonlyArray<{ value: ThemeChoice; label: string; title: string }> = [
   { value: "system", label: "Auto", title: "Follow the operating system preference" },
@@ -22,7 +22,7 @@ export function ThemeToggle() {
   const { choice, setChoice } = useTheme();
 
   return (
-    <fieldset className="flex items-center gap-1 rounded-input border border-hairline p-0.5">
+    <fieldset className="m-0 flex items-center gap-1 rounded-input border border-hairline p-0.5">
       <legend className="sr-only">Colour theme</legend>
       {OPTIONS.map((option) => {
         const selected = choice === option.value;
@@ -30,11 +30,9 @@ export function ThemeToggle() {
           <label
             key={option.value}
             title={option.title}
-            className={`cursor-pointer rounded-input px-2.5 py-1 font-mono text-sm transition-colors ${
-              selected
-                ? "bg-brand-subtle text-brand"
-                : "text-text-muted hover:text-text-primary"
-            } ${focusRing} focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-brand`}
+            className={`flex min-h-10 cursor-pointer items-center rounded-[6px] px-2.5 text-[13px] transition-colors focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-brand ${
+              selected ? "bg-surface-card text-text-primary" : "text-text-muted hover:text-text-primary"
+            }`}
           >
             <input
               type="radio"

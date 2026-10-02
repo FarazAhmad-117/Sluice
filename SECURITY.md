@@ -291,6 +291,19 @@ It does not stop:
   exists but is not yet called, because no shipped client signs revocations
   yet. Verify the key you pin in `SLUICE_ORG_REVOCATION_PUBLIC_KEY` out of
   band, not by reading it back from the server.
+- **Mislabelling a shared secret.** A secret set for "all environments" is not
+  one ciphertext: it is one row per environment, each sealed independently
+  under that environment's key and bound to its own environment, secret id and
+  version like any other secret. What ties the rows together, `shareUid`, and
+  whether a row keeps its own value, `overridden`, are plaintext columns that
+  no ciphertext binds. A server can therefore regroup rows, mark a row as
+  overridden or not, attach a stand-alone secret to a group, or leave one
+  environment's row out, and the dashboard will label the rows accordingly.
+  It cannot make any row open under another environment, secret or version.
+  The dashboard labels a row "All environments" only when its group has a live
+  row in every current environment of the project, and says which
+  environments are missing otherwise; that check uses the same unauthenticated
+  columns, so it catches drift, not a server that lies consistently.
 
 ### Deploy the backend and the CLI together
 

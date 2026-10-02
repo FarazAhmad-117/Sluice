@@ -68,7 +68,7 @@ import type { MasterUnlockKey, PDKGranteeType } from "@sluice/crypto";
  * client to pin name to uid itself, which is follow-up work; see "WHAT PINNING
  * THE CONSTRUCTION DOES NOT PIN" in `packages/crypto/src/protocol.ts`, which
  * states the same limit for every reader of these rules.
- * `use-project-data-key.ts` does check that the server's answers agree with
+ * `environment-key.ts` does check that the server's answers agree with
  * each other and with the selection, which turns a server BUG into a clean
  * failure; it cannot turn a server LIE into one.
  */

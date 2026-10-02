@@ -48,7 +48,7 @@ export function RouteError() {
         <div className="flex flex-wrap items-center gap-4 text-base">
           <button
             type="button"
-            onClick={() => window.location.assign("/app")}
+            onClick={() => window.location.assign("/projects")}
             className="cursor-pointer rounded-input bg-brand-solid px-4 py-3 font-medium text-text-on-brand-solid transition-colors hover:bg-brand-solid-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
           >
             Reload the dashboard

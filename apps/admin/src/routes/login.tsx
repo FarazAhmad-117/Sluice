@@ -1,12 +1,9 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router";
-import {
-  Field,
-  FormError,
-  inputControl,
-  primaryButton,
-  textLink,
-} from "@/components/app/controls";
+import { Button } from "@/components/ui/button";
+import { Callout } from "@/components/ui/feedback";
+import { TextField } from "@/components/ui/field";
+import { focusRing } from "@/components/ui/styles";
 import { AuthShell } from "@/components/auth/auth-shell";
 import {
   CapabilityNotice,
@@ -45,9 +42,6 @@ export default function LoginRoute() {
 
   const destination = redirectAfterAuth(location.state);
 
-  const emailId = useId();
-  const passwordId = useId();
-
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -63,22 +57,25 @@ export default function LoginRoute() {
 
   return (
     <AuthShell
-      title="Sign in to Sluice"
-      lead="Your password is turned into a key in this browser. What reaches the server is a verifier derived from that key, which authenticates you and unlocks nothing."
+      title="Sign in"
+      lead="Your password never leaves this browser."
       footer={
-        <>
-          No account yet?{" "}
-          <Link to="/signup" state={location.state} className={textLink}>
-            Create one
-          </Link>
-          . There is no password reset: the server has never seen your password and has nothing to
-          reset.
-        </>
+        <div className="flex flex-col gap-2">
+          <span>
+            No account yet?{" "}
+            <Link to="/signup" state={location.state} className={`${LINK} ${focusRing}`}>
+              Create one
+            </Link>
+          </span>
+          <span className="text-[13px] text-text-faint">
+            There is no password reset: the server never sees your password.
+          </span>
+        </div>
       }
     >
       <form
         noValidate
-        className="flex flex-col gap-6"
+        className="flex flex-col gap-5"
         onSubmit={(event) => {
           event.preventDefault();
           if (!canSubmit) return;
@@ -92,40 +89,47 @@ export default function LoginRoute() {
       >
         <CapabilityNotice capability={capability} />
 
-        <Field label="Email" htmlFor={emailId}>
-          <input
-            id={emailId}
-            type="email"
-            autoComplete="username"
-            inputMode="email"
-            required
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-            className={inputControl}
-          />
-        </Field>
+        <TextField
+          label="Email"
+          type="email"
+          autoComplete="username"
+          inputMode="email"
+          required
+          value={email}
+          onChange={(event) => setEmail(event.target.value)}
+        />
 
-        <Field label="Password" htmlFor={passwordId}>
-          <input
-            id={passwordId}
-            type="password"
-            autoComplete="current-password"
-            required
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            className={inputControl}
-          />
-        </Field>
+        <TextField
+          label="Password"
+          type="password"
+          autoComplete="current-password"
+          required
+          value={password}
+          onChange={(event) => setPassword(event.target.value)}
+        />
 
         <DerivationProgress phase={phase} />
-        {error === null ? null : <FormError>{error}</FormError>}
+        {error === null ? null : (
+          <Callout tone="danger" role="alert" title="Not signed in">
+            {error}
+          </Callout>
+        )}
 
-        <button type="submit" className={primaryButton} disabled={!canSubmit}>
+        <Button
+          type="submit"
+          size="lg"
+          loading={busy}
+          loadingLabel="Signing in"
+          disabled={!canSubmit && !busy}
+          className="w-full"
+        >
           {busy ? "Signing in" : "Sign in"}
-        </button>
+        </Button>
 
         <DerivationPathNotice report={derivation} />
       </form>
     </AuthShell>
   );
 }
+
+const LINK = "rounded-input font-medium text-brand underline-offset-4 hover:text-brand-hover hover:underline";

@@ -7,13 +7,18 @@
  * looking at it, rather than as a sentence about an argument after a round
  * trip.
  *
- * SLUGS ARE REJECTED, NEVER REWRITTEN, and that rule reaches into the interface
- * as well as the server. The tempting affordance is to lowercase the display
- * name and strip everything else into a slug automatically. That is a
- * canonicalisation, it is not injective, and `a-b`, `a_b`, `a b` and `A/B` all
- * collapse to `ab`: the second one anybody creates is refused as a duplicate of
- * a name nobody chose. So the slug is its own field, always visible, always
- * typed, and the rule is printed next to it.
+ * THE SERVER REJECTS A SLUG, NEVER REWRITES IT. What it receives is exactly
+ * what is stored, or a refusal.
+ *
+ * The dashboard PROPOSES a slug from the project name (`slugFromName` in
+ * `lib/projects/create-project.ts`) and SHOWS it before submit, in the hint
+ * under the name ("sluice run --project <slug>"), with a "Change" control that
+ * opens it as its own field. Proposing is a canonicalisation and it is not
+ * injective: `a-b`, `a_b`, `a b` and `A/B` all collapse to `a-b` or `ab`, so
+ * two different names can propose one slug. That is why the proposal is always
+ * visible and editable before anything is sent, and why a collision comes
+ * back as the server's duplicate-slug refusal rather than as a slug nobody
+ * saw. The browser never rewrites a slug after the person has seen it.
  *
  * `apps/web/test/naming.test.ts` pins this to the cases the server's rule turns
  * on, so the two cannot drift without a test going red.

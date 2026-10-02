@@ -9,7 +9,7 @@ import { useAuth } from "@/lib/auth/auth-context";
  * mutation behind this guard refuses without a valid one -- `requireSession` on
  * the server is what actually protects the data, and it would still protect it
  * if this file were deleted. What this does is stop an unauthenticated visitor
- * landing on three empty panes and reading that as a broken product.
+ * landing on a dashboard of empty states and reading that as a broken product.
  *
  * Do not add anything here that the server does not also enforce. A check that
  * exists only in the browser is a check an attacker skips by not running the
