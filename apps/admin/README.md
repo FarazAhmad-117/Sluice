@@ -1,7 +1,7 @@
 # `apps/admin` — the Sluice admin panel
 
-The authenticated product surface: sign up, sign in, and the three-pane
-dashboard over organisations, projects, environments and secrets. It is a Vite
+The authenticated product surface: sign up, sign in, and the dashboard over
+organisations, projects, environments and secrets. It is a Vite
 single-page application, separate from the marketing site in `apps/web`.
 
 ## Running it
@@ -19,7 +19,7 @@ Or drive this package on its own:
 ```sh
 pnpm --filter admin dev        # http://localhost:5180
 pnpm --filter admin build      # tsc --noEmit, then a production bundle in dist/
-pnpm --filter admin test       # 85 tests: derivation, identity, sealing, naming
+pnpm --filter admin test       # derivation, identity, sealing, scopes, naming
 pnpm --filter admin lint
 pnpm --filter admin typecheck
 ```
@@ -74,6 +74,22 @@ The marketing site has the matching variable in the other direction —
 Set both in a deployment, or the two applications will link at each other's
 localhost ports.
 
+## Routes
+
+```
+/login, /signup                     sign in and create an account
+/projects                           the current org's projects, as cards
+/projects/new                       create a project, optionally importing a .env
+/projects/:slug                     redirects to its secrets
+/projects/:slug/secrets?env=<name>  one environment's secrets, with add and delete
+/app                                the old dashboard URL; redirects to /projects
+```
+
+Every dashboard route sits inside `RequireSession` and `AppLayout`
+(`components/layout/`), which renders the header, the tab bar and the unlock
+gate. A new account's "Personal" org is created on first unlock
+(`lib/orgs/use-current-org.ts`).
+
 ## Layout
 
 ```
@@ -83,15 +99,19 @@ src/
   app.css               design tokens, mirrored from apps/web
   routes/               one file per screen
   components/
-    app/                the dashboard shell and its panes
+    layout/             header, tab bar, unlock gate, app layout
+    secrets/            the add-secret drawer
+    ui/                 primitives: button, field, menu, drawer, dialog, pills
     auth/               the sign-in and sign-up frame
     providers.tsx       theme, Convex and auth, in that order
     require-session.tsx the route guard
   lib/
     auth/               session, identity, password strength, email normalisation
     crypto/             Argon2id, the WASM backend and the derivation worker
-    secrets/            project data keys, sealing and decryption
-    orgs/               revocation key handling
+    secrets/            project data keys, sealing, shared secrets, scope labels
+    projects/           new-project sealing, slugs, the projects overview
+    orgs/               revocation key handling, the current and personal org
+    dotenv.ts           the .env parser used by import
 test/                   node tests, by relative path, no alias resolution
 ```
 
@@ -100,7 +120,7 @@ test/                   node tests, by relative path, no alias resolution
 - **The route guard is not the access control.** Every Convex query behind it
   refuses without a valid session token, and `requireSession` on the server is
   what protects the data. The guard exists so an unauthenticated visitor sees a
-  sign-in page instead of three empty panes. Do not add a check here that the
+  sign-in page instead of a dashboard of empty states. Do not add a check here that the
   server does not also make.
 - **The session token is a Convex function argument**, not a cookie, so it has
   to be readable by the JavaScript that builds the call. `src/lib/auth/session-store.ts`
@@ -115,5 +135,5 @@ test/                   node tests, by relative path, no alias resolution
   reached only through a dynamic import inside an `import.meta.env.DEV` branch,
   which Rollup folds away. A static import anywhere would put it back.
 - **A single-page build needs history fallback.** The host must rewrite unknown
-  paths to `index.html`, or a refresh on `/app` 404s. `vite preview` does this;
+  paths to `index.html`, or a refresh on `/projects` 404s. `vite preview` does this;
   a static host has to be told to.
