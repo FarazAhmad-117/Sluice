@@ -2,7 +2,7 @@ import { Fragment } from "react";
 import type { ReactNode } from "react";
 import { Link } from "react-router";
 import { IconButton } from "@/components/ui/button";
-import { IconMenu } from "@/components/ui/icons";
+import { IconMenu, IconSearch } from "@/components/ui/icons";
 import { focusRing, pageGutter } from "@/components/ui/styles";
 import { useShell } from "@/lib/shell/shell-context";
 
@@ -34,7 +34,7 @@ export function PageHeader({
   readonly crumbs?: readonly Crumb[];
   readonly actions?: ReactNode;
 }) {
-  const { openNav } = useShell();
+  const { openNav, openPalette } = useShell();
   return (
     <>
       <header
@@ -74,6 +74,9 @@ export function PageHeader({
           <IconMenu className="size-5" />
         </IconButton>
         <span className="min-w-0 grow truncate font-semibold text-text-primary">{title}</span>
+        <IconButton label="Search" onClick={openPalette}>
+          <IconSearch className="size-[18px]" />
+        </IconButton>
       </header>
     </>
   );

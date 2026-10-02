@@ -10,6 +10,7 @@ import {
   IconLayers,
   IconOverview,
   IconPlus,
+  IconSearch,
   IconSettings,
   IconTicket,
   IconUsers,
@@ -18,6 +19,7 @@ import { compactHeight, focusRing } from "@/components/ui/styles";
 import { useProjectScope } from "@/lib/projects/project-context";
 import { countProjectSecrets } from "@/lib/projects/project-overview";
 import type { ProjectSecrets } from "@/lib/secrets/use-project-secrets";
+import { useShell } from "@/lib/shell/shell-context";
 import { AccountMenu } from "./account-menu";
 import { OrgSwitcher } from "./org-switcher";
 import { ProjectSwitcher } from "./project-switcher";
@@ -50,6 +52,30 @@ function GroupLabel({ children, id, spaced = false }: { readonly children: React
     <span id={id} className={`block px-2.5 pb-1.5 text-xs font-medium text-text-muted ${spaced ? "pt-[18px]" : ""}`}>
       {children}
     </span>
+  );
+}
+
+/** "⌘K" on a Mac, "Ctrl K" elsewhere: the shortcut the palette actually answers to here. */
+function shortcutHint(): string {
+  const platform = typeof navigator === "undefined" ? "" : navigator.platform || navigator.userAgent;
+  return /Mac|iPhone|iPad/.test(platform) ? "⌘K" : "Ctrl K";
+}
+
+export function SearchButton() {
+  const { openPalette } = useShell();
+  return (
+    <button
+      type="button"
+      onClick={openPalette}
+      aria-keyshortcuts="Control+K Meta+K"
+      className={`flex ${compactHeight} w-full cursor-pointer items-center gap-2 rounded-input border border-hairline bg-surface-base px-2.5 text-[13px] text-text-muted transition-colors hover:border-hairline-strong hover:text-text-primary ${focusRing}`}
+    >
+      <IconSearch className="size-3.5 shrink-0" />
+      <span className="grow text-left">Search</span>
+      <kbd aria-hidden="true" className="hidden font-mono text-[11px] lg:inline">
+        {shortcutHint()}
+      </kbd>
+    </button>
   );
 }
 
@@ -205,20 +231,15 @@ function OrgNav() {
  * The sidebar's contents. `placement="drawer"` leaves room at the top right
  * for the drawer's close button.
  */
-export function SidebarContent({
-  placement,
-  search,
-}: {
-  readonly placement: "rail" | "drawer";
-  /** The search control, between the org switcher and the project. */
-  readonly search?: ReactNode;
-}) {
+export function SidebarContent({ placement }: { readonly placement: "rail" | "drawer" }) {
   const scope = useProjectScope();
 
   return (
     <div className="flex min-h-full flex-col gap-0.5">
       <OrgSwitcher reserveEnd={placement === "drawer"} />
-      {search === undefined ? <div className="h-3.5" /> : <div className="mt-1 mb-3.5">{search}</div>}
+      <div className="mt-1 mb-3.5">
+        <SearchButton />
+      </div>
 
       {scope === null ? (
         <OrgNav />

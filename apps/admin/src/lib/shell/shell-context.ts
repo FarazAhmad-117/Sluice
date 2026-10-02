@@ -11,6 +11,8 @@ import { createContext, useCallback, useContext, useEffect, useState } from "rea
  */
 export interface Shell {
   openNav(): void;
+  /** The command palette; also ⌘K / Ctrl+K anywhere. */
+  openPalette(): void;
   /** Says `message` once, politely. A repeat of the same message is said again. */
   announce(message: string): void;
 }

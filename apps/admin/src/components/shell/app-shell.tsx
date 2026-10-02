@@ -10,6 +10,7 @@ import { useProjectSecrets } from "@/lib/secrets/use-project-secrets";
 import { ShellContext, useAnnouncer } from "@/lib/shell/shell-context";
 import type { Shell } from "@/lib/shell/shell-context";
 import { DESKTOP, useMediaQuery } from "@/lib/use-media-query";
+import { CommandPalette } from "./command-palette";
 import { SidebarContent } from "./sidebar";
 
 const NONE: ReadonlySet<string> = new Set();
@@ -51,8 +52,22 @@ export function ShellFrame({ scope }: { readonly scope: ProjectScope | null }) {
   const navOpen = navOpenAt === location.key && !desktop;
   const locationKey = location.key;
 
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "k") {
+        // Not over another modal: a drawer or a confirmation owns the keyboard.
+        if (document.querySelector('[role="dialog"][aria-modal="true"], dialog[open]:not([aria-label="Search"])') !== null) return;
+        event.preventDefault();
+        setPaletteOpen((open) => !open);
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   const shell = useMemo(
-    (): Shell => ({ openNav: () => setNavOpenAt(locationKey), announce }),
+    (): Shell => ({ openNav: () => setNavOpenAt(locationKey), openPalette: () => setPaletteOpen(true), announce }),
     [announce, locationKey],
   );
 
@@ -98,6 +113,7 @@ export function ShellFrame({ scope }: { readonly scope: ProjectScope | null }) {
             <SidebarContent placement="drawer" />
           </div>
         </Drawer>
+        <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} scope={scope} />
         {/* The app's one live region: the latest result only, cleared after a few seconds. */}
         <p role="status" aria-live="polite" className="sr-only">
           {announcement}
