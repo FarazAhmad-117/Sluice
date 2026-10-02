@@ -17,6 +17,7 @@ import type * as http from "../http.js";
 import type * as lib_audit from "../lib/audit.js";
 import type * as lib_authz from "../lib/authz.js";
 import type * as lib_email from "../lib/email.js";
+import type * as lib_environments from "../lib/environments.js";
 import type * as lib_errors from "../lib/errors.js";
 import type * as lib_handshake from "../lib/handshake.js";
 import type * as lib_hex from "../lib/hex.js";
@@ -56,6 +57,7 @@ declare const fullApi: ApiFromModules<{
   "lib/audit": typeof lib_audit;
   "lib/authz": typeof lib_authz;
   "lib/email": typeof lib_email;
+  "lib/environments": typeof lib_environments;
   "lib/errors": typeof lib_errors;
   "lib/handshake": typeof lib_handshake;
   "lib/hex": typeof lib_hex;
