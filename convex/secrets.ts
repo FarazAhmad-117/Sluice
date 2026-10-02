@@ -21,6 +21,7 @@ import { assertHexAtLeast, assertHexBytes } from "./lib/hex";
 import { requireId } from "./lib/ids";
 import { getPDKGrant, listEnvironmentsByProject } from "./repo/environments";
 import {
+  getSecret as getSecretRow,
   insertSecret,
   listCurrentByShareUid,
   listCurrentSecretsByEnvironment,
@@ -809,6 +810,205 @@ export const createSharedSecret = mutation({
       });
     }
     return created;
+  },
+});
+
+/**
+ * EDITING THE SHARED VALUE: ONE NEW VERSION OF EVERY ROW THAT USES IT, AT ONCE.
+ *
+ * A shared secret's value lives in N rows, one per environment, each sealed
+ * under its own environment's key. Changing "the" value therefore means the
+ * client reseals the new value once per environment that uses it and sends
+ * every one of those rows here together, and they land together or not at
+ * all: a value that changed in staging and not in development, under a label
+ * that says both use the same one, is exactly the lie a group exists to
+ * avoid.
+ *
+ * WHAT THIS MUTATION OWNS, AS `createSharedSecret` OWNS IT FOR A NEW GROUP, IS
+ * THE SHAPE OF THE SET. The rows named must be exactly the group's current
+ * rows that use the shared value: every one of them, each once, and no
+ * other. One left out would keep the old value under the shared label; an
+ * overridden row included would overwrite the value that environment chose to
+ * keep; a row from outside the group would be relabelled into it. All three
+ * are refused with `SHARED_ROWS_MISMATCH`, before anything is written. An
+ * overridden row is edited on its own, through `updateSecret`, because its
+ * value is its own.
+ *
+ * The set is compared by LINEAGE, the `sec_` id, not by row id. A caller who
+ * names the rows they opened, one of which somebody has since replaced, named
+ * the right set and is behind on one of its members; that is the race loser
+ * `STALE_VERSION` exists to tell to reload, and comparing row ids would have
+ * answered them with "the environments changed" instead.
+ *
+ * EVERY ROW IS THEN AN ORDINARY UPDATE, held to every rule `updateSecret`
+ * applies, in the same order: the org copies agree with the walked org, the
+ * caller holds a key for the row's environment, the compare-and-set on the
+ * version, the shape of the sealed fields, the key generation, and the nonce
+ * history. Each new row copies its environment, org, `sec_` id, `shr_` id
+ * and override flag off the row it replaces, never from an argument, so this
+ * path cannot move a secret anywhere `updateSecret` could not.
+ *
+ * Addressed by project and share id, as `deleteSharedSecret` is, with the same
+ * refusal for a share id that is unknown, deleted, or belongs to another
+ * project: it confirms nothing.
+ */
+export const updateSharedSecret = mutation({
+  args: {
+    ...sessionArg,
+    projectId: v.id("projects"),
+    shareUid: v.string(),
+    rows: v.array(
+      v.object({
+        // Exactly the fields `updateSecret` takes for one row, with the same
+        // meaning and the same checks: the row the client opened, the version
+        // it sealed the new value under (that row's plus one), and the key
+        // generation it sealed under.
+        secretId: v.id("secrets"),
+        version: v.number(),
+        pdkVersion: v.number(),
+        nameCiphertext: v.string(),
+        nameNonce: v.string(),
+        valueCiphertext: v.string(),
+        valueNonce: v.string(),
+      }),
+    ),
+  },
+  returns: v.array(
+    v.object({
+      secretId: v.id("secrets"),
+      secretUid: v.string(),
+      environmentId: v.id("environments"),
+      version: v.number(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const { org, project, user } = await requireProject(
+      ctx,
+      args.sessionToken,
+      args.projectId,
+    );
+
+    // The group, found and confined to this project exactly as
+    // `deleteSharedSecret` finds it, with the same refusal.
+    const group = await listCurrentByShareUid(ctx, args.shareUid);
+    if (group.length === 0) refuse();
+    const environments = await listEnvironmentsByProject(ctx, project._id);
+    const environmentsById = new Map(environments.map((env) => [env._id, env]));
+    if (group.some((row) => !environmentsById.has(row.environmentId))) refuse();
+
+    // THE SET CHECK, by lineage. Each named row must be a row of this group
+    // (any version of it), and the lineages named must be exactly the
+    // group's shared ones, each once.
+    const shared = new Map(
+      group
+        .filter((row) => row.overridden !== true)
+        .map((row) => [row.secretUid, row]),
+    );
+    const named: Array<{ row: (typeof args.rows)[number]; live: Doc<"secrets"> }> =
+      [];
+    for (const row of args.rows) {
+      const opened = await getSecretRow(ctx, row.secretId);
+      const live =
+        opened !== null && opened.shareUid === args.shareUid
+          ? shared.get(opened.secretUid)
+          : undefined;
+      if (live === undefined) throw new ConvexError(SHARED_ROWS_MISMATCH);
+      named.push({ row, live });
+    }
+    const lineages = new Set(named.map(({ live }) => live.secretUid));
+    if (
+      named.length === 0 ||
+      lineages.size !== named.length ||
+      lineages.size !== shared.size
+    ) {
+      throw new ConvexError(SHARED_ROWS_MISMATCH);
+    }
+
+    // Then, per row, what `updateSecret` checks before reading further: both
+    // org copies on the path agree with the walked org, and the caller holds
+    // a key for the environment the row already lives in. A missing grant on
+    // ANY of them refuses the whole edit, because the alternative is a group
+    // whose shared value changed in only some of its environments.
+    for (const { live } of named) {
+      const environment = environmentsById.get(
+        live.environmentId,
+      ) as Doc<"environments">;
+      assertOrgLink(live.orgId, org);
+      assertOrgLink(environment.orgId, org);
+      await requirePDKGrant(ctx, environment._id, user.uid);
+    }
+
+    // Every check on every row before any write, in `updateSecret`'s order.
+    // A refusal after a write would be rolled back too, but there is no
+    // reason to write first.
+    const planned: Array<{
+      row: (typeof args.rows)[number];
+      current: Doc<"secrets">;
+    }> = [];
+    for (const { row, live } of named) {
+      const environment = environmentsById.get(
+        live.environmentId,
+      ) as Doc<"environments">;
+      const { versions, current } = await historyOf(ctx, live);
+      if (current.deletedAt !== undefined) refuse();
+      // THE COMPARE-AND-SET, per row, in both forms staleness takes: the row
+      // the client opened is not the current one, or the stated version is
+      // not current + 1. See `updateSecret`.
+      if (row.secretId !== current._id || row.version !== current.version + 1) {
+        throw new ConvexError(STALE_VERSION);
+      }
+      assertSealed(row);
+      if (row.pdkVersion !== environment.pdkVersion) {
+        throw new ConvexError(STALE_PDK_VERSION);
+      }
+      // Equal nonces ACROSS rows are not reuse, each row being under a
+      // different environment's key; within one row's history they are.
+      assertNoncesAreNew(versions, row.pdkVersion, row);
+      planned.push({ row, current });
+    }
+
+    const now = Date.now();
+    const updated: Array<{
+      secretId: Id<"secrets">;
+      secretUid: string;
+      environmentId: Id<"environments">;
+      version: number;
+    }> = [];
+    for (const { row, current } of planned) {
+      const version = current.version + 1;
+      const secretId = await insertSecret(ctx, {
+        // All read from the row being replaced, as in `updateSecret`.
+        environmentId: current.environmentId,
+        orgId: current.orgId,
+        secretUid: current.secretUid,
+        nameCiphertext: row.nameCiphertext,
+        nameNonce: row.nameNonce,
+        valueCiphertext: row.valueCiphertext,
+        valueNonce: row.valueNonce,
+        pdkVersion: row.pdkVersion,
+        version,
+        ...(current.shareUid === undefined ? {} : { shareUid: current.shareUid }),
+        ...(current.overridden === undefined
+          ? {}
+          : { overridden: current.overridden }),
+      });
+      await patchSecret(ctx, current._id, { supersededAt: now });
+      // One event per row, the same event `updateSecret` writes, so "what
+      // changed in this environment" answers the same way however it changed.
+      await recordUserEvent(ctx, {
+        orgId: org._id,
+        actorId: user._id,
+        action: "secret.update",
+        targetId: secretId,
+      });
+      updated.push({
+        secretId,
+        secretUid: current.secretUid,
+        environmentId: current.environmentId,
+        version,
+      });
+    }
+    return updated;
   },
 });
 

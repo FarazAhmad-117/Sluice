@@ -834,3 +834,344 @@ describe("a shared row's later versions", () => {
     });
   });
 });
+
+/**
+ * EDITING THE SHARED VALUE IS ONE NEW VERSION PER SHARED ROW, ALL AT ONCE.
+ *
+ * The client reseals the new value once per environment that uses the shared
+ * value, each under that environment's key, and sends exactly those rows. An
+ * overridden environment keeps its own value and is edited on its own, with
+ * `updateSecret`. Every row is held to every rule `updateSecret` applies, and
+ * a refusal on any one of them writes nothing on any of them.
+ */
+describe("updateSharedSecret", () => {
+  const STALE_VERSION =
+    "This secret changed since you opened it. Reload to see the latest version.";
+
+  /** A fresh, distinct nonce pair per call, so no fixture repeats one. */
+  let counter = 0;
+  function freshNonces() {
+    counter += 1;
+    const n = counter.toString(16).padStart(4, "0");
+    return {
+      nameNonce: `a1${n}a1a1a1a1a1a1a1a1a1`,
+      valueNonce: `b2${n}b2b2b2b2b2b2b2b2b2`,
+    };
+  }
+
+  function edit(
+    secretId: Id<"secrets">,
+    overrides: Record<string, unknown> = {},
+  ) {
+    return {
+      secretId,
+      version: 2,
+      pdkVersion: 1,
+      nameCiphertext: "aa".repeat(24),
+      valueCiphertext: "ee".repeat(40),
+      ...freshNonces(),
+      ...overrides,
+    };
+  }
+
+  /** A group over api's three environments, production overridden. */
+  async function group(t: Harness) {
+    const w = await world(t);
+    const [dev, staging, prod] = w.api.environments as [
+      Id<"environments">,
+      Id<"environments">,
+      Id<"environments">,
+    ];
+    const shareUid = newId("shr");
+    const created = await t.mutation(
+      api.secrets.createSharedSecret,
+      sharedArgs(
+        w.alice,
+        w.api.projectId,
+        [row(dev), row(staging), row(prod, { overridden: true })],
+        shareUid,
+      ),
+    );
+    const byEnv = (env: Id<"environments">) =>
+      created.find((c) => c.environmentId === env)!;
+    return {
+      w,
+      shareUid,
+      dev: byEnv(dev),
+      staging: byEnv(staging),
+      prod: byEnv(prod),
+    };
+  }
+
+  type Group = Awaited<ReturnType<typeof group>>;
+
+  function updateArgs(
+    actor: Actor,
+    projectId: Id<"projects">,
+    shareUid: string,
+    rows: ReturnType<typeof edit>[],
+  ) {
+    return { sessionToken: actor.sessionToken, projectId, shareUid, rows };
+  }
+
+  async function currentRows(t: Harness, environments: Id<"environments">[]) {
+    return (await allRows(t, environments)).filter(
+      (r) => r.supersededAt === undefined && r.deletedAt === undefined,
+    );
+  }
+
+  it("advances every shared row together and leaves the overridden row alone", async () => {
+    const t = convexTest(schema, modules);
+    const { w, shareUid, dev, staging, prod } = await group(t);
+
+    const result = await t.mutation(
+      api.secrets.updateSharedSecret,
+      updateArgs(w.alice, w.api.projectId, shareUid, [
+        edit(dev.secretId),
+        edit(staging.secretId),
+      ]),
+    );
+    expect(
+      result.map((r) => [r.environmentId, r.secretUid, r.version]),
+    ).toEqual([
+      [dev.environmentId, dev.secretUid, 2],
+      [staging.environmentId, staging.secretUid, 2],
+    ]);
+
+    for (const old of [dev, staging]) {
+      const listed = await t.query(api.secrets.listSecrets, {
+        sessionToken: w.alice.sessionToken,
+        environmentId: old.environmentId,
+      });
+      expect(listed).toHaveLength(1);
+      expect(listed[0]).toMatchObject({
+        secretUid: old.secretUid,
+        version: 2,
+        valueCiphertext: "ee".repeat(40),
+        shareUid,
+        overridden: false,
+      });
+      expect(listed[0]?.secretId).not.toBe(old.secretId);
+      // The previous version is kept, superseded, exactly as it was.
+      const history = await t.query(api.secrets.listSecretVersions, {
+        sessionToken: w.alice.sessionToken,
+        secretId: old.secretId,
+      });
+      expect(
+        history.map((h) => [h.version, h.supersededAt !== undefined]),
+      ).toEqual([
+        [1, true],
+        [2, false],
+      ]);
+    }
+
+    const prodListed = await t.query(api.secrets.listSecrets, {
+      sessionToken: w.alice.sessionToken,
+      environmentId: prod.environmentId,
+    });
+    expect(prodListed).toHaveLength(1);
+    expect(prodListed[0]).toMatchObject({
+      secretId: prod.secretId,
+      version: 1,
+      overridden: true,
+    });
+
+    // One event per row, the same event `updateSecret` writes.
+    const events = await t.run(async (ctx) =>
+      listAuditEventsByActor(ctx, w.alice.userId, 100),
+    );
+    expect(
+      events
+        .filter((e) => e.action === "secret.update")
+        .map((e) => e.targetId)
+        .sort(),
+    ).toEqual(result.map((r) => r.secretId).sort());
+  });
+
+  describe("refuses a row set that is not exactly the group's shared rows, and writes nothing", () => {
+    it.each([
+      ["missing a shared row", (g: Group) => [edit(g.dev.secretId)]],
+      [
+        "with the overridden row",
+        (g: Group) => [
+          edit(g.dev.secretId),
+          edit(g.staging.secretId),
+          edit(g.prod.secretId),
+        ],
+      ],
+      [
+        "with a shared row twice",
+        (g: Group) => [
+          edit(g.dev.secretId),
+          edit(g.dev.secretId),
+          edit(g.staging.secretId),
+        ],
+      ],
+      ["with no rows", (_g: Group) => []],
+    ])("%s", async (_label, rowsFor) => {
+      const t = convexTest(schema, modules);
+      const g = await group(t);
+      const before = await currentRows(t, g.w.api.environments);
+
+      await expect(
+        t.mutation(
+          api.secrets.updateSharedSecret,
+          updateArgs(g.w.alice, g.w.api.projectId, g.shareUid, rowsFor(g)),
+        ),
+      ).rejects.toThrow(SHARED_ROWS_MISMATCH);
+      expect(await currentRows(t, g.w.api.environments)).toEqual(before);
+    });
+
+    it("with a plain secret's row in place of a shared one", async () => {
+      const t = convexTest(schema, modules);
+      const g = await group(t);
+      const plain = await t.mutation(
+        api.secrets.createSecret,
+        plainArgs(g.w.alice, g.staging.environmentId),
+      );
+      const before = await currentRows(t, g.w.api.environments);
+
+      await expect(
+        t.mutation(
+          api.secrets.updateSharedSecret,
+          updateArgs(g.w.alice, g.w.api.projectId, g.shareUid, [
+            edit(g.dev.secretId),
+            edit(plain.secretId),
+          ]),
+        ),
+      ).rejects.toThrow(SHARED_ROWS_MISMATCH);
+      expect(await currentRows(t, g.w.api.environments)).toEqual(before);
+    });
+  });
+
+  it("refuses a stale version on any row, and writes nothing", async () => {
+    const t = convexTest(schema, modules);
+    const g = await group(t);
+    const before = await currentRows(t, g.w.api.environments);
+
+    for (const version of [1, 3]) {
+      await expect(
+        t.mutation(
+          api.secrets.updateSharedSecret,
+          updateArgs(g.w.alice, g.w.api.projectId, g.shareUid, [
+            edit(g.dev.secretId),
+            edit(g.staging.secretId, { version }),
+          ]),
+        ),
+      ).rejects.toThrow(STALE_VERSION);
+    }
+    expect(await currentRows(t, g.w.api.environments)).toEqual(before);
+  });
+
+  /**
+   * The race loser: they opened version 1, somebody saved version 2 since,
+   * and they send version 2 on top of the rows they opened. Those rows are no
+   * longer current, and the answer is "reload", the same sentence
+   * `updateSecret` gives, not "the environments changed".
+   */
+  it("refuses an edit made on top of rows that have since been replaced", async () => {
+    const t = convexTest(schema, modules);
+    const g = await group(t);
+    const stale = [edit(g.dev.secretId), edit(g.staging.secretId)];
+    await t.mutation(
+      api.secrets.updateSharedSecret,
+      updateArgs(g.w.alice, g.w.api.projectId, g.shareUid, [
+        edit(g.dev.secretId),
+        edit(g.staging.secretId),
+      ]),
+    );
+    const before = await currentRows(t, g.w.api.environments);
+
+    await expect(
+      t.mutation(
+        api.secrets.updateSharedSecret,
+        updateArgs(g.w.alice, g.w.api.projectId, g.shareUid, stale),
+      ),
+    ).rejects.toThrow(STALE_VERSION);
+    expect(await currentRows(t, g.w.api.environments)).toEqual(before);
+  });
+
+  it("refuses a stale key version, a reused nonce and a malformed nonce, and writes nothing", async () => {
+    const t = convexTest(schema, modules);
+    const g = await group(t);
+    const before = await currentRows(t, g.w.api.environments);
+
+    await expect(
+      t.mutation(
+        api.secrets.updateSharedSecret,
+        updateArgs(g.w.alice, g.w.api.projectId, g.shareUid, [
+          edit(g.dev.secretId),
+          edit(g.staging.secretId, { pdkVersion: 2 }),
+        ]),
+      ),
+    ).rejects.toThrow(STALE_PDK_VERSION);
+
+    // `row()` sealed version 1 under this nonce, under the same key.
+    await expect(
+      t.mutation(
+        api.secrets.updateSharedSecret,
+        updateArgs(g.w.alice, g.w.api.projectId, g.shareUid, [
+          edit(g.dev.secretId),
+          edit(g.staging.secretId, { nameNonce: "000102030405060708090a0b" }),
+        ]),
+      ),
+    ).rejects.toThrow("A nonce may not be reused under one project data key.");
+
+    await expect(
+      t.mutation(
+        api.secrets.updateSharedSecret,
+        updateArgs(g.w.alice, g.w.api.projectId, g.shareUid, [
+          edit(g.dev.secretId),
+          edit(g.staging.secretId, { valueNonce: "abcd" }),
+        ]),
+      ),
+    ).rejects.toThrow("valueNonce");
+    expect(await currentRows(t, g.w.api.environments)).toEqual(before);
+  });
+
+  it("refuses a member who holds no key for the group's environments", async () => {
+    const t = convexTest(schema, modules);
+    const g = await group(t);
+    const bob = await seedUser(t, "bob@example.test");
+    await t.run(async (ctx) =>
+      insertOrgMember(ctx, {
+        orgId: g.w.orgId,
+        userId: bob.userId,
+        role: "member",
+      }),
+    );
+    const before = await currentRows(t, g.w.api.environments);
+
+    await expect(
+      t.mutation(
+        api.secrets.updateSharedSecret,
+        updateArgs(bob, g.w.api.projectId, g.shareUid, [
+          edit(g.dev.secretId),
+          edit(g.staging.secretId),
+        ]),
+      ),
+    ).rejects.toThrow(NO_GRANT);
+    expect(await currentRows(t, g.w.api.environments)).toEqual(before);
+  });
+
+  it("refuses a group addressed through another project, an unknown shareUid, and another org", async () => {
+    const t = convexTest(schema, modules);
+    const g = await group(t);
+    const theirs = await otherTenant(t, g.w.mallory);
+    const rows = () => [edit(g.dev.secretId), edit(g.staging.secretId)];
+    const before = await currentRows(t, g.w.api.environments);
+
+    const attempts = [
+      updateArgs(g.w.alice, g.w.web.projectId, g.shareUid, rows()),
+      updateArgs(g.w.alice, g.w.api.projectId, newId("shr"), rows()),
+      updateArgs(g.w.mallory, theirs.projectId, g.shareUid, rows()),
+      updateArgs(g.w.mallory, g.w.api.projectId, g.shareUid, rows()),
+    ];
+    for (const args of attempts) {
+      await expect(
+        t.mutation(api.secrets.updateSharedSecret, args),
+      ).rejects.toThrow(NOT_PERMITTED);
+    }
+    expect(await currentRows(t, g.w.api.environments)).toEqual(before);
+  });
+});

@@ -692,9 +692,9 @@ describe("the ciphertext-only surface", () => {
       // `packages/crypto/src/ids.ts`.
       "shareUid",
       "overridden",
-      // `createSharedSecret` and `deleteSharedSecret`: the project a group
-      // spans, and the array of per-environment rows, each of which is made
-      // of the fields above.
+      // `createSharedSecret`, `updateSharedSecret` and `deleteSharedSecret`:
+      // the project a group spans, and the array of per-environment rows,
+      // each of which is made of the fields above.
       "projectId",
       "rows",
     ]);
@@ -703,6 +703,7 @@ describe("the ciphertext-only surface", () => {
       "createSecret",
       "createSharedSecret",
       "updateSecret",
+      "updateSharedSecret",
       "deleteSecret",
       "deleteSharedSecret",
       "getSecret",
@@ -1797,6 +1798,7 @@ describe("the secrets surface", () => {
       "listSecretVersions",
       "listSecrets",
       "updateSecret",
+      "updateSharedSecret",
     ]);
   });
 });

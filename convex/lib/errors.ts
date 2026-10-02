@@ -29,6 +29,11 @@ export const DUPLICATE_UID = "An account already exists with that uid.";
  * from another project, or one environment named twice. The honest cause is a
  * dashboard that loaded the environment list before somebody added or removed
  * one, so the remedy is to reload and seal again.
+ *
+ * `secrets.updateSharedSecret` refuses with the same sentence when the rows it
+ * was handed are not exactly the group's current rows that use the shared
+ * value. There the honest cause is a dashboard holding a stale or partial view
+ * of the group, and the remedy is the same: reload, then seal again.
  */
 export const SHARED_ROWS_MISMATCH =
   "This project's environments changed since you opened it. Reload and try again.";
