@@ -544,7 +544,12 @@ function SecretsPage({ slug, data }: { readonly slug: string; readonly data: Rea
         <EditSecretDrawer
           name={editing}
           choices={editing$.choices}
-          initialChoice={editing$.byCell.get(environment.environmentId) ?? editing$.choices[0]!.id}
+          // The value the environment on screen uses; if it has no row for
+          // this key, nothing is preselected and the person picks.
+          initialChoice={
+            editing$.byCell.get(environment.environmentId) ??
+            (editing$.choices.length === 1 ? editing$.choices[0]!.id : null)
+          }
           onSave={(choiceId, value) => saveEdit(editing, choiceId, value)}
           onClose={(saved) => {
             setEditing(null);

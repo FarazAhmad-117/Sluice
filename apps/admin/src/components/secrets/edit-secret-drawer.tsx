@@ -38,23 +38,30 @@ export function EditSecretDrawer({
 }: {
   readonly name: string;
   readonly choices: readonly EditChoice[];
-  readonly initialChoice: string;
+  /** `null`: nothing preselected, the person must pick. */
+  readonly initialChoice: string | null;
   readonly onSave: (choiceId: string, value: string) => Promise<EditOutcome>;
   readonly onClose: (saved?: { readonly label: string }) => void;
 }) {
   const formId = useId();
   const valueField = useRef<HTMLTextAreaElement>(null);
-  const [choice, setChoice] = useState(initialChoice);
+  const [choice, setChoice] = useState<string | null>(initialChoice);
+  const [mustChoose, setMustChoose] = useState(false);
+  const firstChoice = useRef<HTMLDivElement>(null);
   const [value, setValue] = useState("");
   const [shown, setShown] = useState(false);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<Extract<EditOutcome, { ok: false }> | null>(null);
-  const chosen = choices.find((option) => option.id === choice) ?? choices[0];
+  const chosen = choices.find((option) => option.id === choice);
   // Checked before anything is sealed; the server applies the same limit.
   const valueProblem = secretValueProblem(value);
 
   const save = async () => {
-    if (chosen === undefined) return;
+    if (chosen === undefined) {
+      setMustChoose(true);
+      firstChoice.current?.querySelector("input")?.focus();
+      return;
+    }
     if (valueProblem !== null) {
       valueField.current?.focus();
       return;
@@ -109,21 +116,31 @@ export function EditSecretDrawer({
         <TextField label="Key" mono value={name} readOnly hint="A key cannot be renamed. Add a new one and delete this one instead." />
 
         {choices.length > 1 ? (
-          <fieldset className="m-0 flex min-w-0 flex-col gap-2.5 border-0 p-0">
+          <fieldset
+            aria-describedby={mustChoose && chosen === undefined ? `${formId}-choice-error` : undefined}
+            className="m-0 flex min-w-0 flex-col gap-2.5 border-0 p-0"
+          >
             <legend className="pb-2.5 font-medium text-text-primary">Which value?</legend>
-            {choices.map((option) => (
-              <RadioCard
-                key={option.id}
-                name={`${formId}-choice`}
-                label={option.label}
-                description={option.description}
-                checked={choice === option.id}
-                onChange={() => {
-                  setChoice(option.id);
-                  setFailure(null);
-                }}
-              />
-            ))}
+            <div ref={firstChoice} className="flex flex-col gap-2.5">
+              {choices.map((option) => (
+                <RadioCard
+                  key={option.id}
+                  name={`${formId}-choice`}
+                  label={option.label}
+                  description={option.description}
+                  checked={choice === option.id}
+                  onChange={() => {
+                    setChoice(option.id);
+                    setFailure(null);
+                  }}
+                />
+              ))}
+            </div>
+            {mustChoose && chosen === undefined ? (
+              <p id={`${formId}-choice-error`} role="alert" className="m-0 text-sm text-status-danger">
+                Choose which value to change.
+              </p>
+            ) : null}
           </fieldset>
         ) : chosen === undefined ? null : (
           <p className="m-0 text-sm text-text-muted">{chosen.description}</p>
