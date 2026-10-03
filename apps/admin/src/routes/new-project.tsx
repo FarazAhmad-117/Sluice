@@ -240,7 +240,7 @@ export function NewProjectView({
   };
 
   return (
-    <div className="flex justify-center py-8 sm:py-10">
+    <div className="flex justify-center py-6">
       <form
         noValidate
         aria-busy={busy}

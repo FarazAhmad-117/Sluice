@@ -46,7 +46,7 @@ function OverviewLoading({ slug }: { readonly slug: string }) {
   return (
     <>
       <PageHeader title="Overview" crumbs={[{ label: slug }]} />
-      <div role="status" aria-label="Loading the project" className={`flex flex-col gap-6 py-6 sm:py-7 ${pageGutter}`}>
+      <div role="status" aria-label="Loading the project" className={`flex flex-col gap-6 py-6 ${pageGutter}`}>
         <div className="flex items-center gap-4">
           <Skeleton className="size-12 rounded-card" />
           <div className="flex flex-col gap-2">
@@ -108,7 +108,7 @@ function OverviewPage({ slug, data }: { readonly slug: string; readonly data: Re
   return (
     <>
       <PageHeader title="Overview" crumbs={[{ label: data.project.name }]} actions={addButton} />
-      <div className={`py-6 sm:py-7 ${pageGutter}`}>
+      <div className={`py-6 ${pageGutter}`}>
         <div className="grid items-start gap-7 xl:grid-cols-[minmax(0,1fr)_360px]">
           <div className="flex min-w-0 flex-col gap-[22px]">
             <div className="flex min-w-0 items-center gap-4">

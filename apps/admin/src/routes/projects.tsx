@@ -5,8 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Callout, Skeleton } from "@/components/ui/feedback";
 import { IconPlus, IconSearch, IconUpload } from "@/components/ui/icons";
 import { EnvPill } from "@/components/ui/pill";
-import { PageHeader } from "@/components/shell/page-header";
-import { focusRing, pageGutter } from "@/components/ui/styles";
+import { PageHeader, PhoneActionBar } from "@/components/shell/page-header";
+import { compactHeight, focusRing, pageGutter } from "@/components/ui/styles";
 import { useCurrentOrg } from "@/lib/orgs/use-current-org";
 import type { CurrentOrgStatus } from "@/lib/orgs/use-current-org";
 import { filterProjects, secretsLabel } from "@/lib/projects/project-overview";
@@ -120,26 +120,21 @@ export function ProjectsView({
   const shown = filterProjects(projects, query);
 
   return (
-    <Page>
-      <div className="flex flex-col gap-6 pb-24 sm:pb-0">
-        <div className="flex items-center justify-between gap-4">
-          <label className="flex h-11 w-full items-center gap-2 rounded-input border border-hairline-strong bg-surface-panel px-3 text-text-muted transition-colors focus-within:border-brand sm:w-[380px]">
-            <IconSearch className="size-[15px] shrink-0" />
-            <span className="sr-only">Search projects</span>
-            <input
-              type="search"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search projects"
-              className="h-full min-w-0 grow bg-transparent text-base text-text-primary outline-none placeholder:text-text-muted sm:text-sm"
-            />
-          </label>
-          <div className="hidden sm:block">
-            <Button to="/projects/new" icon={<IconPlus className="size-3.5" />}>
-              New project
-            </Button>
-          </div>
-        </div>
+    <Page withNew>
+      <div className="flex flex-col gap-5">
+        <label
+          className={`flex ${compactHeight} w-full items-center gap-2 rounded-input border border-hairline-strong bg-surface-panel px-2.5 text-text-muted transition-colors focus-within:border-brand sm:w-[320px]`}
+        >
+          <IconSearch className="size-3.5 shrink-0" />
+          <span className="sr-only">Search projects</span>
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search projects"
+            className="h-full min-w-0 grow bg-transparent text-base text-text-primary outline-none placeholder:text-text-muted lg:text-[13px]"
+          />
+        </label>
 
         <p role="status" className="sr-only">
           {query.trim() === "" ? "" : `${shown.length} of ${projects.length} projects`}
@@ -172,26 +167,38 @@ export function ProjectsView({
           </Button>
         </div>
       </div>
-
-      {/* On a phone the primary action sits at the bottom, under the thumb. */}
-      <div className="fixed inset-x-0 bottom-0 z-30 border-t border-hairline bg-surface-base px-4 pt-3 pb-[calc(env(safe-area-inset-bottom)+16px)] sm:hidden">
-        <Button to="/projects/new" size="lg" icon={<IconPlus className="size-4" />} className="w-full">
-          New project
-        </Button>
-      </div>
     </Page>
   );
 }
 
-function Page({ children }: { readonly children: ReactNode }) {
+/** The page frame: the shell's header (with New project once there is a list), then the body. */
+function Page({ children, withNew = false }: { readonly children: ReactNode; readonly withNew?: boolean }) {
+  const { org } = useCurrentOrg();
   return (
     <>
-    <PageHeader title="Projects" />
-    <div className={`flex flex-col gap-6 py-6 sm:py-10 ${pageGutter}`}>
-      {/* The tab says "Projects" on wider screens; on a phone there is no tab bar label in view, so the heading shows. */}
-      <h1 className="m-0 text-2xl font-semibold tracking-[-0.02em] text-text-primary sm:sr-only">Projects</h1>
-      {children}
-    </div>
+      <PageHeader
+        title="Projects"
+        crumbs={org === null ? [] : [{ label: org.name }]}
+        actions={
+          withNew ? (
+            <Button to="/projects/new" size="sm" icon={<IconPlus className="size-3.5" />}>
+              New project
+            </Button>
+          ) : undefined
+        }
+      />
+      <div className={`flex flex-col gap-5 py-6 ${pageGutter}`}>
+        <h1 className="m-0 text-2xl font-semibold tracking-[-0.02em] text-text-primary">Projects</h1>
+        {children}
+      </div>
+      {withNew ? (
+        // On a phone the primary action sits at the bottom, under the thumb.
+        <PhoneActionBar>
+          <Button to="/projects/new" size="lg" icon={<IconPlus className="size-4" />} className="w-full">
+            New project
+          </Button>
+        </PhoneActionBar>
+      ) : null}
     </>
   );
 }
