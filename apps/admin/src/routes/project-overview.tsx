@@ -354,7 +354,8 @@ function Step({
 }) {
   return (
     <li id={id} className={`scroll-mt-20 border-t border-hairline px-5 py-3.5 first:border-t-0 ${current ? "bg-surface-card" : ""}`}>
-      <div className="flex items-center gap-3.5">
+      {/* Wraps on a phone, so the button drops under the text instead of squeezing it. */}
+      <div className="flex flex-wrap items-center gap-x-3.5 gap-y-2.5">
         {done ? (
           <span className="flex size-[22px] shrink-0 items-center justify-center rounded-full bg-status-healthy text-surface-base">
             <IconCheck className="size-3" strokeWidth={3} />
@@ -365,7 +366,7 @@ function Step({
             className={`size-[22px] shrink-0 rounded-full border-[1.5px] ${current ? "border-text-primary" : "border-text-faint"}`}
           />
         )}
-        <div className="flex min-w-0 grow flex-col gap-0.5">
+        <div className="flex min-w-0 flex-1 basis-56 flex-col gap-0.5">
           <span className={done ? "text-text-muted line-through" : `text-text-primary ${current ? "font-medium" : ""}`}>
             {title}
             <span className="sr-only">{done ? ", done" : ", not done"}</span>
@@ -374,7 +375,7 @@ function Step({
             <span className="text-[13px] text-text-muted">{description}</span>
           )}
         </div>
-        {aside === undefined ? null : <div className="flex shrink-0 items-center">{aside}</div>}
+        {aside === undefined ? null : <div className="flex shrink-0 items-center pl-9 sm:pl-0">{aside}</div>}
       </div>
       {children === undefined || children === null ? null : <div className="pl-9">{children}</div>}
     </li>
