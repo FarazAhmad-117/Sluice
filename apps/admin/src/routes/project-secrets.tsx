@@ -618,7 +618,7 @@ function Toolbar({
             className="h-full min-w-0 grow bg-transparent text-base text-text-primary outline-none placeholder:text-text-muted md:text-[13px]"
           />
         </label>
-        <div role="group" aria-label="Show" className="flex gap-2 overflow-x-auto pb-0.5 md:pb-0">
+        <div role="group" aria-label="Show" className="flex gap-2 overflow-x-auto scrollbar-none md:flex-wrap md:overflow-visible">
           {chips.map((chip) => {
             const on = filter === chip.value;
             return (
