@@ -35,6 +35,13 @@ import { IconClose } from "./icons";
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
+/**
+ * The drawers open right now, oldest first. One token per opening; the last
+ * is the one on top. Module-level because the drawers that stack (the detail
+ * sheet, then the edit drawer over it) are separate components.
+ */
+const openDrawers: object[] = [];
+
 function focusables(root: HTMLElement): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
     (element) => !element.hasAttribute("inert") && element.getClientRects().length > 0,
@@ -92,17 +99,23 @@ export function Drawer({
     }
     const overflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
+    const token: object = {};
+    openDrawers.push(token);
 
     const onKeyDown = (event: KeyboardEvent) => {
       const current = panel.current;
       if (current === null) return;
+      // Only the topmost open drawer owns Escape and Tab. Every open drawer
+      // hears every key (the listener is on the document), so without this
+      // the one underneath would close too, or pull focus that fell to
+      // <body> into itself instead of into the drawer on top.
+      if (openDrawers[openDrawers.length - 1] !== token) return;
       // A menu opened from inside the drawer (the org switcher in the phone
       // navigation) renders in its own portal and handles its own Escape,
       // arrows and Tab; Escape there closes the menu, not the drawer.
       if (event.target instanceof Element && event.target.closest('[role="menu"]') !== null) return;
-      // Likewise a dialog opened on top of this one (the edit drawer over the
-      // detail sheet, a delete confirmation): its keys are its own. Without
-      // this, Escape there would close this drawer underneath instead.
+      // Likewise a native dialog opened over the top drawer (a delete
+      // confirmation, the command palette): its keys are its own.
       if (
         event.target instanceof Element &&
         !current.contains(event.target) &&
@@ -144,6 +157,8 @@ export function Drawer({
 
     return () => {
       document.removeEventListener("keydown", onKeyDown, true);
+      const at = openDrawers.indexOf(token);
+      if (at !== -1) openDrawers.splice(at, 1);
       document.body.style.overflow = overflow;
       // Un-inert BEFORE restoring focus: an inert element cannot take it.
       if (app !== null) app.inert = wasInert;
