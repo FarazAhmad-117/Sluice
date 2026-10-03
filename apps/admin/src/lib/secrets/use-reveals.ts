@@ -4,10 +4,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
  * REVEALED PLAINTEXT, AND THE ONLY PLACE ANY OF IT LIVES ON THE SECRETS PAGE.
  *
  * Held by secret id and TAGGED with a context (the environment on screen and
- * the key whose detail panel is open). The tag is checked during render, so
- * switching environment or selecting another key shows everything masked at
- * once, with no frame of the old values; and a reveal that resolves after the
- * context changed is dropped.
+ * the key whose detail panel is open). Changing the context throws every
+ * revealed value away (not just hides it), so switching environment or
+ * selecting another key, and coming back, shows everything masked; and a
+ * reveal that resolves after the context changed is dropped.
  *
  * Each value masks itself again after 30 seconds, and on a second press.
  */
@@ -38,13 +38,24 @@ export function useReveals(context: string): Reveals {
   useEffect(() => {
     latest.current = context;
   });
+  // A context change DISCARDS what was revealed, rather than hiding it until
+  // the context comes back: returning to the same environment within 30
+  // seconds must show every value masked again. Reset during render (React's
+  // pattern for state derived from a prop), so no frame shows the old values.
+  const [seenContext, setSeenContext] = useState(context);
+  if (seenContext !== context) {
+    setSeenContext(context);
+    setStore(null);
+  }
+  // And the mask-again timers of the context being left, on every change and
+  // on unmount.
   useEffect(() => {
     const pending = timers.current;
     return () => {
       for (const timer of pending.values()) clearTimeout(timer);
       pending.clear();
     };
-  }, []);
+  }, [context]);
 
   const current = store !== null && store.context === context ? store : null;
   const values = current?.values ?? EMPTY_VALUES;
