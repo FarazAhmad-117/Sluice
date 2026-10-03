@@ -273,9 +273,9 @@ export function NewProjectView({
               slugEdited ? undefined : (
                 <span className="flex flex-wrap items-baseline gap-x-1.5">
                   <span>
-                    You'll use it in commands:{" "}
+                    Its address:{" "}
                     <code className="font-mono text-text-primary [overflow-wrap:anywhere]">
-                      sluice run --project {proposed === "" ? "<slug>" : proposed}
+                      /projects/{proposed === "" ? "<slug>" : proposed}
                     </code>
                   </span>
                   <button
@@ -306,9 +306,9 @@ export function NewProjectView({
                 onChange={(event) => setTypedSlug(event.target.value)}
                 hint={
                   <>
-                    {SLUG_HINT} Used in commands:{" "}
+                    {SLUG_HINT} Used in its address:{" "}
                     <code className="font-mono text-text-primary [overflow-wrap:anywhere]">
-                      sluice run --project {typedSlug === "" ? "<slug>" : typedSlug}
+                      /projects/{typedSlug === "" ? "<slug>" : typedSlug}
                     </code>
                   </>
                 }

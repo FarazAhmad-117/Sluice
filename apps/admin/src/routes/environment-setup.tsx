@@ -13,6 +13,7 @@ import { IconCheck } from "@/components/ui/icons";
 import { Segmented } from "@/components/ui/segmented";
 import { focusRing, pageGutter } from "@/components/ui/styles";
 import { CONVEX_URL } from "@/lib/convex-url";
+import { CLI_RELEASED } from "@/lib/projects/install";
 import { timeAgo } from "@/lib/format/time";
 import { useNow } from "@/lib/format/use-now";
 import { useProject } from "@/lib/projects/project-context";
@@ -248,6 +249,13 @@ function SetupFlow({
           </Step>
 
           <Step number={3} title="Install the CLI" done={false}>
+            {CLI_RELEASED ? null : (
+              <p className="m-0 rounded-input border border-status-warning/30 bg-status-warning/8 px-3 py-2.5 text-[13px] leading-relaxed text-text-body">
+                <span className="font-medium text-text-primary">The CLI isn’t published yet.</span> These are the
+                commands it will ship with; until then, build it from the repository
+                (<code className="font-mono text-[12.5px]">pnpm --filter @sluice/cli build</code>).
+              </p>
+            )}
             <InstallCliTabs onAnnounce={announce} />
           </Step>
 
@@ -392,7 +400,7 @@ function StartSnippets({
         aria-labelledby={snippets.length > 1 ? `${id}-start-${current.id}` : undefined}
         className="flex flex-col gap-2"
       >
-        <pre className="m-0 overflow-x-auto rounded-input border border-hairline bg-surface-deep p-3 font-mono text-[12.5px] leading-relaxed text-text-primary">
+        <pre className="m-0 rounded-input border border-hairline bg-surface-deep p-3 font-mono text-[12.5px] leading-relaxed whitespace-pre-wrap text-text-primary [overflow-wrap:anywhere]">
           <code>{current.code}</code>
         </pre>
         <div className="flex flex-wrap items-center justify-between gap-2">
