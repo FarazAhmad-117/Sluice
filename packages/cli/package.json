@@ -1,10 +1,26 @@
 {
-  "name": "@sluice/cli",
-  "version": "0.0.0",
+  "name": "@getsluice/cli",
+  "version": "0.1.0",
+  "description": "Run any command with secrets from Sluice, and stop it the moment its token is revoked.",
+  "license": "Apache-2.0",
   "type": "module",
-  "main": "./src/index.ts",
-  "exports": {
-    ".": "./src/index.ts"
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/FarazAhmad-117/Sluice.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/FarazAhmad-117/Sluice#readme",
+  "bugs": "https://github.com/FarazAhmad-117/Sluice/issues",
+  "keywords": [
+    "secrets",
+    "dotenv",
+    "env",
+    "zero-knowledge",
+    "revocation",
+    "cli"
+  ],
+  "engines": {
+    "node": ">=20"
   },
   "bin": {
     "sluice": "./bin/sluice.js"
@@ -13,14 +29,15 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "build": "vite build --config vite.build.config.ts"
+    "build": "vite build --config vite.build.config.ts",
+    "prepack": "node -e \"require('fs').copyFileSync('../../LICENSE','LICENSE')\" && vite build --config vite.build.config.ts"
   },
   "dependencies": {
-    "@sluice/crypto": "workspace:*",
-    "@sluice/sdk": "workspace:*",
     "convex": "^1.45.0"
   },
   "devDependencies": {
+    "@sluice/crypto": "workspace:*",
+    "@sluice/sdk": "workspace:*",
     "@types/node": "^22.20.3",
     "typescript": "^5.9.0",
     "vitest": "^2.1.0",
@@ -30,6 +47,11 @@
   "files": [
     "bin",
     "dist",
-    "src"
-  ]
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
 }

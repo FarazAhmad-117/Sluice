@@ -42,7 +42,8 @@ describe("main", () => {
   it("prints a version and exits zero", () => {
     const c = capture();
     main({ argv: ["--version"], env: {}, exit: c.exit, stdout: c.stdout });
-    expect(c.out.join("")).toBe(`${VERSION}\n`);
+    // From source nothing substitutes the release, so it reads "dev".
+    expect(c.out.join("")).toBe(`sluice dev (${VERSION})\n`);
     expect(c.exits).toEqual([0]);
   });
 

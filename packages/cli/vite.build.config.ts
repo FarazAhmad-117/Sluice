@@ -1,4 +1,7 @@
+import { readFileSync } from "node:fs";
 import { defineConfig } from "vite";
+
+const { version } = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")) as { version: string };
 
 /**
  * THE ONE PACKAGE IN THIS REPOSITORY THAT NEEDS A BUILD STEP.
@@ -21,6 +24,12 @@ import { defineConfig } from "vite";
  * cost, and it is the smallest one available that produces a binary that runs.
  */
 export default defineConfig({
+  // `sluice --version`; see `src/release.ts`.
+  define: { __SLUICE_RELEASE__: JSON.stringify(version) },
+  // Bundled, not installed: the published package depends on `convex` alone,
+  // so the cryptography ships at exactly the versions this repository tested.
+  // Vite's server build leaves every package import external unless told.
+  ssr: { noExternal: [/^@noble\//, /^@sluice\//] },
   build: {
     ssr: "src/cli-entry.ts",
     outDir: "dist",
