@@ -14,7 +14,7 @@ import Link from "next/link";
  * Quickstart. The page the primary call to action lands on.
  *
  * IT OPENS BY SAYING WHAT IS MISSING. Nothing is published to npm, so
- * `npm i -g @sluice/cli` would 404 on the first command a visitor ran, and a
+ * `npm i -g @getsluice/cli` would 404 on the first command a visitor ran, and a
  * quickstart whose first line fails is worse than no quickstart. What is below
  * is what a person can actually run today, and every line of it has been run.
  *
@@ -41,7 +41,7 @@ const COMMANDS = [
   "git clone https://github.com/FarazAhmad-117/Sluice.git",
   "cd Sluice",
   "pnpm install",
-  "pnpm --filter @sluice/cli build",
+  "pnpm --filter @getsluice/cli build",
   "node packages/cli/bin/sluice.js --help",
 ];
 

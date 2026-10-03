@@ -3,7 +3,7 @@
  *
  * Every way the CLI will ship is listed, so the setup guide can offer the one
  * that fits the person's machine. None of these works yet: the CLI is not
- * published (`packages/cli` is version 0.0.0), so `CLI_RELEASED` is false and
+ * published to npm or any package manager yet, so `CLI_RELEASED` is false and
  * the guide shows the steps with a "not released yet" note and no Copy
  * buttons. Flip it, and check each command, on the first release.
  */
@@ -13,9 +13,9 @@ export const CLI_RELEASED = false;
 /** Where release notes will appear; linked from the "not released yet" note. */
 export const RELEASES_URL = "https://github.com/FarazAhmad-117/Sluice/releases";
 
-const RAW = "https://raw.githubusercontent.com/FarazAhmad-117/Sluice/main";
+const RAW = "https://raw.githubusercontent.com/FarazAhmad-117/Sluice/HEAD";
 
-export type InstallMethodId = "npm" | "pnpm" | "yarn" | "bun" | "brew" | "shell" | "powershell";
+export type InstallMethodId = "npm" | "pnpm" | "yarn" | "bun" | "brew" | "shell" | "winget" | "scoop" | "powershell";
 
 export interface InstallMethod {
   readonly id: InstallMethodId;
@@ -26,23 +26,35 @@ export interface InstallMethod {
   readonly note: string;
 }
 
+/** The npm package. The command it installs is `sluice`. */
+export const NPM_PACKAGE = "@getsluice/cli";
+
+const STANDALONE = "A standalone executable: Node is not needed.";
+
 export const INSTALL_METHODS: readonly InstallMethod[] = [
-  { id: "npm", label: "npm", command: "npm install -g @sluice/cli", note: "Needs Node.js 20 or newer." },
-  { id: "pnpm", label: "pnpm", command: "pnpm add -g @sluice/cli", note: "Needs Node.js 20 or newer." },
-  { id: "yarn", label: "Yarn", command: "yarn global add @sluice/cli", note: "Needs Node.js 20 or newer." },
-  { id: "bun", label: "Bun", command: "bun add -g @sluice/cli", note: "Needs Bun 1.1 or newer." },
-  { id: "brew", label: "Homebrew", command: "brew install FarazAhmad-117/sluice/sluice", note: "macOS and Linux." },
+  { id: "npm", label: "npm", command: `npm install -g ${NPM_PACKAGE}`, note: "Needs Node.js 20 or newer." },
+  { id: "pnpm", label: "pnpm", command: `pnpm add -g ${NPM_PACKAGE}`, note: "Needs Node.js 20 or newer." },
+  { id: "yarn", label: "Yarn", command: `yarn global add ${NPM_PACKAGE}`, note: "Needs Node.js 20 or newer." },
+  { id: "bun", label: "Bun", command: `bun add -g ${NPM_PACKAGE}`, note: "Needs Bun 1.1 or newer." },
+  { id: "brew", label: "Homebrew", command: "brew install FarazAhmad-117/sluice/sluice", note: `macOS and Linux. ${STANDALONE}` },
   {
     id: "shell",
     label: "macOS / Linux",
     command: `curl -fsSL ${RAW}/install.sh | sh`,
-    note: "Downloads the CLI into ~/.sluice/bin and adds it to your PATH.",
+    note: `Checks the download's checksum and installs to ~/.sluice/bin. ${STANDALONE}`,
+  },
+  { id: "winget", label: "winget", command: "winget install Sluice.Sluice", note: `Windows 10 and 11. ${STANDALONE}` },
+  {
+    id: "scoop",
+    label: "Scoop",
+    command: "scoop bucket add sluice https://github.com/FarazAhmad-117/scoop-sluice; scoop install sluice",
+    note: `Windows. ${STANDALONE}`,
   },
   {
     id: "powershell",
-    label: "Windows",
+    label: "PowerShell",
     command: `irm ${RAW}/install.ps1 | iex`,
-    note: "Run in PowerShell. Installs into %USERPROFILE%\\.sluice\\bin.",
+    note: `Checks the download's checksum and installs to %USERPROFILE%\\.sluice\\bin. ${STANDALONE}`,
   },
 ];
 
@@ -57,15 +69,15 @@ export function isInstallMethodId(value: unknown): value is InstallMethodId {
 }
 
 /**
- * The tab a person sees first, from their browser's platform string: the
- * PowerShell line on Windows, Homebrew on a Mac, npm everywhere else (it works
- * on all three wherever Node is installed).
+ * The tab a person sees first, from their browser's platform string: winget
+ * on Windows, Homebrew on a Mac, npm everywhere else (it works on all three
+ * wherever Node is installed).
  */
 export function defaultInstallMethod(platform: string): InstallMethodId {
   const p = platform.toLowerCase();
   // Mac first: "darwin" contains "win".
   if (p.includes("mac") || p.includes("darwin") || p.includes("iphone") || p.includes("ipad")) return "brew";
-  if (p.startsWith("win")) return "powershell";
+  if (p.startsWith("win")) return "winget";
   return "npm";
 }
 

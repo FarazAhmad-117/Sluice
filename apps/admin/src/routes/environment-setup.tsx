@@ -253,7 +253,7 @@ function SetupFlow({
               <p className="m-0 rounded-input border border-status-warning/30 bg-status-warning/8 px-3 py-2.5 text-[13px] leading-relaxed text-text-body">
                 <span className="font-medium text-text-primary">The CLI isn’t published yet.</span> These are the
                 commands it will ship with; until then, build it from the repository
-                (<code className="font-mono text-[12.5px]">pnpm --filter @sluice/cli build</code>).
+                (<code className="font-mono text-[12.5px]">pnpm --filter @getsluice/cli build</code>).
               </p>
             )}
             <InstallCliTabs onAnnounce={announce} />
