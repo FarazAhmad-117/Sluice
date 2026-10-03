@@ -142,8 +142,8 @@ function ProjectNav({ slug, data }: { readonly slug: string; readonly data: Proj
     { label: "Overview", icon: <IconOverview className={ICON} />, to: base, end: true },
     { label: "Secrets", icon: <IconKey className={ICON} />, to: `${base}/secrets`, count: projectSecretCount(data) },
     { label: "Compare", icon: <IconColumns className={ICON} />, to: `${base}/compare` },
-    { label: "Environments", icon: <IconLayers className={ICON} /> },
-    { label: "Tokens", icon: <IconTicket className={ICON} /> },
+    { label: "Environments", icon: <IconLayers className={ICON} />, to: `${base}/environments` },
+    { label: "Tokens", icon: <IconTicket className={ICON} />, to: `${base}/tokens` },
     { label: "Activity", icon: <IconActivity className={ICON} />, to: `${base}/activity` },
     { label: "Settings", icon: <IconSettings className={ICON} /> },
   ];
@@ -198,11 +198,10 @@ function EnvironmentNav({ slug, data }: { readonly slug: string; readonly data: 
               );
             })}
         <li>
-          <span role="link" aria-disabled="true" className={`${ENV_ROW} cursor-default text-text-faint`}>
+          <NavLink to={`/projects/${slug}/environments?add=1`} className={`${ENV_ROW} ${ROW_IDLE}`}>
             <IconPlus className="size-3.5 shrink-0" strokeWidth={2} />
             <span className="truncate">Add environment</span>
-            <SoonBadge />
-          </span>
+          </NavLink>
         </li>
       </ul>
     </nav>

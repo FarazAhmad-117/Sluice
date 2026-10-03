@@ -1,3 +1,5 @@
+import type { TokenTarget } from "./token-crypto";
+
 /**
  * WHAT THE DASHBOARD CAN HONESTLY SAY ABOUT A TOKEN'S CONNECTION.
  *
@@ -38,3 +40,10 @@ export const CONNECTION_LABEL: Record<ConnectionState, string> = {
 export function canRevoke(state: ConnectionState): boolean {
   return state !== "revoked";
 }
+
+export const TARGET_LABEL: Record<TokenTarget, string> = {
+  computer: "Computer",
+  server: "Server",
+  ci: "CI",
+  docker: "Docker",
+};

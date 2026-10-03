@@ -4,7 +4,6 @@ import { Link } from "react-router";
 import { PageHeader, PhoneActionBar } from "@/components/shell/page-header";
 import { NoEnvironments, ProjectNotFound } from "@/components/shell/project-states";
 import { ProjectTile } from "@/components/shell/project-switcher";
-import { SoonBadge } from "@/components/shell/sidebar";
 import { Button } from "@/components/ui/button";
 import { CommandBlock } from "@/components/ui/copy-button";
 import { Skeleton } from "@/components/ui/feedback";
@@ -13,6 +12,7 @@ import { focusRing, pageGutter } from "@/components/ui/styles";
 import { ActivityRow, ActivitySkeletonRows } from "@/components/activity/activity-row";
 import { CliSetupGuide } from "@/components/projects/cli-setup-guide";
 import { CLI_RELEASED } from "@/lib/projects/install";
+import { useProjectTokens } from "@/lib/tokens/use-project-tokens";
 import { useProjectActivity } from "@/lib/activity/use-project-activity";
 import { createdLabel } from "@/lib/format/time";
 import { useNow } from "@/lib/format/use-now";
@@ -88,6 +88,17 @@ function OverviewPage({ slug, data }: { readonly slug: string; readonly data: Re
   const now = useNow();
   const [ranLocally, setRanLocally] = useState(() => readRan(data.project.projectId));
   const [runOpen, setRunOpen] = useState(false);
+  const tokens = useProjectTokens();
+  const connections = (tokens ?? []).map((token) => ({
+    environmentName: token.environmentName,
+    connected: token.lastSeenAt !== null,
+  }));
+  // The environment "Connect production" sets up: production if there is
+  // one, else any environment that is not development.
+  const productionEnvironment =
+    data.environments.find((environment) => environment.name === "production")?.name ??
+    data.environments.find((environment) => environment.name !== DEVELOPMENT)?.name ??
+    null;
   const allListed = !data.listings.some((listing) => listing.loading || listing.rows === null);
   const secretCount = allListed ? countProjectSecrets(data.listings.map((listing) => listing.rows ?? [])) : undefined;
   const createdAt = data.project.createdAt;
@@ -134,6 +145,8 @@ function OverviewPage({ slug, data }: { readonly slug: string; readonly data: Re
                   environmentName={runEnvironment?.name ?? DEVELOPMENT}
                   secretCount={secretCount}
                   ranLocally={ranLocally}
+                  connections={connections}
+                  productionEnvironment={productionEnvironment}
                   runOpen={runOpen}
                   onRunOpen={setRunOpen}
                   onRanLocally={(done) => {
@@ -150,7 +163,7 @@ function OverviewPage({ slug, data }: { readonly slug: string; readonly data: Re
           <aside aria-label="Project details" className="flex min-w-0 flex-col gap-4">
             {runEnvironment === null ? null : (
               <RunLocally
-                command={runCommand(slug, runEnvironment.name)}
+                command={runCommand()}
                 onShowSteps={() => {
                   setRunOpen(true);
                   requestAnimationFrame(() =>
@@ -185,6 +198,8 @@ function Checklist({
   environmentName,
   secretCount,
   ranLocally,
+  connections,
+  productionEnvironment,
   runOpen: expanded,
   onRunOpen: setExpanded,
   onRanLocally,
@@ -195,16 +210,20 @@ function Checklist({
   readonly environmentName: string;
   readonly secretCount: number | undefined;
   readonly ranLocally: boolean;
+  readonly connections: readonly { readonly environmentName: string; readonly connected: boolean }[];
+  /** Null when the project has only development. */
+  readonly productionEnvironment: string | null;
   readonly runOpen: boolean;
   readonly onRunOpen: (open: boolean) => void;
   readonly onRanLocally: (done: boolean) => void;
   readonly onAddSecret: () => void;
 }) {
   const { announce } = useShell();
-  const state = checklist({ secretCount, ranLocally });
+  const state = checklist({ secretCount, ranLocally, connections });
   const runId = useId();
   const order: ChecklistStep[] = ["create", "secrets", "run", "production"];
-  const next = order.find((step) => step !== "production" && !state.done.has(step));
+  const next = order.find((step) => !state.done.has(step));
+  const ran = state.done.has("run");
   const percent = (state.done.size / state.total) * 100;
 
   return (
@@ -248,7 +267,7 @@ function Checklist({
         />
         <Step
           id={RUN_SETUP_ID}
-          done={ranLocally}
+          done={ran}
           current={next === "run"}
           title="Run your app with these secrets"
           description={`Install the CLI, connect this computer, and start ${environmentName} through Sluice. No .env file needed.`}
@@ -260,13 +279,18 @@ function Checklist({
               aria-controls={`${runId}-run`}
               onClick={() => setExpanded(!expanded)}
             >
-              {expanded ? "Hide" : ranLocally ? "Show steps" : `Set up ${environmentName}`}
+              {expanded ? "Hide" : ran ? "Show steps" : `Set up ${environmentName}`}
             </Button>
           }
         >
           {expanded ? (
             <div id={`${runId}-run`} className="flex flex-col gap-4 pt-4">
-              <CliSetupGuide runCommand={runCommand(slug, environmentName)} environmentName={environmentName} onAnnounce={announce} />
+              <CliSetupGuide
+                runCommand={runCommand()}
+                environmentName={environmentName}
+                setupTo={`/projects/${slug}/environments/${encodeURIComponent(environmentName)}/setup?target=computer`}
+                onAnnounce={announce}
+              />
               {/* Nobody can have run it before the CLI ships, so there is nothing to mark. */}
               {CLI_RELEASED ? (
               <div>
@@ -286,11 +310,25 @@ function Checklist({
           ) : null}
         </Step>
         <Step
-          done={false}
-          current={false}
+          done={state.done.has("production")}
+          current={next === "production"}
           title="Connect production"
           description="A server, a CI pipeline or a container, each with its own revocable token."
-          aside={<SoonBadge />}
+          aside={
+            state.done.has("production") ? undefined : (
+              <Button
+                size="sm"
+                variant={next === "production" ? "primary" : "secondary"}
+                to={
+                  productionEnvironment === null
+                    ? `/projects/${slug}/environments?add=1`
+                    : `/projects/${slug}/environments/${encodeURIComponent(productionEnvironment)}/setup?target=server`
+                }
+              >
+                {productionEnvironment === null ? "Add production" : `Connect ${productionEnvironment}`}
+              </Button>
+            )
+          }
         />
       </ol>
     </section>
@@ -358,9 +396,13 @@ function EnvironmentCards({
         <h2 id="overview-environments" className="m-0 text-[15px] font-semibold text-text-primary">
           Environments
         </h2>
-        <span aria-disabled="true" role="link" className="flex items-center gap-2 text-[13px] text-text-faint">
-          Add environment <SoonBadge />
-        </span>
+        <Link
+          to={`/projects/${slug}/environments?add=1`}
+          className={`inline-flex min-h-11 items-center gap-1.5 rounded-input px-2 text-[13px] text-text-muted no-underline transition-colors hover:text-text-primary lg:min-h-8 lg:pointer-coarse:min-h-11 ${focusRing}`}
+        >
+          <IconPlus className="size-3.5" strokeWidth={2} />
+          Add environment
+        </Link>
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
         {stats.map((row) => {
