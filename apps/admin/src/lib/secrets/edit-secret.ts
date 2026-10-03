@@ -84,13 +84,66 @@ export async function buildSharedEdit(input: {
   if (targets.length === 0) throw new EditRefusal("No environment uses the shared value.");
   const locked = targets.filter((target) => target.key === null).map((target) => target.environmentName);
   if (locked.length > 0) {
-    throw new EditRefusal(`The key for ${listOf(locked)} is not open, so the shared value cannot be changed there.`);
+    // No reload: reloading does not open a key. The server would refuse a
+    // write that skipped these rows, so nothing is sent at all.
+    throw new EditRefusal(`The key for ${listOf(locked)} isn't open, so the shared value can't be changed everywhere.`);
   }
   const rows: RowEdit[] = [];
   for (const target of targets) {
     rows.push(await buildRowEdit({ key: target.key!, row: target.row, name: input.name, value: input.value }));
   }
   return { shareUid: input.shareUid, rows };
+}
+
+export interface ShareMember<T extends EditableRow> {
+  readonly environmentId: string;
+  readonly environmentName: string;
+  /** `null` when this environment's listing failed: it may hold a row nobody can see. */
+  readonly row: T | null;
+}
+
+/**
+ * Every listed row of one share, by environment, read off the LISTINGS rather
+ * than off names. A row counts even when its name did not open (its
+ * environment's key is not in hand), because the server will insist on it; an
+ * environment whose listing failed is reported with `row: null`, because it
+ * may hold one.
+ */
+export function shareMembers<T extends EditableRow>(
+  listings: readonly { readonly environmentId: string; readonly environmentName: string; readonly rows: readonly T[] | null }[],
+  shareUid: string,
+): ShareMember<T>[] {
+  const out: ShareMember<T>[] = [];
+  for (const listing of listings) {
+    if (listing.rows === null) {
+      out.push({ environmentId: listing.environmentId, environmentName: listing.environmentName, row: null });
+      continue;
+    }
+    for (const row of listing.rows) {
+      if (row.shareUid === shareUid) {
+        out.push({ environmentId: listing.environmentId, environmentName: listing.environmentName, row });
+      }
+    }
+  }
+  return out;
+}
+
+/** Why the shared value cannot be edited from this browser, or `null`. */
+export function sharedEditBlocker<T extends EditableRow>(
+  members: readonly ShareMember<T>[],
+  keyOpen: (environmentId: string) => boolean,
+): string | null {
+  const unlisted = members.filter((member) => member.row === null).map((member) => member.environmentName);
+  if (unlisted.length > 0) {
+    return `Secrets in ${listOf(unlisted)} could not be listed, so the shared value can't be changed everywhere.`;
+  }
+  const locked = members
+    .filter((member) => member.row !== null && member.row.overridden !== true && !keyOpen(member.environmentId))
+    .map((member) => member.environmentName);
+  if (locked.length > 0) {
+    return `The key for ${listOf(locked)} isn't open, so the shared value can't be changed everywhere.`;
+  }
+  return null;
 }
 
 export type EditRequest =

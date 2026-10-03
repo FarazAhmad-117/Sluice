@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { newId } from "@sluice/crypto";
 import { SecretOpenError, openSecret } from "../src/lib/secrets/decrypt";
-import { buildRowEdit, buildSharedEdit } from "../src/lib/secrets/edit-secret";
+import { buildRowEdit, buildSharedEdit, shareMembers, sharedEditBlocker } from "../src/lib/secrets/edit-secret";
 import type { EditableRow } from "../src/lib/secrets/edit-secret";
 import { createProjectDataKey } from "../src/lib/secrets/pdk";
 import type { EnvironmentKey } from "../src/lib/secrets/pdk";
@@ -65,6 +65,43 @@ describe("buildSharedEdit", () => {
     ).rejects.toBeInstanceOf(SecretOpenError);
   });
 
+  it("finds every row of a share from the listings, named or not", () => {
+    const a = row({ shareUid });
+    const b = row({ shareUid, overridden: true });
+    const other = row({ shareUid: newId("shr") });
+    const members = shareMembers(
+      [
+        { environmentId: "dev", environmentName: "development", rows: [a, other] },
+        { environmentId: "prod", environmentName: "production", rows: [b] },
+        { environmentId: "stg", environmentName: "staging", rows: null },
+      ],
+      shareUid,
+    );
+    expect(members.map((member) => [member.environmentName, member.row?.secretId ?? null])).toEqual([
+      ["development", a.secretId],
+      ["production", b.secretId],
+      ["staging", null],
+    ]);
+  });
+
+  it("blocks a shared edit an environment cannot take part in, without offering a reload", () => {
+    const a = row({ shareUid });
+    const own = row({ shareUid, overridden: true });
+    const members = [
+      { environmentId: "dev", environmentName: "development", row: a },
+      { environmentId: "prod", environmentName: "production", row: own },
+    ];
+    expect(sharedEditBlocker(members, () => true)).toBeNull();
+    // An overridden row is not written, so its key does not matter.
+    expect(sharedEditBlocker(members, (id) => id !== "prod")).toBeNull();
+    expect(sharedEditBlocker(members, (id) => id !== "dev")).toBe(
+      "The key for development isn't open, so the shared value can't be changed everywhere.",
+    );
+    expect(sharedEditBlocker([...members, { environmentId: "stg", environmentName: "staging", row: null }], () => true)).toBe(
+      "Secrets in staging could not be listed, so the shared value can't be changed everywhere.",
+    );
+  });
+
   it("refuses before sealing when a key is not open", async () => {
     await expect(
       buildSharedEdit({
@@ -76,7 +113,7 @@ describe("buildSharedEdit", () => {
           { row: row({ shareUid }), environmentName: "production", key: null },
         ],
       }),
-    ).rejects.toThrow("The key for production is not open");
+    ).rejects.toThrow("The key for production isn't open, so the shared value can't be changed everywhere.");
   });
 
   it("does not mind a closed key on an overridden row it leaves alone", async () => {

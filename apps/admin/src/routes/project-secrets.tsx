@@ -30,7 +30,7 @@ import { buildMatrix, rowFor } from "@/lib/secrets/compare";
 import { rowForRef, secretRef } from "@/lib/secrets/links";
 import type { CompareCell, CompareRow } from "@/lib/secrets/compare";
 import { VALUE_MASK, openSecretValue } from "@/lib/secrets/decrypt";
-import { EditRefusal, editSecret } from "@/lib/secrets/edit-secret";
+import { EditRefusal, editSecret, shareMembers, sharedEditBlocker } from "@/lib/secrets/edit-secret";
 import type { EditOutcome, EditRequest } from "@/lib/secrets/edit-secret";
 import type { ProjectDataKeyState } from "@/lib/secrets/environment-key";
 import type { LabelledRow } from "@/lib/secrets/project-secrets";
@@ -118,21 +118,36 @@ function capitalise(text: string): string {
 }
 
 /** The edit drawer's choices for a key: the shared value, and each environment's own. */
-function editChoicesFor(row: CompareRow<ListedSecret>): { choices: EditChoice[]; byCell: Map<string, string> } {
+function shareUidOf(row: CompareRow<ListedSecret>): string | undefined {
+  return row.cells.find((cell) => cell.secret?.shareUid !== undefined)?.secret?.shareUid;
+}
+
+/**
+ * The edit drawer's choices for a key: the shared value, and each
+ * environment's own. The shared value's environments are read off the
+ * LISTINGS (`shareMembers`), so one whose names are not open still counts:
+ * the server writes every shared row or none.
+ */
+function editChoicesFor(
+  row: CompareRow<ListedSecret>,
+  listings: Ready["listings"],
+  keyOpen: (environmentId: string) => boolean,
+): { choices: EditChoice[]; byCell: Map<string, string> } {
   const choices: EditChoice[] = [];
   const byCell = new Map<string, string>();
-  const shared = row.cells.filter((cell) => cell.kind === "shared");
-  const own = row.cells.filter((cell) => cell.kind === "own");
-  if (shared.length > 0) {
-    choices.push({
-      id: "shared",
-      label: "Shared value",
-      description:
-        own.length === 0
-          ? `Changes it in ${listOf(shared.map((cell) => cell.environmentName))}.`
-          : `Changes it in ${listOf(shared.map((cell) => cell.environmentName))}. ${capitalise(listOf(own.map((cell) => cell.environmentName)))} ${own.length === 1 ? "keeps its" : "keep their"} own value.`,
-    });
-    for (const cell of shared) byCell.set(cell.environmentId, "shared");
+  const shareUid = shareUidOf(row);
+  const members = shareUid === undefined ? [] : shareMembers(listings, shareUid);
+  const shared = members.filter((member) => member.row === null || member.row.overridden !== true);
+  const own = members.filter((member) => member.row !== null && member.row.overridden === true);
+  if (shared.some((member) => member.row !== null)) {
+    const blocker = sharedEditBlocker(members, keyOpen);
+    const where = `Changes it in ${listOf(shared.map((member) => member.environmentName))}.`;
+    const kept =
+      own.length === 0
+        ? ""
+        : ` ${capitalise(listOf(own.map((member) => member.environmentName)))} ${own.length === 1 ? "keeps its" : "keep their"} own value.`;
+    choices.push({ id: "shared", label: "Shared value", description: blocker ?? `${where}${kept}` });
+    for (const member of shared) byCell.set(member.environmentId, "shared");
   }
   for (const cell of row.cells) {
     if ((cell.kind === "own" || cell.kind === "set") && cell.secret !== undefined) {
@@ -267,18 +282,25 @@ function SecretsPage({ slug, data }: { readonly slug: string; readonly data: Rea
     if (matrixRow === undefined) return { ok: false, message: "This key changed. Reload to see it.", reload: true };
     let request: EditRequest;
     if (choiceId === "shared") {
-      const sharedCell = matrixRow.cells.find((cell) => cell.kind === "shared");
-      const shareUid = sharedCell?.secret?.shareUid;
+      const shareUid = shareUidOf(matrixRow);
       if (shareUid === undefined) return { ok: false, message: "This key has no shared value any more.", reload: true };
+      const members = shareMembers(data.listings, shareUid);
+      // Every environment of the share takes part, or none does: refuse here,
+      // with the reason and no reload, rather than send a partial set the
+      // server would bounce with a reload that cannot help.
+      const blocker = sharedEditBlocker(members, (environmentId) => keyOf(environmentId) !== null);
+      if (blocker !== null) return { ok: false, message: blocker, reload: false };
       request = {
         kind: "shared",
         projectId: data.project.projectId,
         shareUid,
         name,
         value,
-        rows: matrixRow.cells
-          .filter((cell) => cell.secret?.shareUid === shareUid)
-          .map((cell) => ({ row: cell.secret!, environmentName: cell.environmentName, key: keyOf(cell.environmentId) })),
+        rows: members.map((member) => ({
+          row: member.row!,
+          environmentName: member.environmentName,
+          key: keyOf(member.environmentId),
+        })),
       };
     } else {
       const cell = matrixRow.cells.find((candidate) => `row:${candidate.secret?.secretId}` === choiceId);
@@ -368,7 +390,8 @@ function SecretsPage({ slug, data }: { readonly slug: string; readonly data: Rea
           runEnvironment: envName,
         };
   const editingRow = editing === null ? undefined : rowFor(matrix, editing);
-  const editing$ = editingRow === undefined ? null : editChoicesFor(editingRow);
+  const editing$ =
+    editingRow === undefined ? null : editChoicesFor(editingRow, data.listings, (environmentId) => keyOf(environmentId) !== null);
 
   const letters = environments.map((row) => row.name.slice(0, 1).toUpperCase());
 
