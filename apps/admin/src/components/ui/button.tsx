@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, ComponentPropsWithRef, ReactNode } from "react";
+import type { ComponentPropsWithRef, ReactNode } from "react";
 import { Link } from "react-router";
 import type { LinkProps } from "react-router";
 import { IconSpinner } from "./icons";
@@ -116,7 +116,7 @@ export function IconButton({
   className = "",
   type = "button",
   ...button
-}: Omit<ButtonHTMLAttributes<HTMLButtonElement>, "aria-label" | "children"> & {
+}: Omit<ComponentPropsWithRef<"button">, "aria-label" | "children"> & {
   readonly label: string;
   readonly children: ReactNode;
 }) {

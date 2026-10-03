@@ -4,11 +4,12 @@ import { useMutation } from "convex/react";
 import { useNavigate, useSearchParams } from "react-router";
 import { api } from "@convex/_generated/api";
 import type { Id } from "@convex/_generated/dataModel";
+import { PageHeader } from "@/components/shell/page-header";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/feedback";
 import { Checkbox, RadioCard, TextField } from "@/components/ui/field";
 import { IconUpload } from "@/components/ui/icons";
-import { focusRing } from "@/components/ui/styles";
+import { focusRing, pageGutter } from "@/components/ui/styles";
 import { useAuth } from "@/lib/auth/auth-context";
 import { parseDotenv } from "@/lib/dotenv";
 import type { DotenvResult } from "@/lib/dotenv";
@@ -140,11 +141,16 @@ export default function NewProjectRoute() {
   };
 
   return (
-    <NewProjectView
-      onCreate={create}
-      onDone={(slug) => void navigate(`/projects/${slug}/secrets?env=development`)}
-      onCancel={() => void navigate("/projects")}
-    />
+    <>
+      <PageHeader title="New project" crumbs={[{ label: "Projects", to: "/projects" }]} />
+      <div className={pageGutter}>
+        <NewProjectView
+          onCreate={create}
+          onDone={(slug) => void navigate(`/projects/${slug}/secrets?env=development`)}
+          onCancel={() => void navigate("/projects")}
+        />
+      </div>
+    </>
   );
 }
 
@@ -234,7 +240,7 @@ export function NewProjectView({
   };
 
   return (
-    <div className="flex justify-center py-8 sm:py-10">
+    <div className="flex justify-center py-6">
       <form
         noValidate
         aria-busy={busy}

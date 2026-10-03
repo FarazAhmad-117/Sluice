@@ -9,6 +9,7 @@ import { insertUser } from "./repo/users";
 import { insertSession } from "./repo/sessions";
 import { listAuditEventsByActor } from "./repo/audit";
 import { SESSION_LIFETIME_MS, hashSessionToken } from "./lib/session";
+import * as activityModule from "./activity";
 import * as orgsModule from "./orgs";
 import * as projectsModule from "./projects";
 import * as environmentsModule from "./environments";
@@ -70,6 +71,7 @@ const NOT_AUTHENTICATED = "Your session is not valid. Sign in again.";
  * question of the credential the bundle actually takes.
  */
 const SURFACE = {
+  activity: activityModule,
   orgs: orgsModule,
   projects: projectsModule,
   environments: environmentsModule,
@@ -165,6 +167,8 @@ interface World {
   secretId: Id<"secrets">;
   /** The share id of a shared secret spanning the project's environments. */
   shareUid: string;
+  /** That group's one row, which uses the shared value. */
+  sharedSecretId: Id<"secrets">;
   /** A registered service token, and the signed notice that revokes it. */
   revoke: {
     tokenId: string;
@@ -228,7 +232,7 @@ async function world(t: Harness): Promise<World> {
   // A shared secret across the project's one environment, so
   // `deleteSharedSecret` has a group to delete.
   const shareUid = newId("shr");
-  await t.mutation(api.secrets.createSharedSecret, {
+  const [shared] = await t.mutation(api.secrets.createSharedSecret, {
     sessionToken: alice.sessionToken,
     projectId,
     shareUid,
@@ -272,6 +276,7 @@ async function world(t: Harness): Promise<World> {
     environmentId,
     secretId,
     shareUid,
+    sharedSecretId: shared!.secretId,
     revoke: {
       ...notice,
       signature: toHex(signRevocation(orgKeys.authSeed, notice)),
@@ -292,6 +297,10 @@ const CALLS: Record<
   string,
   (w: World, sessionToken: string) => Record<string, unknown>
 > = {
+  "activity.listProjectActivity": (w, sessionToken) => ({
+    sessionToken,
+    projectId: w.projectId,
+  }),
   "orgs.createOrg": (_w, sessionToken) => ({
     sessionToken,
     // Fresh per call, like the slug below, so the valid call is not refused
@@ -407,6 +416,23 @@ const CALLS: Record<
       },
     ],
   }),
+  "secrets.updateSharedSecret": (w, sessionToken) => ({
+    sessionToken,
+    projectId: w.projectId,
+    shareUid: w.shareUid,
+    rows: [
+      {
+        // `world()` seeded the group at version 1, so the next one is 2.
+        secretId: w.sharedSecretId,
+        version: 2,
+        pdkVersion: 1,
+        nameCiphertext: NAME_CIPHERTEXT,
+        nameNonce: "505152535455565758595a5b",
+        valueCiphertext: "cc".repeat(40),
+        valueNonce: "5b5a595857565554535251ff",
+      },
+    ],
+  }),
   "secrets.deleteSecret": (w, sessionToken) => ({
     sessionToken,
     secretId: w.secretId,
@@ -466,11 +492,12 @@ const FUNCTIONS = exportedFunctions();
 
 describe("the enumeration this file is built on", () => {
   it("finds every public function in the hierarchy", () => {
-    // Twenty-two, written as a number as well as a list, so that an
+    // Twenty-four, written as a number as well as a list, so that an
     // enumeration which silently starts returning nothing cannot make every
     // assertion below pass vacuously.
-    expect(FUNCTIONS.length).toBe(22);
+    expect(FUNCTIONS.length).toBe(24);
     expect(FUNCTIONS).toEqual([
+      "activity.listProjectActivity",
       "environments.createEnvironment",
       "environments.getEnvironment",
       "environments.getMyPdkGrant",
@@ -495,6 +522,7 @@ describe("the enumeration this file is built on", () => {
       "secrets.listSecretVersions",
       "secrets.listSecrets",
       "secrets.updateSecret",
+      "secrets.updateSharedSecret",
       "tokens.createServiceToken",
       "tokens.revokeServiceToken",
     ]);

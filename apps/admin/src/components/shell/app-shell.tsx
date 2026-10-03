@@ -1,0 +1,151 @@
+import { useEffect, useMemo, useState } from "react";
+import { Outlet, useLocation, useMatch } from "react-router";
+import { AddSecretFlow } from "@/components/secrets/add-secret-flow";
+import { Drawer } from "@/components/ui/drawer";
+import { focusRing } from "@/components/ui/styles";
+import { UnlockGate } from "@/components/layout/unlock-gate";
+import { ProjectActionsContext, ProjectContext } from "@/lib/projects/project-context";
+import type { AddRequest, ProjectActions, ProjectScope } from "@/lib/projects/project-context";
+import { useProjectSecrets } from "@/lib/secrets/use-project-secrets";
+import { ShellContext, useAnnouncer } from "@/lib/shell/shell-context";
+import type { Shell } from "@/lib/shell/shell-context";
+import { DESKTOP, useMediaQuery } from "@/lib/use-media-query";
+import { CommandPalette } from "./command-palette";
+import { SidebarContent } from "./sidebar";
+
+const NONE: ReadonlySet<string> = new Set();
+/** How long a just-added row stays marked. */
+const HIGHLIGHT_MS = 4_000;
+
+/**
+ * EVERY SIGNED-IN PAGE: THE SIDEBAR, AND THE PAGE BESIDE IT.
+ *
+ * At 1024px and up the sidebar is a 240px column that stays put while the page
+ * scrolls. Below that it is a 300px drawer from the left, opened by the menu
+ * button in the page header; it closes on Escape, on the backdrop, and on any
+ * navigation.
+ *
+ * On a project route the project's listings, keys and names are loaded here,
+ * once, and shared through {@link ProjectContext} (see `project-context.ts`).
+ *
+ * The unlock gate covers the page, not the shell: the sidebar needs no key
+ * (project and environment names and row counts are not secret), so a locked
+ * vault still shows where you are.
+ */
+export function AppShell() {
+  const project = useMatch("/projects/:projectSlug/*");
+  const creating = useMatch("/projects/new");
+  const slug = creating === null ? (project?.params.projectSlug ?? null) : null;
+  const data = useProjectSecrets(slug);
+  return <ShellFrame scope={slug === null ? null : { slug, data }} />;
+}
+
+/** The shell around a given project scope, with no queries of its own. */
+export function ShellFrame({ scope }: { readonly scope: ProjectScope | null }) {
+  const [announcement, announce] = useAnnouncer();
+  const location = useLocation();
+  const desktop = useMediaQuery(DESKTOP);
+  // The drawer is open for the location it was opened at. Any navigation is a
+  // new location, so following a link closes it with no effect to run; so does
+  // growing past the breakpoint where the sidebar is a column again.
+  const [navOpenAt, setNavOpenAt] = useState<string | null>(null);
+  const navOpen = navOpenAt === location.key && !desktop;
+  const locationKey = location.key;
+
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "k") {
+        // Not over another modal: a drawer or a confirmation owns the keyboard.
+        if (document.querySelector('[role="dialog"][aria-modal="true"], dialog[open]:not([aria-label="Search"])') !== null) return;
+        event.preventDefault();
+        setPaletteOpen((open) => !open);
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  const shell = useMemo(
+    (): Shell => ({ openNav: () => setNavOpenAt(locationKey), openPalette: () => setPaletteOpen(true), announce }),
+    [announce, locationKey],
+  );
+
+  // The one add-secret drawer, and the rows it just wrote, marked for a moment.
+  // Tagged with the project it was opened for.
+  const [adding, setAdding] = useState<{ readonly slug: string; readonly request: AddRequest } | null>(null);
+  const [highlight, setHighlight] = useState<ReadonlySet<string>>(NONE);
+  useEffect(() => {
+    if (highlight.size === 0) return;
+    const timer = setTimeout(() => setHighlight(NONE), HIGHLIGHT_MS);
+    return () => clearTimeout(timer);
+  }, [highlight]);
+  const slug = scope?.slug ?? null;
+  const actions = useMemo(
+    (): ProjectActions => ({
+      openAdd: (request = {}) => {
+        if (slug !== null) setAdding({ slug, request });
+      },
+      highlight,
+    }),
+    [highlight, slug],
+  );
+  const ready = scope !== null && scope.data.status === "ready" ? scope.data : null;
+  // The drawer belongs to one project, sealing with that project's keys. If
+  // the project changes, or its data stops being ready (a reload of the
+  // listing, a lock), close it outright rather than leave a request that
+  // would reopen later, possibly over another project. Reset during render,
+  // React's pattern for state that follows other state.
+  if (adding !== null && (adding.slug !== slug || ready === null)) setAdding(null);
+
+  return (
+    <ShellContext.Provider value={shell}>
+      <ProjectContext.Provider value={scope}>
+      <ProjectActionsContext.Provider value={actions}>
+        <div className="flex min-h-[100dvh] bg-surface-base text-text-body">
+          <a
+            href="#main"
+            className={`sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:rounded-input focus:bg-surface-card focus:px-3 focus:py-2 focus:text-text-primary ${focusRing}`}
+          >
+            Skip to content
+          </a>
+          <aside
+            aria-label="Sidebar"
+            className="sticky top-0 hidden h-[100dvh] w-60 shrink-0 flex-col overflow-y-auto border-r border-hairline bg-surface-panel px-2.5 py-3 lg:flex"
+          >
+            <SidebarContent placement="rail" />
+          </aside>
+          <main id="main" tabIndex={-1} className="flex min-w-0 grow flex-col outline-none">
+            <UnlockGate>
+              <Outlet />
+            </UnlockGate>
+          </main>
+        </div>
+        <Drawer side="left" open={navOpen} onClose={() => setNavOpenAt(null)} title="Navigation">
+          <div className="flex grow flex-col overflow-y-auto px-2.5 py-3">
+            <SidebarContent placement="drawer" />
+          </div>
+        </Drawer>
+        <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} scope={scope} />
+        {/* The app's one live region: the latest result only, cleared after a few seconds. */}
+        <p role="status" aria-live="polite" className="sr-only">
+          {announcement}
+        </p>
+        {adding !== null && adding.slug === slug && ready !== null ? (
+          <AddSecretFlow
+            data={ready}
+            request={adding.request}
+            onClose={(added) => {
+              setAdding(null);
+              if (added !== undefined) {
+                setHighlight(new Set(added.secretIds));
+                announce(`Added ${added.name}.`);
+              }
+            }}
+          />
+        ) : null}
+      </ProjectActionsContext.Provider>
+      </ProjectContext.Provider>
+    </ShellContext.Provider>
+  );
+}

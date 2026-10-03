@@ -35,12 +35,25 @@ import { IconClose } from "./icons";
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
+/**
+ * The drawers open right now, oldest first. One token per opening; the last
+ * is the one on top. Module-level because the drawers that stack (the detail
+ * sheet, then the edit drawer over it) are separate components.
+ */
+const openDrawers: object[] = [];
+
 function focusables(root: HTMLElement): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
     (element) => !element.hasAttribute("inert") && element.getClientRects().length > 0,
   );
 }
 
+/**
+ * `side="left"` is the phone navigation drawer: 300px from the left edge, full
+ * height, its title read to a screen reader but not drawn (the sidebar inside
+ * is its own heading), and the close button floated top-right over the body
+ * rather than in a title bar. The body is the caller's, unpadded.
+ */
 export function Drawer({
   open,
   onClose,
@@ -48,6 +61,7 @@ export function Drawer({
   children,
   footer,
   initialFocus,
+  side = "right",
 }: {
   readonly open: boolean;
   readonly onClose: () => void;
@@ -56,6 +70,7 @@ export function Drawer({
   /** Pinned below the scrolling body: the note and the actions. */
   readonly footer?: ReactNode;
   readonly initialFocus?: RefObject<HTMLElement | null>;
+  readonly side?: "right" | "left";
 }) {
   const titleId = useId();
   const panel = useRef<HTMLDivElement>(null);
@@ -84,10 +99,30 @@ export function Drawer({
     }
     const overflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
+    const token: object = {};
+    openDrawers.push(token);
 
     const onKeyDown = (event: KeyboardEvent) => {
       const current = panel.current;
       if (current === null) return;
+      // Only the topmost open drawer owns Escape and Tab. Every open drawer
+      // hears every key (the listener is on the document), so without this
+      // the one underneath would close too, or pull focus that fell to
+      // <body> into itself instead of into the drawer on top.
+      if (openDrawers[openDrawers.length - 1] !== token) return;
+      // A menu opened from inside the drawer (the org switcher in the phone
+      // navigation) renders in its own portal and handles its own Escape,
+      // arrows and Tab; Escape there closes the menu, not the drawer.
+      if (event.target instanceof Element && event.target.closest('[role="menu"]') !== null) return;
+      // Likewise a native dialog opened over the top drawer (a delete
+      // confirmation, the command palette): its keys are its own.
+      if (
+        event.target instanceof Element &&
+        !current.contains(event.target) &&
+        event.target.closest('[role="dialog"], dialog') !== null
+      ) {
+        return;
+      }
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
@@ -122,6 +157,8 @@ export function Drawer({
 
     return () => {
       document.removeEventListener("keydown", onKeyDown, true);
+      const at = openDrawers.indexOf(token);
+      if (at !== -1) openDrawers.splice(at, 1);
       document.body.style.overflow = overflow;
       // Un-inert BEFORE restoring focus: an inert element cannot take it.
       if (app !== null) app.inert = wasInert;
@@ -131,6 +168,38 @@ export function Drawer({
   }, [open, initialFocus]);
 
   if (!open) return null;
+
+  if (side === "left") {
+    return createPortal(
+      <div className="fixed inset-0 z-50">
+        <div
+          aria-hidden="true"
+          onClick={onClose}
+          className="sluice-backdrop absolute inset-0 bg-surface-base/70 light:bg-text-primary/40"
+        />
+        <div
+          ref={panel}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby={titleId}
+          tabIndex={-1}
+          className="sluice-drawer-left absolute inset-y-0 left-0 flex w-[300px] max-w-[85vw] flex-col border-r border-hairline-strong bg-surface-panel pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] outline-none"
+        >
+          <h2 id={titleId} className="sr-only">
+            {title}
+          </h2>
+          {/* Level with the org switcher, the sidebar's first 44px row. */}
+          <div className="absolute top-[calc(env(safe-area-inset-top)+12px)] right-1.5 z-10">
+            <IconButton label="Close" onClick={onClose}>
+              <IconClose className="size-[18px]" />
+            </IconButton>
+          </div>
+          {children}
+        </div>
+      </div>,
+      document.body,
+    );
+  }
 
   return createPortal(
     <div className="fixed inset-0 z-50">

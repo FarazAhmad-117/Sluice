@@ -251,6 +251,17 @@ body {
   }
 }
 
+@keyframes sluice-drawer-in-left {
+  from {
+    transform: translateX(-100%);
+  }
+}
+
+/* The phone navigation drawer, in from the left at every width. */
+.sluice-drawer-left {
+  animation: sluice-drawer-in-left 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
 @keyframes sluice-fade-in {
   from {
     opacity: 0;
@@ -273,6 +284,7 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .sluice-drawer,
+  .sluice-drawer-left,
   .sluice-backdrop {
     animation: none;
   }

@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef } from "react";
 import type { ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { Button } from "./button";
 
 /**
@@ -46,7 +47,10 @@ export function ConfirmDialog({
     }
   }, [open]);
 
-  return (
+  // On `document.body`, beside `#root`: a confirmation asked from inside a
+  // drawer (the secret detail sheet) must not be inside the tree the drawer
+  // made inert, or it could not be clicked.
+  return createPortal(
     <dialog
       ref={dialog}
       aria-labelledby={titleId}
@@ -95,6 +99,7 @@ export function ConfirmDialog({
           </Button>
         </div>
       </div>
-    </dialog>
+    </dialog>,
+    document.body,
   );
 }

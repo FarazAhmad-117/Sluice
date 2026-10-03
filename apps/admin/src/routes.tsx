@@ -7,6 +7,9 @@ import { AppLayout } from "@/components/layout/app-layout";
 import LoginRoute from "@/routes/login";
 import NewProjectRoute from "@/routes/new-project";
 import NotFoundRoute from "@/routes/not-found";
+import ProjectActivityRoute from "@/routes/project-activity";
+import ProjectCompareRoute from "@/routes/project-compare";
+import ProjectOverviewRoute from "@/routes/project-overview";
 import ProjectSecretsRoute from "@/routes/project-secrets";
 import ProjectsRoute from "@/routes/projects";
 import SignupRoute from "@/routes/signup";
@@ -82,8 +85,10 @@ export const router = createBrowserRouter([
             children: [
               { path: "projects", element: <ProjectsRoute /> },
               { path: "projects/new", element: <NewProjectRoute /> },
-              { path: "projects/:projectSlug", element: <Navigate to="secrets" replace /> },
+              { path: "projects/:projectSlug", element: <ProjectOverviewRoute /> },
               { path: "projects/:projectSlug/secrets", element: <ProjectSecretsRoute /> },
+              { path: "projects/:projectSlug/compare", element: <ProjectCompareRoute /> },
+              { path: "projects/:projectSlug/activity", element: <ProjectActivityRoute /> },
             ],
           },
         ],

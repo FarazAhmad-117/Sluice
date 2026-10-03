@@ -168,47 +168,48 @@ export const createProjectWithEnvironments = mutation({
   },
 });
 
+/**
+ * One shape for both reads, so the single project and the listing cannot
+ * drift apart. `createdAt` is the row's `_creationTime`, which Convex sets and
+ * no caller can, rather than a column of its own that could disagree with it.
+ */
+const projectShape = v.object({
+  projectId: v.id("projects"),
+  orgId: v.id("orgs"),
+  name: v.string(),
+  slug: v.string(),
+  createdAt: v.number(),
+});
+
+function view(project: Doc<"projects">) {
+  return {
+    projectId: project._id,
+    orgId: project.orgId,
+    name: project.name,
+    slug: project.slug,
+    createdAt: project._creationTime,
+  };
+}
+
 export const getProject = query({
   args: { ...sessionArg, projectId: v.id("projects") },
-  returns: v.object({
-    projectId: v.id("projects"),
-    orgId: v.id("orgs"),
-    name: v.string(),
-    slug: v.string(),
-  }),
+  returns: projectShape,
   handler: async (ctx, args) => {
     const { project } = await requireProject(
       ctx,
       args.sessionToken,
       args.projectId,
     );
-    return {
-      projectId: project._id,
-      orgId: project.orgId,
-      name: project.name,
-      slug: project.slug,
-    };
+    return view(project);
   },
 });
 
 export const listProjects = query({
   args: { ...sessionArg, orgId: v.id("orgs") },
-  returns: v.array(
-    v.object({
-      projectId: v.id("projects"),
-      orgId: v.id("orgs"),
-      name: v.string(),
-      slug: v.string(),
-    }),
-  ),
+  returns: v.array(projectShape),
   handler: async (ctx, args) => {
     const { org } = await requireOrg(ctx, args.sessionToken, args.orgId);
     const projects = await listProjectsByOrg(ctx, org._id);
-    return projects.map((project) => ({
-      projectId: project._id,
-      orgId: project.orgId,
-      name: project.name,
-      slug: project.slug,
-    }));
+    return projects.map(view);
   },
 });
