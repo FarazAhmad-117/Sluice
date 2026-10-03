@@ -144,7 +144,7 @@ function ProjectNav({ slug, data }: { readonly slug: string; readonly data: Proj
     { label: "Compare", icon: <IconColumns className={ICON} />, to: `${base}/compare` },
     { label: "Environments", icon: <IconLayers className={ICON} /> },
     { label: "Tokens", icon: <IconTicket className={ICON} /> },
-    { label: "Activity", icon: <IconActivity className={ICON} /> },
+    { label: "Activity", icon: <IconActivity className={ICON} />, to: `${base}/activity` },
     { label: "Settings", icon: <IconSettings className={ICON} /> },
   ];
   return (

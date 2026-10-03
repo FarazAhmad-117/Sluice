@@ -10,9 +10,9 @@ import { CommandBlock } from "@/components/ui/copy-button";
 import { Skeleton } from "@/components/ui/feedback";
 import { IconArrowRight, IconCheck, IconPlus } from "@/components/ui/icons";
 import { focusRing, pageGutter } from "@/components/ui/styles";
+import { ActivityRow, ActivitySkeletonRows } from "@/components/activity/activity-row";
 import { useProjectActivity } from "@/lib/activity/use-project-activity";
-import type { ActivityLine } from "@/lib/activity/use-project-activity";
-import { createdLabel, formatDateTime, timeAgo } from "@/lib/format/time";
+import { createdLabel } from "@/lib/format/time";
 import { useNow } from "@/lib/format/use-now";
 import { DEVELOPMENT, checklist, environmentStats, ranLocallyKey } from "@/lib/projects/overview";
 import type { ChecklistStep, EnvironmentStats } from "@/lib/projects/overview";
@@ -146,7 +146,7 @@ function OverviewPage({ slug, data }: { readonly slug: string; readonly data: Re
             {runEnvironment === null ? null : (
               <RunLocally command={runCommand(slug, runEnvironment.name)} />
             )}
-            <RecentActivity projectId={data.project.projectId} />
+            <RecentActivity projectId={data.project.projectId} slug={slug} />
           </aside>
         </div>
       </div>
@@ -414,26 +414,24 @@ function RunLocally({ command }: { readonly command: string }) {
   );
 }
 
-function RecentActivity({ projectId }: { readonly projectId: string }) {
+function RecentActivity({ projectId, slug }: { readonly projectId: string; readonly slug: string }) {
   const lines = useProjectActivity({ projectId, limit: 5 });
   return (
     <section aria-labelledby="overview-activity" className={`${CARD} overflow-hidden`}>
-      <div className="flex items-baseline justify-between px-[18px] pt-4 pb-2.5">
+      <div className="flex items-center justify-between gap-3 py-2 pr-2 pl-[18px]">
         <h2 id="overview-activity" className="m-0 text-[15px] font-semibold text-text-primary">
           Recent activity
         </h2>
+        <Link
+          to={`/projects/${slug}/activity`}
+          className={`inline-flex min-h-11 items-center rounded-input px-2.5 text-[13px] text-text-muted no-underline transition-colors hover:text-text-primary lg:min-h-8 lg:pointer-coarse:min-h-11 ${focusRing}`}
+        >
+          View all<span className="sr-only"> activity</span>
+        </Link>
       </div>
       {lines === undefined ? (
         <ul role="status" aria-label="Loading recent activity" className="m-0 list-none p-0">
-          {[0, 1, 2, 3, 4].map((index) => (
-            <li key={index} aria-hidden="true" className="grid grid-cols-[28px_minmax(0,1fr)] gap-2.5 border-t border-hairline px-[18px] py-2.5">
-              <Skeleton className="size-6 rounded-full" />
-              <div className="flex flex-col gap-1.5 py-0.5">
-                <Skeleton className="h-3 w-4/5" />
-                <Skeleton className="h-2.5 w-1/3" />
-              </div>
-            </li>
-          ))}
+          <ActivitySkeletonRows count={5} className="px-[18px]" />
         </ul>
       ) : lines === null ? (
         <p className="m-0 border-t border-hairline px-[18px] py-4 text-[13px] text-text-muted">
@@ -446,7 +444,7 @@ function RecentActivity({ projectId }: { readonly projectId: string }) {
       ) : (
         <ul className="m-0 list-none p-0">
           {lines.map((line) => (
-            <ActivityRow key={line.id} line={line} />
+            <ActivityRow key={line.id} line={line} className="px-[18px]" />
           ))}
         </ul>
       )}
@@ -454,22 +452,3 @@ function RecentActivity({ projectId }: { readonly projectId: string }) {
   );
 }
 
-function ActivityRow({ line }: { readonly line: ActivityLine }) {
-  const now = useNow();
-  return (
-    <li className="grid grid-cols-[28px_minmax(0,1fr)] gap-2.5 border-t border-hairline px-[18px] py-2.5">
-      <span
-        aria-hidden="true"
-        className="flex size-6 items-center justify-center rounded-full bg-surface-card text-[11px] font-semibold text-text-primary"
-      >
-        {line.initial}
-      </span>
-      <div className="flex min-w-0 flex-col gap-0.5">
-        <span className="text-[13px] text-text-primary">{line.sentence}</span>
-        <time dateTime={new Date(line.at).toISOString()} title={formatDateTime(line.at)} className="text-xs text-text-muted">
-          {timeAgo(line.at, now)}
-        </time>
-      </div>
-    </li>
-  );
-}
