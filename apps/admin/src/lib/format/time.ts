@@ -52,14 +52,3 @@ export function createdLabel(at: number, now: number): string {
   if (days < 7) return `${days} days ago`;
   return `on ${formatDate(at)}`;
 }
-
-/**
- * A numeric field that a newer backend adds to a row and an older one does
- * not send (`createdAt` on a project, `updatedAt` on a secret). Read without
- * claiming it in the type, and `undefined` unless it really is a number, so
- * nothing is ever shown for a time nobody recorded.
- */
-export function optionalTime(row: object, field: "createdAt" | "updatedAt"): number | undefined {
-  const value: unknown = (row as Record<string, unknown>)[field];
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}

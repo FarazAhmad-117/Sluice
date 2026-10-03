@@ -23,13 +23,10 @@ import { ConvexError } from "convex/values";
  * generic "that did not work" would leave somebody pressing Save on a form
  * that can never succeed.
  *
- * WHICH OF THE TWO THE DASHBOARD CAN HIT TODAY. Only the key one. The stale
- * secret version comes from `updateSecret`, and nothing in this dashboard
- * calls `updateSecret` yet: there is no edit form. `nextSecretSlot` in
- * `seal.ts` is staged for that form, and the mapping is here so the form gets
- * the right behaviour the day it exists rather than a generic "try again" on a
- * write that can never succeed. Until then this branch is exercised only by
- * tests.
+ * BOTH CAN HAPPEN NOW. The edit drawer (`edit-secret.ts`) calls
+ * `updateSecret` and `updateSharedSecret`, which refuse a stale version; and
+ * `updateSharedSecret` also refuses a row set that is no longer the share's
+ * (a third sentence, below), which a reload fixes the same way.
  *
  * MATCHED BY EXACT TEXT, which is a coupling, and it is pinned from the server
  * side: `convex/secrets.test.ts` (end to end) provokes both refusals through
@@ -47,7 +44,15 @@ export const STALE_SECRET_VERSION =
 export const STALE_ENVIRONMENT_KEY =
   "This environment's key changed since you opened it. Reload and try again.";
 
-const RELOAD_FIXES: readonly string[] = [STALE_SECRET_VERSION, STALE_ENVIRONMENT_KEY];
+/**
+ * `convex/lib/errors.ts`, `SHARED_ROWS_MISMATCH`: a shared write named a set
+ * of rows that is no longer the share's (an environment was added, or a row
+ * was overridden or deleted, since this tab listed it).
+ */
+export const SHARED_ROWS_CHANGED =
+  "This project's environments changed since you opened it. Reload and try again.";
+
+const RELOAD_FIXES: readonly string[] = [STALE_SECRET_VERSION, STALE_ENVIRONMENT_KEY, SHARED_ROWS_CHANGED];
 
 export interface WriteFailure {
   /** A sentence for a person. Never a raw transport error, never a ciphertext. */

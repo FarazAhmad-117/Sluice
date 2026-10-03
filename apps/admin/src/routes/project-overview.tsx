@@ -12,7 +12,7 @@ import { IconArrowRight, IconCheck, IconPlus } from "@/components/ui/icons";
 import { focusRing, pageGutter } from "@/components/ui/styles";
 import { useProjectActivity } from "@/lib/activity/use-project-activity";
 import type { ActivityLine } from "@/lib/activity/use-project-activity";
-import { createdLabel, formatDateTime, optionalTime, timeAgo } from "@/lib/format/time";
+import { createdLabel, formatDateTime, timeAgo } from "@/lib/format/time";
 import { useNow } from "@/lib/format/use-now";
 import { DEVELOPMENT, checklist, environmentStats, ranLocallyKey } from "@/lib/projects/overview";
 import type { ChecklistStep, EnvironmentStats } from "@/lib/projects/overview";
@@ -87,7 +87,7 @@ function OverviewPage({ slug, data }: { readonly slug: string; readonly data: Re
   const [ranLocally, setRanLocally] = useState(() => readRan(data.project.projectId));
   const allListed = !data.listings.some((listing) => listing.loading || listing.rows === null);
   const secretCount = allListed ? countProjectSecrets(data.listings.map((listing) => listing.rows ?? [])) : undefined;
-  const createdAt = optionalTime(data.project, "createdAt");
+  const createdAt = data.project.createdAt;
   const runEnvironment =
     data.environments.find((environment) => environment.name === DEVELOPMENT) ?? data.environments[0] ?? null;
   const stats = environmentStats(data.listings, data.namesByEnvironment);
@@ -96,7 +96,7 @@ function OverviewPage({ slug, data }: { readonly slug: string; readonly data: Re
   const meta = [
     `${data.environments.length} ${data.environments.length === 1 ? "environment" : "environments"}`,
     secretCount === undefined ? null : secretsLabel(secretCount),
-    createdAt === undefined ? null : `created ${createdLabel(createdAt, now)}`,
+    `created ${createdLabel(createdAt, now)}`,
   ].filter((part): part is string => part !== null);
 
   const addButton = noEnvironments ? undefined : (

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createdLabel, optionalTime, timeAgo } from "../src/lib/format/time";
+import { createdLabel, timeAgo } from "../src/lib/format/time";
 
 const NOW = new Date(2026, 9, 2, 15, 0, 0).getTime();
 const MIN = 60_000;
@@ -31,14 +31,5 @@ describe("createdLabel", () => {
     expect(createdLabel(new Date(2026, 9, 1, 23).getTime(), NOW)).toBe("yesterday");
     expect(createdLabel(new Date(2026, 8, 30).getTime(), NOW)).toBe("2 days ago");
     expect(createdLabel(new Date(2026, 0, 5).getTime(), NOW)).toBe("on Jan 5, 2026");
-  });
-});
-
-describe("optionalTime", () => {
-  it("reads a number and refuses anything else", () => {
-    expect(optionalTime({ createdAt: 5 }, "createdAt")).toBe(5);
-    expect(optionalTime({}, "createdAt")).toBeUndefined();
-    expect(optionalTime({ updatedAt: "5" }, "updatedAt")).toBeUndefined();
-    expect(optionalTime({ updatedAt: Number.NaN }, "updatedAt")).toBeUndefined();
   });
 });

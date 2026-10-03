@@ -21,7 +21,7 @@ import { ScopePill } from "@/components/ui/pill";
 import { Segmented } from "@/components/ui/segmented";
 import { compactHeight, focusRing, pageGutter } from "@/components/ui/styles";
 import { useAuth } from "@/lib/auth/auth-context";
-import { formatDateTime, optionalTime, timeAgo } from "@/lib/format/time";
+import { formatDateTime, timeAgo } from "@/lib/format/time";
 import { useNow } from "@/lib/format/use-now";
 import { listOf } from "@/lib/list-of";
 import { useProject, useProjectActions } from "@/lib/projects/project-context";
@@ -153,6 +153,7 @@ function SecretsPage({ slug, data }: { readonly slug: string; readonly data: Rea
   const deleteSecret = useMutation(api.secrets.deleteSecret);
   const deleteSharedSecret = useMutation(api.secrets.deleteSharedSecret);
   const updateSecret = useMutation(api.secrets.updateSecret);
+  const updateSharedSecret = useMutation(api.secrets.updateSharedSecret);
   const [params, setParams] = useSearchParams();
   const wide = useMediaQuery(WIDE);
   const now = useNow();
@@ -284,6 +285,15 @@ function SecretsPage({ slug, data }: { readonly slug: string; readonly data: Rea
         if (session === null) throw new EditRefusal("Your session is not ready. Reload the page.");
         return updateSecret({ sessionToken: session.sessionToken, ...args, secretId: args.secretId as Id<"secrets"> });
       },
+      updateSharedSecret: (args) => {
+        if (session === null) throw new EditRefusal("Your session is not ready. Reload the page.");
+        return updateSharedSecret({
+          sessionToken: session.sessionToken,
+          projectId: args.projectId as Id<"projects">,
+          shareUid: args.shareUid,
+          rows: args.rows.map((edit) => ({ ...edit, secretId: edit.secretId as Id<"secrets"> })),
+        });
+      },
     });
   };
 
@@ -321,7 +331,8 @@ function SecretsPage({ slug, data }: { readonly slug: string; readonly data: Rea
   const currentCell = selected?.cells.find((cell) => cell.environmentId === environment.environmentId);
   const currentRow = selected === undefined ? undefined : rows?.find((row) => row.name === selected.name);
   const reference = currentCell?.secret ?? selected?.cells.find((cell) => cell.secret !== undefined)?.secret;
-  const changedAt = reference === undefined ? undefined : optionalTime(reference, "updatedAt");
+  // `updatedAt` is the current row's creation time: an edit inserts a new row.
+  const changedAt = reference?.updatedAt;
   const detail: DetailProps | null =
     selected === undefined
       ? null

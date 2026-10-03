@@ -112,11 +112,11 @@ export type EditRequest =
 
 export interface EditMutations {
   readonly updateSecret: (args: RowEdit) => Promise<unknown>;
+  /** `secrets.updateSharedSecret`, without the session: every shared row at once, or none. */
+  readonly updateSharedSecret: (args: { readonly projectId: string } & SharedEditPayload) => Promise<unknown>;
 }
 
 export type EditOutcome = { readonly ok: true } | { readonly ok: false; readonly message: string; readonly reload: boolean };
-
-export const SHARED_EDIT_UNAVAILABLE = "Editing a shared value is coming in the next update.";
 
 /** The one entry point the edit drawer calls. Never throws. */
 export async function editSecret(request: EditRequest, mutations: EditMutations): Promise<EditOutcome> {
@@ -125,12 +125,12 @@ export async function editSecret(request: EditRequest, mutations: EditMutations)
       await mutations.updateSecret(await buildRowEdit(request));
       return { ok: true };
     }
+    // The server refuses the write unless `rows` is exactly the share's
+    // current non-overridden rows, each at its version + 1, so a row added,
+    // removed or overridden in the meantime comes back as a reload.
     const payload = await buildSharedEdit(request);
-    // TODO(updateSharedSecret): send `payload` with
-    //   api.secrets.updateSharedSecret({ sessionToken, projectId: request.projectId, ...payload })
-    // once that mutation is merged, then return { ok: true }.
-    void payload;
-    return { ok: false, message: SHARED_EDIT_UNAVAILABLE, reload: false };
+    await mutations.updateSharedSecret({ projectId: request.projectId, ...payload });
+    return { ok: true };
   } catch (cause) {
     if (cause instanceof EditRefusal) {
       // One of this module's own refusals above: already a sentence, and it

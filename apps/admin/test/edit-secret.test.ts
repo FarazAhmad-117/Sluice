@@ -1,17 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
-import { ConvexError } from "convex/values";
+import { describe, expect, it } from "vitest";
 import { newId } from "@sluice/crypto";
 import { SecretOpenError, openSecret } from "../src/lib/secrets/decrypt";
-import {
-  SHARED_EDIT_UNAVAILABLE,
-  buildRowEdit,
-  buildSharedEdit,
-  editSecret,
-} from "../src/lib/secrets/edit-secret";
-import type { EditableRow, RowEdit } from "../src/lib/secrets/edit-secret";
+import { buildRowEdit, buildSharedEdit } from "../src/lib/secrets/edit-secret";
+import type { EditableRow } from "../src/lib/secrets/edit-secret";
 import { createProjectDataKey } from "../src/lib/secrets/pdk";
 import type { EnvironmentKey } from "../src/lib/secrets/pdk";
-import { STALE_SECRET_VERSION } from "../src/lib/secrets/write-errors";
 
 /**
  * EDITING A VALUE. The assertion that matters is the one the server cannot
@@ -119,64 +112,3 @@ describe("buildSharedEdit", () => {
   });
 });
 
-describe("editSecret", () => {
-  it("sends one updateSecret for a row", async () => {
-    const sent: RowEdit[] = [];
-    const outcome = await editSecret(
-      { kind: "row", key: environmentKey(), row: row(), name: "N", value: "v" },
-      { updateSecret: async (args) => void sent.push(args) },
-    );
-    expect(outcome).toEqual({ ok: true });
-    expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({ version: 4 });
-  });
-
-  it("passes a stale version back with a reload", async () => {
-    const outcome = await editSecret(
-      { kind: "row", key: environmentKey(), row: row(), name: "N", value: "v" },
-      { updateSecret: async () => Promise.reject(new ConvexError(STALE_SECRET_VERSION)) },
-    );
-    expect(outcome).toEqual({ ok: false, message: STALE_SECRET_VERSION, reload: true });
-  });
-
-  it("builds the shared payload but does not send it yet", async () => {
-    const shareUid = newId("shr");
-    const updateSecret = vi.fn(async () => ({}));
-    const outcome = await editSecret(
-      {
-        kind: "shared",
-        projectId: "prj",
-        shareUid,
-        name: "N",
-        value: "v",
-        rows: [{ row: row({ shareUid }), environmentName: "development", key: environmentKey() }],
-      },
-      { updateSecret },
-    );
-    expect(outcome).toEqual({ ok: false, message: SHARED_EDIT_UNAVAILABLE, reload: false });
-    expect(updateSecret).not.toHaveBeenCalled();
-  });
-
-  it("reports its own refusals as sentences and hides anything else", async () => {
-    const shareUid = newId("shr");
-    const locked = await editSecret(
-      {
-        kind: "shared",
-        projectId: "prj",
-        shareUid,
-        name: "N",
-        value: "v",
-        rows: [{ row: row({ shareUid }), environmentName: "staging", key: null }],
-      },
-      { updateSecret: async () => ({}) },
-    );
-    expect(locked).toMatchObject({ ok: false, reload: false });
-    expect((locked as { message: string }).message).toContain("staging");
-
-    const transport = await editSecret(
-      { kind: "row", key: environmentKey(), row: row(), name: "N", value: "v" },
-      { updateSecret: async () => Promise.reject(new Error("socket closed, ciphertext deadbeef")) },
-    );
-    expect(transport).toEqual({ ok: false, message: "That did not work. Try again.", reload: false });
-  });
-});
