@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Drawer } from "@/components/ui/drawer";
 import { Callout } from "@/components/ui/feedback";
 import { RadioCard, TextField } from "@/components/ui/field";
+import { MaskedTextarea } from "@/components/ui/masked-textarea";
 import { IconEye, IconEyeOff } from "@/components/ui/icons";
 import { focusRing, inputControl } from "@/components/ui/styles";
 import { secretValueProblem } from "@/lib/secrets/add-secret";
@@ -27,8 +28,6 @@ export interface EditChoice {
   readonly description: string;
 }
 
-/** Masks a textarea's characters where the browser supports it. */
-const MASKED = "[-webkit-text-security:disc]";
 
 export function EditSecretDrawer({
   name,
@@ -145,7 +144,8 @@ export function EditSecretDrawer({
               {shown ? "Hide value" : "Show value"}
             </button>
           </div>
-          <textarea
+          <MaskedTextarea
+            shown={shown}
             ref={valueField}
             id={`${formId}-value`}
             rows={3}
@@ -158,7 +158,7 @@ export function EditSecretDrawer({
             onChange={(event) => setValue(event.target.value)}
             className={`${inputControl} resize-y font-mono text-sm leading-normal ${
               valueProblem === null ? "border-hairline-strong" : "border-status-danger hover:border-status-danger"
-            } ${shown ? "" : MASKED}`}
+            }`}
           />
           <p id={`${formId}-value-hint`} className="m-0 text-sm text-text-muted">
             Saved as a new version. The current one is kept as an earlier version.

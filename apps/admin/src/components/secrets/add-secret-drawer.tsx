@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Drawer } from "@/components/ui/drawer";
 import { Callout } from "@/components/ui/feedback";
 import { RadioCard, TextField } from "@/components/ui/field";
+import { MaskedTextarea } from "@/components/ui/masked-textarea";
 import { IconEye, IconEyeOff } from "@/components/ui/icons";
 import { focusRing, inputControl } from "@/components/ui/styles";
 import { listOf } from "@/lib/list-of";
@@ -47,8 +48,6 @@ export type AddSecretPlan =
     }
   | { readonly scope: "only"; readonly name: string; readonly value: string };
 
-/** Masks a textarea's characters where the browser supports it. */
-const MASKED = "[-webkit-text-security:disc]";
 
 export function AddSecretDrawer({
   environments,
@@ -197,7 +196,8 @@ export function AddSecretDrawer({
               {shown ? "Hide values" : "Show values"}
             </button>
           </div>
-          <textarea
+          <MaskedTextarea
+            shown={shown}
             ref={valueField}
             id={`${formId}-value`}
             rows={2}
@@ -210,7 +210,7 @@ export function AddSecretDrawer({
             aria-describedby={valueProblem === null ? undefined : `${formId}-value-error`}
             className={`${inputControl} resize-y font-mono text-sm leading-normal ${
               valueProblem === null ? "border-hairline-strong" : "border-status-danger hover:border-status-danger"
-            } ${shown ? "" : MASKED}`}
+            }`}
           />
           {valueProblem === null ? null : (
             <p id={`${formId}-value-error`} role="alert" className="m-0 text-sm text-status-danger">
@@ -299,7 +299,8 @@ export function AddSecretDrawer({
                       </label>
                     </div>
                     {own === undefined ? null : (
-                      <textarea
+                      <MaskedTextarea
+            shown={shown}
                         aria-label={`${environment.name} value`}
                         rows={1}
                         value={own}
@@ -319,7 +320,7 @@ export function AddSecretDrawer({
                           overrideProblems.has(environment.environmentId)
                             ? "border-status-danger hover:border-status-danger"
                             : "border-status-warning/50 hover:border-status-warning"
-                        } ${shown ? "" : MASKED}`}
+                        }`}
                       />
                     )}
                     {overrideProblems.has(environment.environmentId) ? (
