@@ -11,6 +11,7 @@ import { listOf } from "@/lib/list-of";
 import { useProject, useProjectActions } from "@/lib/projects/project-context";
 import { buildMatrix } from "@/lib/secrets/compare";
 import type { CompareMatrix } from "@/lib/secrets/compare";
+import { linkForRow } from "@/lib/secrets/links";
 import type { EnvironmentRow, ListedSecret, ProjectSecrets } from "@/lib/secrets/use-project-secrets";
 
 /**
@@ -211,8 +212,8 @@ function Matrix({
         </thead>
         <tbody>
           {matrix.rows.map((row) => {
-            const first = row.cells.find((cell) => cell.secret !== undefined);
-            const to = `/projects/${slug}/secrets?env=${encodeURIComponent(first?.environmentName ?? "")}&key=${encodeURIComponent(row.name)}`;
+            // By opaque id: a name never goes into a URL.
+            const to = linkForRow(slug, row);
             return (
               <tr key={row.name} className="h-[52px] border-t border-hairline">
                 <th scope="row" className="sticky left-0 z-10 bg-surface-base py-1 pr-4 pl-[18px] font-normal">

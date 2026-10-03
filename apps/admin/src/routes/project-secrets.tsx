@@ -27,6 +27,7 @@ import { listOf } from "@/lib/list-of";
 import { useProject, useProjectActions } from "@/lib/projects/project-context";
 import { runCommand } from "@/lib/projects/run-command";
 import { buildMatrix, rowFor } from "@/lib/secrets/compare";
+import { rowForRef, secretRef } from "@/lib/secrets/links";
 import type { CompareCell, CompareRow } from "@/lib/secrets/compare";
 import { VALUE_MASK, openSecretValue } from "@/lib/secrets/decrypt";
 import { EditRefusal, editSecret } from "@/lib/secrets/edit-secret";
@@ -54,7 +55,8 @@ import { WIDE, useMediaQuery } from "@/lib/use-media-query";
  * see `lib/secrets/scope.ts`) and where else the key exists (one chip per
  * environment, from the same matrix the Compare page draws).
  *
- * Selecting a row (`?key=<name>`) opens the detail panel: a column beside the
+ * Selecting a row (`?secret=<shr_ or sec_ id>`, never the name: see
+ * `lib/secrets/links.ts`) opens the detail panel: a column beside the
  * list at 1280px and up, a sheet below. Editing goes through
  * `lib/secrets/edit-secret.ts`; deleting a shared secret deletes it from every
  * environment, and the confirmation says so.
@@ -160,9 +162,13 @@ function SecretsPage({ slug, data }: { readonly slug: string; readonly data: Rea
   const panelId = useId();
 
   const { environment, environments, rows, keyState, counts } = data;
-  const selectedName = params.get("key");
   const matrix = useMemo(() => buildMatrix(data.listings, data.namesByEnvironment), [data.listings, data.namesByEnvironment]);
-  const reveals = useReveals(`${environment?.environmentId ?? ""}|${selectedName ?? ""}`);
+  // `?secret=` is an opaque `shr_`/`sec_` id, resolved here against the listed
+  // rows; the name it stands for never enters the URL (see `links.ts`).
+  const selectedRef = params.get("secret");
+  const selectedRow = rowForRef(matrix, selectedRef);
+  const selectedName = selectedRow?.name ?? null;
+  const reveals = useReveals(`${environment?.environmentId ?? ""}|${selectedRef ?? ""}`);
 
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
@@ -199,12 +205,13 @@ function SecretsPage({ slug, data }: { readonly slug: string; readonly data: Rea
   }
 
   const envName = environment.name;
-  const select = (name: string | null) =>
+  const select = (secret: ListedSecret | null) =>
     setParams(
       (current) => {
         const next = new URLSearchParams(current);
-        if (name === null) next.delete("key");
-        else next.set("key", name);
+        next.delete("key");
+        if (secret === null) next.delete("secret");
+        else next.set("secret", secretRef(secret));
         return next;
       },
       { replace: true },
@@ -327,7 +334,7 @@ function SecretsPage({ slug, data }: { readonly slug: string; readonly data: Rea
   ].filter((part): part is string => part !== null);
 
   // The detail panel's data, for the selected key.
-  const selected = rowFor(matrix, selectedName ?? undefined);
+  const selected = selectedRow;
   const currentCell = selected?.cells.find((cell) => cell.environmentId === environment.environmentId);
   const currentRow = selected === undefined ? undefined : rows?.find((row) => row.name === selected.name);
   const reference = currentCell?.secret ?? selected?.cells.find((cell) => cell.secret !== undefined)?.secret;
@@ -456,7 +463,7 @@ function SecretsPage({ slug, data }: { readonly slug: string; readonly data: Rea
                         canOpen={keyOf(environment.environmentId) !== null}
                         onSelect={() => {
                           if (row.name === undefined) return;
-                          select(row.name === selectedName ? null : row.name);
+                          select(row.name === selectedName ? null : row.secret);
                           if (wide) requestAnimationFrame(() => closeButton.current?.focus({ preventScroll: true }));
                         }}
                         keyButton={(element) => {

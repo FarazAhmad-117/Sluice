@@ -9,6 +9,7 @@ import { useAuth } from "@/lib/auth/auth-context";
 import { useCurrentOrg } from "@/lib/orgs/use-current-org";
 import type { ProjectScope } from "@/lib/projects/project-context";
 import { buildMatrix } from "@/lib/secrets/compare";
+import { linkForRow } from "@/lib/secrets/links";
 import { rank } from "@/lib/search/rank";
 
 /**
@@ -96,14 +97,14 @@ export function CommandPalette({
       }
       if (data !== null) {
         for (const row of buildMatrix(data.listings, data.namesByEnvironment).rows) {
-          const first = row.cells.find((cell) => cell.secret !== undefined);
           out.push({
             id: `key-${row.name}`,
             group: "Secrets",
             label: row.name,
             hint: row.cells.filter((cell) => cell.secret !== undefined).map((cell) => cell.environmentName).join(", "),
             icon: <IconKey className={ICON} />,
-            to: `${base}/secrets?env=${encodeURIComponent(first?.environmentName ?? "")}&key=${encodeURIComponent(row.name)}`,
+            // By opaque id: a name never goes into a URL.
+            to: linkForRow(scope.slug, row),
           });
         }
       }
