@@ -11,9 +11,10 @@ import { listOf } from "@/lib/list-of";
  *
  * ONE SHARED WRITE IS ONE LINE. Adding, changing or deleting a secret for
  * every environment writes one event per environment row, in one transaction.
- * Consecutive events with the same action and actor, about the same key (or
- * the same unnamed secret kind), in different environments, within two
- * seconds, read as one: "You added LOG_LEVEL to all environments".
+ * Consecutive events with the same action and actor, about the same opened
+ * name, in different environments, within two seconds, read as one: "You
+ * added LOG_LEVEL to all environments". Events without a name are never
+ * merged.
  */
 
 export interface ActivityEvent {
@@ -106,7 +107,10 @@ function belongs(group: readonly ActivityEvent[], next: ActivityEvent, context: 
   }
   if (Math.abs(first.at - next.at) > COLLAPSE_MS) return false;
   if (group.some((event) => event.environmentId === next.environmentId)) return false;
-  return context.secretNames.get(first.targetId) === context.secretNames.get(next.targetId);
+  // Only events this browser can NAME, and only the same name: two unnamed
+  // events could be two different secrets, and merging them would claim one.
+  const name = context.secretNames.get(first.targetId);
+  return name !== undefined && name === context.secretNames.get(next.targetId);
 }
 
 /** Newest first in, newest first out. */

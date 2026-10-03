@@ -58,12 +58,22 @@ describe("describeActivity", () => {
         event({ action: "secret.update", targetId: "s-dev-log", environmentId: "dev" }),
       ]),
     ).toEqual(["You changed LOG_LEVEL in all environments"]);
+  });
+
+  it("never merges events it cannot name, which could be different secrets", () => {
     expect(
       sentences([
         event({ action: "secret.delete", targetId: "x1", environmentId: "prod" }),
         event({ action: "secret.delete", targetId: "x2", environmentId: "dev" }),
       ]),
-    ).toEqual(["You deleted a secret from all environments"]);
+    ).toEqual(["You deleted a secret from production", "You deleted a secret from development"]);
+    // Nor a named event with an unnamed one.
+    expect(
+      sentences([
+        event({ targetId: "s-prod-log", environmentId: "prod" }),
+        event({ targetId: "gone", environmentId: "dev" }),
+      ]),
+    ).toHaveLength(2);
   });
 
   it("does not collapse events more than two seconds apart, by different people, or in one environment", () => {
