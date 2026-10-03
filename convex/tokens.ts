@@ -4,22 +4,27 @@ import {
   tokenIdHash,
   verifyRevocation,
 } from "@sluice/crypto";
-import { mutation } from "./_generated/server";
-import type { Id } from "./_generated/dataModel";
+import { mutation, query } from "./_generated/server";
+import type { Doc, Id } from "./_generated/dataModel";
+import type { QueryCtx } from "./_generated/server";
 import { recordUserEvent } from "./lib/audit";
 import {
   sessionArg,
   NOT_PERMITTED,
   assertOrgLink,
   requireEnvironment,
+  requireProject,
   requireSession,
 } from "./lib/authz";
 import { assertHexAtLeast, assertHexBytes } from "./lib/hex";
-import { getPDKGrant, insertPDKGrant } from "./repo/environments";
+import { getPDKGrant, insertPDKGrant, listEnvironmentsByProject } from "./repo/environments";
+import { getOrgMember } from "./repo/orgs";
+import { getUser } from "./repo/users";
 import {
   getServiceTokenByIdHash,
   insertRevocation,
   insertServiceToken,
+  listNewestServiceTokensByEnvironment,
   listRevocationsByTokenIdHash,
   patchServiceToken,
 } from "./repo/tokens";
@@ -419,3 +424,128 @@ export const revokeServiceToken = mutation({
     return null;
   },
 });
+
+/** The most a project's token listing returns. */
+const MAX_LISTED_TOKENS = 200;
+
+const targetShape = v.union(v.literal("computer"), v.literal("server"), v.literal("ci"), v.literal("docker"));
+
+const listedTokenShape = v.object({
+  serviceTokenId: v.id("serviceTokens"),
+  environmentId: v.id("environments"),
+  // Null for a token written before targets existed.
+  target: v.union(targetShape, v.null()),
+  status: v.union(v.literal("active"), v.literal("revoked")),
+  createdAt: v.number(),
+  lastSeenAt: v.union(v.number(), v.null()),
+  expiresAt: v.union(v.number(), v.null()),
+  revokedAt: v.union(v.number(), v.null()),
+  createdByIsYou: v.boolean(),
+  createdByEmail: v.union(v.string(), v.null()),
+  // Sealed under the environment's key at `metaPdkVersion`; null on a token
+  // written before they existed, which the dashboard shows as unnamed and
+  // cannot revoke without the token itself.
+  sealed: v.union(
+    v.object({
+      nameCiphertext: v.string(),
+      nameNonce: v.string(),
+      tokenIdCiphertext: v.string(),
+      tokenIdNonce: v.string(),
+      metaPdkVersion: v.number(),
+      // The row's identity, which the sealed id is bound to. The browser
+      // rebuilds the associated data from it and checks the opened id hashes
+      // to it before signing anything.
+      tokenIdHash: v.string(),
+    }),
+    v.null(),
+  ),
+});
+
+/**
+ * EVERY SERVICE TOKEN IN A PROJECT, NEWEST FIRST, FOR THE DASHBOARD.
+ *
+ * Membership of the project is the gate, as for its secrets: anyone who can
+ * read the environments can see what is connected to them. The token's public
+ * key is not returned; nothing a person does needs it. `tokenIdHash` is
+ * returned only inside `sealed`, where it is the input the browser needs to
+ * open and check the sealed id, and it is already known to every member who
+ * could open that id.
+ *
+ * `createdByEmail` follows the activity feed's rule: released only for a
+ * current member of this org.
+ */
+export const listProjectTokens = query({
+  args: {
+    ...sessionArg,
+    projectId: v.id("projects"),
+  },
+  returns: v.array(listedTokenShape),
+  handler: async (ctx, args) => {
+    const { org, project, user } = await requireProject(ctx, args.sessionToken, args.projectId);
+    const environments = await listEnvironmentsByProject(ctx, project._id);
+
+    const rows: Doc<"serviceTokens">[] = [];
+    for (const environment of environments) {
+      rows.push(...(await listNewestServiceTokensByEnvironment(ctx, environment._id, MAX_LISTED_TOKENS)));
+    }
+    rows.sort((a, b) => b._creationTime - a._creationTime);
+    const newest = rows.slice(0, MAX_LISTED_TOKENS);
+
+    const emails = new Map<string, string | null>();
+    const out = [];
+    for (const row of newest) {
+      // Belt and braces: every row was reached through this project's own
+      // environments, so its org is this org.
+      assertOrgLink(row.orgId, org);
+      const revokedAt =
+        row.status === "revoked"
+          ? Math.max(0, ...(await listRevocationsByTokenIdHash(ctx, row.tokenIdHash)).map((r) => r.revokedAt))
+          : null;
+      const createdBy = row.createdBy;
+      out.push({
+        serviceTokenId: row._id,
+        environmentId: row.environmentId,
+        target: row.target ?? null,
+        status: row.status,
+        createdAt: row._creationTime,
+        lastSeenAt: row.lastSeenAt ?? null,
+        expiresAt: row.expiresAt ?? null,
+        revokedAt: revokedAt === 0 ? null : revokedAt,
+        createdByIsYou: createdBy !== undefined && createdBy === user._id,
+        createdByEmail: createdBy === undefined ? null : await memberEmail(ctx, emails, org._id, createdBy),
+        sealed:
+          row.nameCiphertext !== undefined &&
+          row.nameNonce !== undefined &&
+          row.tokenIdCiphertext !== undefined &&
+          row.tokenIdNonce !== undefined &&
+          row.metaPdkVersion !== undefined
+            ? {
+                nameCiphertext: row.nameCiphertext,
+                nameNonce: row.nameNonce,
+                tokenIdCiphertext: row.tokenIdCiphertext,
+                tokenIdNonce: row.tokenIdNonce,
+                metaPdkVersion: row.metaPdkVersion,
+                tokenIdHash: row.tokenIdHash,
+              }
+            : null,
+      });
+    }
+    return out;
+  },
+});
+
+/** A user's email, only while they are a member of this org. Cached per call. */
+async function memberEmail(
+  ctx: QueryCtx,
+  cache: Map<string, string | null>,
+  orgId: Id<"orgs">,
+  userId: Id<"users">,
+): Promise<string | null> {
+  const cached = cache.get(userId);
+  if (cached !== undefined) return cached;
+  const person = await getUser(ctx, userId);
+  const member = person === null ? null : await getOrgMember(ctx, orgId, person._id);
+  const email = person !== null && member !== null ? person.email : null;
+  cache.set(userId, email);
+  return email;
+}

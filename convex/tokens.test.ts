@@ -11,6 +11,7 @@ import { SESSION_LIFETIME_MS, hashSessionToken } from "./lib/session";
 import {
   getServiceToken,
   getServiceTokenByIdHash,
+  insertServiceToken,
   listRevocationsByTokenIdHash,
   listRevocationsByTokenId,
   patchServiceToken,
@@ -934,5 +935,115 @@ describe("revokeServiceToken", () => {
     );
     expect(stored).not.toBeNull();
     expect(revocations[0]?.tokenIdHash).toBe(stored?.tokenIdHash);
+  });
+});
+
+describe("listProjectTokens", () => {
+  it("lists this project's tokens newest first, with their sealed metadata and no public key", async () => {
+    const t = convexTest(schema, modules);
+    const alice = await seedUser(t, "alice@example.test");
+    const { orgId, projectId, environmentId } = await tenant(t, alice, "acme");
+    const first = await issue(t, alice, environmentId);
+    const second = await issue(t, alice, environmentId);
+
+    // A second project in the same org: its token must not appear.
+    const otherProject = await t.mutation(api.projects.createProject, {
+      sessionToken: alice.sessionToken,
+      orgId,
+      name: "Web",
+      slug: "web",
+    });
+    const otherEnvironment = await t.mutation(api.environments.createEnvironment, {
+      sessionToken: alice.sessionToken,
+      environmentUid: newId("env"),
+      projectId: otherProject,
+      name: "production",
+      ...WRAP,
+    });
+    await issue(t, alice, otherEnvironment);
+
+    const listed = await t.query(api.tokens.listProjectTokens, { sessionToken: alice.sessionToken, projectId });
+    expect(listed.map((row) => row.serviceTokenId)).toEqual([second.serviceTokenId, first.serviceTokenId]);
+    expect(listed[0]).toMatchObject({
+      environmentId,
+      target: "server",
+      status: "active",
+      lastSeenAt: null,
+      expiresAt: null,
+      revokedAt: null,
+      createdByIsYou: true,
+      createdByEmail: "alice@example.test",
+      sealed: {
+        nameCiphertext: TOKEN_META.nameCiphertext,
+        nameNonce: TOKEN_META.nameNonce,
+        tokenIdCiphertext: TOKEN_META.tokenIdCiphertext,
+        tokenIdNonce: TOKEN_META.tokenIdNonce,
+        metaPdkVersion: 1,
+        tokenIdHash: tokenIdHash({ tokenId: second.minted.tokenId }),
+      },
+    });
+    const text = JSON.stringify(listed);
+    expect(text).not.toContain(second.minted.upload.publicKey);
+    expect(text).not.toContain(second.minted.upload.tokenId);
+  });
+
+  it("shows a revoked token as revoked, with when", async () => {
+    const t = convexTest(schema, modules);
+    const alice = await seedUser(t, "alice@example.test");
+    const { keys, projectId, environmentId } = await tenant(t, alice, "acme");
+    const { minted } = await issue(t, alice, environmentId);
+    const payload = notice(minted.upload.tokenId);
+    await t.mutation(api.tokens.revokeServiceToken, {
+      sessionToken: alice.sessionToken,
+      ...payload,
+      signature: toHex(signRevocation(keys.authSeed, payload)),
+    });
+
+    const [row] = await t.query(api.tokens.listProjectTokens, { sessionToken: alice.sessionToken, projectId });
+    expect(row).toMatchObject({ status: "revoked", revokedAt: payload.revokedAt });
+  });
+
+  it("names another member who made a token, and nobody who is not a member", async () => {
+    const t = convexTest(schema, modules);
+    const alice = await seedUser(t, "alice@example.test");
+    const bob = await seedUser(t, "bob@example.test");
+    const carol = await seedUser(t, "carol@example.test");
+    const { orgId, projectId, environmentId } = await tenant(t, alice, "acme");
+    await t.run(async (ctx) => insertOrgMember(ctx, { orgId, userId: bob.userId, role: "member" }));
+    // Rows written through the repository, as a migrated row would be: Bob
+    // holds no key for the environment, and Carol was never in the org.
+    const row = (createdBy: Id<"users">, hash: string) =>
+      t.run(async (ctx) =>
+        insertServiceToken(ctx, {
+          environmentId,
+          orgId,
+          tokenIdHash: hash,
+          publicKey: "11".repeat(32),
+          epoch: 0,
+          status: "active",
+          createdBy,
+        }),
+      );
+    const byBob = await row(bob.userId, "ab".repeat(32));
+    const byCarol = await row(carol.userId, "cd".repeat(32));
+
+    const listed = await t.query(api.tokens.listProjectTokens, { sessionToken: alice.sessionToken, projectId });
+    const find = (id: Id<"serviceTokens">) => listed.find((entry) => entry.serviceTokenId === id);
+    expect(find(byBob)).toMatchObject({ createdByIsYou: false, createdByEmail: "bob@example.test", sealed: null, target: null });
+    // Never released for someone who is not a member right now.
+    expect(find(byCarol)?.createdByEmail).toBeNull();
+  });
+
+  it("refuses someone outside the org, with the shared sentence", async () => {
+    const t = convexTest(schema, modules);
+    const alice = await seedUser(t, "alice@example.test");
+    const mallory = await seedUser(t, "mallory@example.test");
+    const { projectId, environmentId } = await tenant(t, alice, "acme");
+    await issue(t, alice, environmentId);
+    await tenant(t, mallory, "evil");
+
+    await expect(
+      t.query(api.tokens.listProjectTokens, { sessionToken: mallory.sessionToken, projectId }),
+    ).rejects.toThrow(NOT_PERMITTED);
   });
 });

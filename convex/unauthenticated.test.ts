@@ -316,6 +316,10 @@ const CALLS: Record<
     sessionToken,
     projectId: w.projectId,
   }),
+  "tokens.listProjectTokens": (w, sessionToken) => ({
+    sessionToken,
+    projectId: w.projectId,
+  }),
   "orgs.createOrg": (_w, sessionToken) => ({
     sessionToken,
     // Fresh per call, like the slug below, so the valid call is not refused
@@ -508,10 +512,10 @@ const FUNCTIONS = exportedFunctions();
 
 describe("the enumeration this file is built on", () => {
   it("finds every public function in the hierarchy", () => {
-    // Twenty-four, written as a number as well as a list, so that an
+    // Twenty-five, written as a number as well as a list, so that an
     // enumeration which silently starts returning nothing cannot make every
     // assertion below pass vacuously.
-    expect(FUNCTIONS.length).toBe(24);
+    expect(FUNCTIONS.length).toBe(25);
     expect(FUNCTIONS).toEqual([
       "activity.listProjectActivity",
       "environments.createEnvironment",
@@ -540,6 +544,7 @@ describe("the enumeration this file is built on", () => {
       "secrets.updateSecret",
       "secrets.updateSharedSecret",
       "tokens.createServiceToken",
+      "tokens.listProjectTokens",
       "tokens.revokeServiceToken",
     ]);
   });
