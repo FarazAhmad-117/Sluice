@@ -29,7 +29,7 @@ type Ready = Extract<ProjectSecrets, { status: "ready" }>;
 export default function ProjectCompareRoute() {
   const { slug, data } = useProject();
   if (data.status === "not-found") return <ProjectNotFound slug={slug} title="Compare" />;
-  return <ComparePage slug={slug} data={data.status === "ready" ? data : null} />;
+  return <ComparePage key={slug} slug={slug} data={data.status === "ready" ? data : null} />;
 }
 
 function ComparePage({ slug, data }: { readonly slug: string; readonly data: Ready | null }) {

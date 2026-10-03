@@ -72,18 +72,31 @@ export function ShellFrame({ scope }: { readonly scope: ProjectScope | null }) {
   );
 
   // The one add-secret drawer, and the rows it just wrote, marked for a moment.
-  const [adding, setAdding] = useState<AddRequest | null>(null);
+  // Tagged with the project it was opened for.
+  const [adding, setAdding] = useState<{ readonly slug: string; readonly request: AddRequest } | null>(null);
   const [highlight, setHighlight] = useState<ReadonlySet<string>>(NONE);
   useEffect(() => {
     if (highlight.size === 0) return;
     const timer = setTimeout(() => setHighlight(NONE), HIGHLIGHT_MS);
     return () => clearTimeout(timer);
   }, [highlight]);
+  const slug = scope?.slug ?? null;
   const actions = useMemo(
-    (): ProjectActions => ({ openAdd: (request = {}) => setAdding(request), highlight }),
-    [highlight],
+    (): ProjectActions => ({
+      openAdd: (request = {}) => {
+        if (slug !== null) setAdding({ slug, request });
+      },
+      highlight,
+    }),
+    [highlight, slug],
   );
   const ready = scope !== null && scope.data.status === "ready" ? scope.data : null;
+  // The drawer belongs to one project, sealing with that project's keys. If
+  // the project changes, or its data stops being ready (a reload of the
+  // listing, a lock), close it outright rather than leave a request that
+  // would reopen later, possibly over another project. Reset during render,
+  // React's pattern for state that follows other state.
+  if (adding !== null && (adding.slug !== slug || ready === null)) setAdding(null);
 
   return (
     <ShellContext.Provider value={shell}>
@@ -118,10 +131,10 @@ export function ShellFrame({ scope }: { readonly scope: ProjectScope | null }) {
         <p role="status" aria-live="polite" className="sr-only">
           {announcement}
         </p>
-        {adding !== null && ready !== null ? (
+        {adding !== null && adding.slug === slug && ready !== null ? (
           <AddSecretFlow
             data={ready}
-            request={adding}
+            request={adding.request}
             onClose={(added) => {
               setAdding(null);
               if (added !== undefined) {

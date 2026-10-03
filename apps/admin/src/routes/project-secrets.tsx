@@ -82,7 +82,9 @@ export default function ProjectSecretsRoute() {
       </>
     );
   }
-  return <SecretsPage slug={slug} data={data} />;
+  // Keyed by project: filters, the open delete or edit, and focus bookkeeping
+  // belong to one project and must not carry into the next.
+  return <SecretsPage key={slug} slug={slug} data={data} />;
 }
 
 function SkeletonRows() {
