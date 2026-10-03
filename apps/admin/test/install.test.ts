@@ -10,13 +10,13 @@ import {
 describe("install methods", () => {
   it("offers every channel, each once", () => {
     const ids = INSTALL_METHODS.map((method) => method.id);
-    expect(ids).toEqual(["npm", "pnpm", "yarn", "bun", "brew", "shell", "powershell"]);
+    expect(ids).toEqual(["npm", "pnpm", "yarn", "bun", "brew", "shell", "winget", "scoop", "powershell"]);
     expect(new Set(ids).size).toBe(ids.length);
   });
 
   it("names the same package in every package-manager command", () => {
     for (const id of ["npm", "pnpm", "yarn", "bun"] as const) {
-      expect(installMethod(id).command).toContain("@sluice/cli");
+      expect(installMethod(id).command).toContain("@getsluice/cli");
     }
   });
 
@@ -37,9 +37,9 @@ describe("install methods", () => {
 });
 
 describe("defaultInstallMethod", () => {
-  it("opens PowerShell on Windows, Homebrew on a Mac, npm elsewhere", () => {
-    expect(defaultInstallMethod("Win32")).toBe("powershell");
-    expect(defaultInstallMethod("Windows")).toBe("powershell");
+  it("opens winget on Windows, Homebrew on a Mac, npm elsewhere", () => {
+    expect(defaultInstallMethod("Win32")).toBe("winget");
+    expect(defaultInstallMethod("Windows")).toBe("winget");
     expect(defaultInstallMethod("MacIntel")).toBe("brew");
     expect(defaultInstallMethod("macOS")).toBe("brew");
     expect(defaultInstallMethod("Linux x86_64")).toBe("npm");
@@ -48,5 +48,13 @@ describe("defaultInstallMethod", () => {
 
   it("does not mistake Darwin for Windows", () => {
     expect(defaultInstallMethod("Darwin")).toBe("brew");
+  });
+});
+
+describe("install notes", () => {
+  it("spell Windows paths with real backslashes, not escape characters", () => {
+    const note = installMethod("powershell").note;
+    expect(note).toContain(String.raw`%USERPROFILE%\.sluice\bin`);
+    expect(note).not.toMatch(/[\b\t\n]/);
   });
 });

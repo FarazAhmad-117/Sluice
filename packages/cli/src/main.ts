@@ -1,5 +1,6 @@
 import { parseArgv } from "./argv";
 import { ConsoleLogger } from "./node-runtime";
+import { RELEASE } from "./release";
 import { CONFIG_EXIT_CODE, run } from "./run";
 
 /**
@@ -72,7 +73,9 @@ export function main(dependencies: MainDependencies): void {
       dependencies.exit(0);
       return;
     case "version":
-      dependencies.stdout(`${VERSION}\n`);
+      // The release, then the protocol it speaks: the first is what a bug
+      // report needs, the second decides which servers it can read.
+      dependencies.stdout(`sluice ${RELEASE} (${VERSION})\n`);
       dependencies.exit(0);
       return;
     case "usage-error":

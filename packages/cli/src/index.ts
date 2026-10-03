@@ -1,5 +1,5 @@
 /**
- * THE PUBLIC SURFACE OF @sluice/cli.
+ * THE PUBLIC SURFACE OF @getsluice/cli.
  *
  * Everything a consumer can reach is named here and nowhere else, and
  * `test/index.test.ts` pins the exact list, for the same reason

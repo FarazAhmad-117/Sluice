@@ -34,7 +34,7 @@ const EXPECTED = [
   "stripControls",
 ].sort();
 
-describe("the public surface of @sluice/cli", () => {
+describe("the public surface of @getsluice/cli", () => {
   it("is exactly this list", () => {
     expect(Object.keys(cli).sort()).toEqual(EXPECTED);
   });

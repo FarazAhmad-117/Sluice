@@ -83,7 +83,8 @@ export function setupSnippets(input: {
             "",
             `sluice run -- ${command}`,
           ].join("\n"),
-          note: "For every new window, add the three lines to your PowerShell profile ($PROFILE).",
+          note:
+            "For every new window, add the three lines to your PowerShell profile ($PROFILE). With the CLI from npm rather than winget or Scoop, start node directly (sluice run -- node server.js): npm is a .cmd script there, which it will not run without a shell.",
         },
       ];
     case "server":
@@ -142,7 +143,7 @@ export function setupSnippets(input: {
           id: "github",
           label: "GitHub Actions",
           code: [
-            "- run: npm install -g @sluice/cli",
+            "- run: npm install -g @getsluice/cli",
             `- run: sluice run -- ${command}`,
             "  env:",
             "    SLUICE_TOKEN: ${{ secrets.SLUICE_TOKEN }}",
@@ -160,7 +161,7 @@ export function setupSnippets(input: {
             `    SLUICE_ORG_REVOCATION_PUBLIC_KEY: ${orgKey}`,
             `    SLUICE_CONVEX_URL: ${convexUrl}`,
             "  script:",
-            "    - npm install -g @sluice/cli",
+            "    - npm install -g @getsluice/cli",
             `    - sluice run -- ${command}`,
             "# SLUICE_TOKEN comes from a masked CI/CD variable.",
           ].join("\n"),
@@ -174,7 +175,7 @@ export function setupSnippets(input: {
           label: "docker run",
           code: [
             "# Dockerfile",
-            "RUN npm install -g @sluice/cli",
+            "RUN npm install -g @getsluice/cli",
             `CMD ["sluice", "run", "--", ${execForm(command)}]`,
             "",
             "# SLUICE_TOKEN is read from your shell or secret store, not written here.",
@@ -191,7 +192,7 @@ export function setupSnippets(input: {
           label: "Compose",
           code: [
             "# Dockerfile",
-            "RUN npm install -g @sluice/cli",
+            "RUN npm install -g @getsluice/cli",
             `CMD ["sluice", "run", "--", ${execForm(command)}]`,
             "",
             "# compose.yaml",

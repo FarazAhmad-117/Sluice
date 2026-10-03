@@ -1,0 +1,257 @@
+name: Release CLI
+
+# Push a tag `cli-v<version>` whose version matches packages/cli/package.json.
+# Run by hand (workflow_dispatch) to build and smoke-test without publishing.
+#
+# One-time setup is in docs/releasing-the-cli.md. Every publishing step that
+# needs a secret checks for it and says so, rather than failing the release.
+
+on:
+  push:
+    tags:
+      - "cli-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-cli-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # The Bun that compiles the standalone executables. Pinned: the binary is the
+  # runtime, so a new Bun is a new runtime and gets its own release.
+  BUN_VERSION: "1.4.2"
+
+jobs:
+  build:
+    name: Test and build
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Read the version
+        id: version
+        run: echo "version=$(node -p "require('./packages/cli/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Check the tag names the same version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          expected="cli-v${{ steps.version.outputs.version }}"
+          if [ "$GITHUB_REF_NAME" != "$expected" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match packages/cli/package.json ($expected)." >&2
+            exit 1
+          fi
+
+      - name: Typecheck
+        run: pnpm -r --include-workspace-root typecheck
+      - name: Test
+        run: pnpm -r --include-workspace-root test
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Build the executables
+        run: node scripts/release/build-binaries.mjs
+      - name: Render the package manifests
+        run: node scripts/release/render-manifests.mjs packages/cli/release packages/cli/release/manifests
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: packages/cli/release
+          if-no-files-found: error
+
+  smoke:
+    name: Install and run (${{ matrix.name }})
+    needs: build
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { name: linux-x64, os: ubuntu-latest }
+          - { name: linux-arm64, os: ubuntu-24.04-arm }
+          - { name: darwin-arm64, os: macos-latest }
+          - { name: darwin-x64, os: macos-13 }
+          - { name: windows-x64, os: windows-latest }
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: release
+
+      # The real install scripts, pointed at the files this run built, so a
+      # broken installer fails here and not on a user's machine.
+      - name: Install with install.sh
+        if: runner.os != 'Windows'
+        run: |
+          SLUICE_DOWNLOAD_BASE="file://$PWD/release" SLUICE_INSTALL="$RUNNER_TEMP/sluice" sh install.sh
+          echo "$RUNNER_TEMP/sluice/bin" >> "$GITHUB_PATH"
+      - name: Install with install.ps1
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:SLUICE_DOWNLOAD_BASE = 'file:///' + ((Resolve-Path release).Path -replace '\\', '/')
+          $env:SLUICE_INSTALL = Join-Path $env:RUNNER_TEMP 'sluice'
+          ./install.ps1
+          Add-Content $env:GITHUB_PATH (Join-Path $env:SLUICE_INSTALL 'bin')
+
+      - name: It reports this release
+        shell: bash
+        run: sluice --version | tee /dev/stderr | grep -F "sluice $VERSION "
+
+      # With no configuration it must refuse with the configuration exit code
+      # (2) and never start the command.
+      - name: It refuses to run unconfigured
+        shell: bash
+        run: |
+          set +e
+          sluice run -- node -e "require('fs').writeFileSync('started', '1')"
+          code=$?
+          set -e
+          test "$code" = "2"
+          test ! -e started
+
+      - name: A tampered download is refused
+        if: runner.os != 'Windows'
+        run: |
+          cp -r release tampered
+          sed -i.bak 's/^./0/' tampered/SHA256SUMS
+          if SLUICE_DOWNLOAD_BASE="file://$PWD/tampered" SLUICE_INSTALL="$RUNNER_TEMP/tampered" sh install.sh; then
+            echo "install.sh accepted a bad checksum" >&2
+            exit 1
+          fi
+          test ! -e "$RUNNER_TEMP/tampered/bin/sluice"
+
+  publish:
+    name: Publish
+    needs: [build, smoke]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write # npm provenance
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: release
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=""
+          case "$VERSION" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" \
+            release/*.tar.gz release/*.zip release/SHA256SUMS \
+            --title "Sluice CLI $VERSION" --generate-notes $prerelease
+
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::warning::NPM_TOKEN is not set, so @getsluice/cli was not published to npm."
+            exit 0
+          fi
+          tag="latest"
+          case "$VERSION" in *-*) tag="next" ;; esac
+          cd packages/cli
+          pnpm publish --access public --no-git-checks --tag "$tag"
+
+  homebrew:
+    name: Homebrew tap
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    if: ${{ !contains(needs.build.outputs.version, '-') }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: release
+      - name: Update FarazAhmad-117/homebrew-sluice
+        env:
+          TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          if [ -z "$TOKEN" ]; then echo "::warning::HOMEBREW_TAP_TOKEN is not set; the tap was not updated."; exit 0; fi
+          git clone "https://x-access-token:${TOKEN}@github.com/FarazAhmad-117/homebrew-sluice.git" tap
+          mkdir -p tap/Formula
+          cp release/manifests/homebrew/sluice.rb tap/Formula/sluice.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/sluice.rb
+          git commit -m "sluice $VERSION" || exit 0
+          git push
+
+  scoop:
+    name: Scoop bucket
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    if: ${{ !contains(needs.build.outputs.version, '-') }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: release
+      - name: Update FarazAhmad-117/scoop-sluice
+        env:
+          TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          if [ -z "$TOKEN" ]; then echo "::warning::SCOOP_BUCKET_TOKEN is not set; the bucket was not updated."; exit 0; fi
+          git clone "https://x-access-token:${TOKEN}@github.com/FarazAhmad-117/scoop-sluice.git" bucket
+          mkdir -p bucket/bucket
+          cp release/manifests/scoop/sluice.json bucket/bucket/sluice.json
+          cd bucket
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bucket/sluice.json
+          git commit -m "sluice $VERSION" || exit 0
+          git push
+
+  winget:
+    name: winget
+    needs: [build, publish]
+    runs-on: windows-latest
+    if: ${{ !contains(needs.build.outputs.version, '-') }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: release
+      # Opens a pull request on microsoft/winget-pkgs with the rendered
+      # manifests. Microsoft's validation and review then take a day or two.
+      - name: Submit to winget-pkgs
+        shell: pwsh
+        env:
+          TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          if (-not $env:TOKEN) { Write-Host "::warning::WINGET_TOKEN is not set; nothing was submitted to winget."; exit 0 }
+          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+          ./wingetcreate.exe submit --token $env:TOKEN release/manifests/winget
