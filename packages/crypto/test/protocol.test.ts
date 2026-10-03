@@ -6,6 +6,7 @@ import {
   revocationKeyAssociatedData,
   secretAssociatedData,
   tokenIdHash,
+  tokenMetaAssociatedData,
 } from "../src/protocol";
 
 /**
@@ -605,6 +606,7 @@ describe("no two constructions share bytes", () => {
     "sluice/pdk/v2|",
     "sluice/revocation-key/v2|",
     "sluice/user-key/v1|",
+    "sluice/token-meta/v1|",
   ];
 
   const labelOf = (bytes: Uint8Array): string => {
@@ -612,12 +614,13 @@ describe("no two constructions share bytes", () => {
     return text.slice(0, text.indexOf("|") + 1);
   };
 
-  it("emits exactly the four expected labels", () => {
+  it("emits exactly the five expected labels", () => {
     expect([
       labelOf(secret()),
       labelOf(pdk()),
       labelOf(revocationKeyAssociatedData({ orgUid: ORG, granteeUid: USR })),
       labelOf(userKeyAssociatedData("x25519")),
+      labelOf(tokenMeta()),
     ]).toEqual(EXPECTED_LABELS);
     expect(labelOf(userKeyAssociatedData("ed25519"))).toBe("sluice/user-key/v1|");
   });
@@ -674,5 +677,53 @@ describe("no two constructions share bytes", () => {
       PDK_AAD_AT_2_USER,
       REVOCATION_AAD,
     ]);
+  });
+});
+
+// Computed with node:crypto, never with this package.
+const TOKEN_META_AT_1_NAME =
+  "736c756963652f746f6b656e2d6d6574612f76317c656e765f30303031303230333034303530363037303830393061306230633064306530667c317c333035616237313532366232633339623563386461663665633937623931616639383234373933376338353866346664336565346366316538643937666364397c6e616d65";
+const TOKEN_META_AT_1_TOKEN_ID =
+  "736c756963652f746f6b656e2d6d6574612f76317c656e765f30303031303230333034303530363037303830393061306230633064306530667c317c333035616237313532366232633339623563386461663665633937623931616639383234373933376338353866346664336565346366316538643937666364397c746f6b656e4964";
+const TOKEN_META_AT_2_NAME =
+  "736c756963652f746f6b656e2d6d6574612f76317c656e765f30303031303230333034303530363037303830393061306230633064306530667c327c333035616237313532366232633339623563386461663665633937623931616639383234373933376338353866346664336565346366316538643937666364397c6e616d65";
+
+function tokenMeta(
+  overrides: Partial<Parameters<typeof tokenMetaAssociatedData>[0]> = {},
+): Uint8Array {
+  return tokenMetaAssociatedData({
+    environmentUid: ENV,
+    pdkVersion: 1,
+    tokenIdHash: TOKEN_HASH,
+    field: "name",
+    ...overrides,
+  });
+}
+
+describe("tokenMetaAssociatedData", () => {
+  it("matches the independently computed vectors", () => {
+    expect(toHex(tokenMeta())).toBe(TOKEN_META_AT_1_NAME);
+    expect(toHex(tokenMeta({ field: "tokenId" }))).toBe(TOKEN_META_AT_1_TOKEN_ID);
+    expect(toHex(tokenMeta({ pdkVersion: 2 }))).toBe(TOKEN_META_AT_2_NAME);
+  });
+
+  it("no vector is a prefix of another, or of any other construction's", () => {
+    const all = [TOKEN_META_AT_1_NAME, TOKEN_META_AT_1_TOKEN_ID, TOKEN_META_AT_2_NAME, PDK_AAD_AT_1_TOKEN];
+    for (const a of all) {
+      for (const b of all) if (a !== b) expect(b.startsWith(a), `${b} starts with ${a}`).toBe(false);
+    }
+  });
+
+  it("refuses a field outside the closed pair, without case-folding", () => {
+    expect(() => tokenMeta({ field: "Name" as "name" })).toThrow("field must be name or tokenId");
+    expect(() => tokenMeta({ field: "value" as "name" })).toThrow("field must be name or tokenId");
+  });
+
+  it("refuses a malformed environment, version or token hash", () => {
+    expect(() => tokenMeta({ environmentUid: USR })).toThrow();
+    expect(() => tokenMeta({ pdkVersion: 0 })).toThrow();
+    expect(() => tokenMeta({ tokenIdHash: TOKEN_HASH.toUpperCase() })).toThrow();
+    expect(() => tokenMeta({ tokenIdHash: `${TOKEN_HASH}
+` })).toThrow();
   });
 });
