@@ -5,6 +5,7 @@ import { Callout } from "@/components/ui/feedback";
 import { RadioCard, TextField } from "@/components/ui/field";
 import { IconEye, IconEyeOff } from "@/components/ui/icons";
 import { focusRing, inputControl } from "@/components/ui/styles";
+import { secretValueProblem } from "@/lib/secrets/add-secret";
 import type { EditOutcome } from "@/lib/secrets/edit-secret";
 
 /**
@@ -50,9 +51,15 @@ export function EditSecretDrawer({
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<Extract<EditOutcome, { ok: false }> | null>(null);
   const chosen = choices.find((option) => option.id === choice) ?? choices[0];
+  // Checked before anything is sealed; the server applies the same limit.
+  const valueProblem = secretValueProblem(value);
 
   const save = async () => {
     if (chosen === undefined) return;
+    if (valueProblem !== null) {
+      valueField.current?.focus();
+      return;
+    }
     setBusy(true);
     setFailure(null);
     const outcome = await onSave(chosen.id, value);
@@ -146,13 +153,21 @@ export function EditSecretDrawer({
             autoComplete="off"
             spellCheck={false}
             autoCapitalize="none"
-            aria-describedby={`${formId}-value-hint`}
+            aria-describedby={`${formId}-value-hint${valueProblem === null ? "" : ` ${formId}-value-error`}`}
+            aria-invalid={valueProblem === null ? undefined : true}
             onChange={(event) => setValue(event.target.value)}
-            className={`${inputControl} resize-y border-hairline-strong font-mono text-sm leading-normal ${shown ? "" : MASKED}`}
+            className={`${inputControl} resize-y font-mono text-sm leading-normal ${
+              valueProblem === null ? "border-hairline-strong" : "border-status-danger hover:border-status-danger"
+            } ${shown ? "" : MASKED}`}
           />
           <p id={`${formId}-value-hint`} className="m-0 text-sm text-text-muted">
             Saved as a new version. The current one is kept as an earlier version.
           </p>
+          {valueProblem === null ? null : (
+            <p id={`${formId}-value-error`} role="alert" className="m-0 text-sm text-status-danger">
+              {valueProblem}
+            </p>
+          )}
         </div>
 
         {failure === null ? null : (

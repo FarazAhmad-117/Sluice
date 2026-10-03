@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { newId } from "@sluice/crypto";
 import {
+  MAX_NAME_BYTES,
+  MAX_VALUE_BYTES,
   duplicateProblem,
   secretKeyProblem,
+  secretValueProblem,
   unavailableEnvironments,
+  utf8Bytes,
 } from "../src/lib/secrets/add-secret";
 import type { ProjectDataKeyState } from "../src/lib/secrets/environment-key";
 import { createProjectDataKey } from "../src/lib/secrets/pdk";
@@ -24,6 +28,29 @@ describe("secretKeyProblem", () => {
     for (const name of ["1ABC", "API-KEY", "A B", "café", "A.B"]) {
       expect(secretKeyProblem(name)).toMatch(/letters, digits and underscores/);
     }
+  });
+
+  it("allows a 256-byte key and refuses a longer one, as the server does", () => {
+    expect(secretKeyProblem("A".repeat(MAX_NAME_BYTES))).toBeNull();
+    expect(secretKeyProblem("A".repeat(MAX_NAME_BYTES + 1))).toBe("Names can be up to 256 characters.");
+  });
+});
+
+describe("secretValueProblem", () => {
+  it("allows exactly 64 KiB and refuses one byte more", () => {
+    expect(MAX_VALUE_BYTES).toBe(65_536);
+    expect(secretValueProblem("x".repeat(MAX_VALUE_BYTES))).toBeNull();
+    expect(secretValueProblem("x".repeat(MAX_VALUE_BYTES + 1))).toBe("Values can be up to 64 KB.");
+    expect(secretValueProblem("")).toBeNull();
+  });
+
+  it("counts UTF-8 bytes, not characters", () => {
+    // "é" is two bytes, "😀" four: under the limit in characters, over it in bytes.
+    expect(utf8Bytes("é😀")).toBe(6);
+    const characters = MAX_VALUE_BYTES / 2;
+    expect(secretValueProblem("é".repeat(characters))).toBeNull();
+    expect(secretValueProblem("é".repeat(characters) + "x")).toBe("Values can be up to 64 KB.");
+    expect(secretValueProblem("😀".repeat(MAX_VALUE_BYTES / 4 + 1))).toBe("Values can be up to 64 KB.");
   });
 });
 

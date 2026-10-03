@@ -6,7 +6,13 @@ import { RadioCard, TextField } from "@/components/ui/field";
 import { IconEye, IconEyeOff } from "@/components/ui/icons";
 import { focusRing, inputControl } from "@/components/ui/styles";
 import { listOf } from "@/lib/list-of";
-import { duplicateProblem, secretKeyProblem, unavailableEnvironments } from "@/lib/secrets/add-secret";
+import {
+  MAX_NAME_BYTES,
+  duplicateProblem,
+  secretKeyProblem,
+  secretValueProblem,
+  unavailableEnvironments,
+} from "@/lib/secrets/add-secret";
 import type { ProjectDataKeyState } from "@/lib/secrets/environment-key";
 import { describeWriteFailure } from "@/lib/secrets/write-errors";
 
@@ -85,6 +91,16 @@ export function AddSecretDrawer({
   const keyProblem = secretKeyProblem(name);
   const duplicate = keyProblem === null ? duplicateProblem(name, targets, namesByEnvironment) : null;
   const allOverridden = scope === "all" && environments.every((environment) => overrides.has(environment.environmentId));
+  // Shown as soon as a value is over, not only on save: nothing is sealed for
+  // a value the server would refuse.
+  const valueProblem = secretValueProblem(value);
+  const overrideProblems = new Map<string, string>();
+  if (scope === "all") {
+    for (const [environmentId, own] of overrides) {
+      const problem = secretValueProblem(own);
+      if (problem !== null) overrideProblems.set(environmentId, problem);
+    }
+  }
   const others = environments.filter((environment) => environment.environmentId !== current.environmentId);
   const everyName = environments.map((environment) => environment.name);
 
@@ -93,6 +109,10 @@ export function AddSecretDrawer({
     setFailure(null);
     if (keyProblem !== null || duplicate !== null) {
       keyField.current?.focus();
+      return;
+    }
+    if (valueProblem !== null || overrideProblems.size > 0) {
+      valueField.current?.focus();
       return;
     }
     if (unavailable.length > 0 || allOverridden) return;
@@ -156,7 +176,10 @@ export function AddSecretDrawer({
           autoCapitalize="none"
           spellCheck={false}
           onChange={(event) => setName(event.target.value)}
-          error={touched ? (keyProblem ?? duplicate ?? undefined) : undefined}
+          // A key over the length limit says so at once, like a value over its limit.
+          error={
+            touched || name.length > MAX_NAME_BYTES ? (keyProblem ?? duplicate ?? undefined) : undefined
+          }
         />
 
         <div className="flex flex-col gap-2">
@@ -183,8 +206,17 @@ export function AddSecretDrawer({
             spellCheck={false}
             autoCapitalize="none"
             onChange={(event) => setValue(event.target.value)}
-            className={`${inputControl} resize-y border-hairline-strong font-mono text-sm leading-normal ${shown ? "" : MASKED}`}
+            aria-invalid={valueProblem === null ? undefined : true}
+            aria-describedby={valueProblem === null ? undefined : `${formId}-value-error`}
+            className={`${inputControl} resize-y font-mono text-sm leading-normal ${
+              valueProblem === null ? "border-hairline-strong" : "border-status-danger hover:border-status-danger"
+            } ${shown ? "" : MASKED}`}
           />
+          {valueProblem === null ? null : (
+            <p id={`${formId}-value-error`} role="alert" className="m-0 text-sm text-status-danger">
+              {valueProblem}
+            </p>
+          )}
         </div>
 
         {environments.length > 1 ? (
@@ -279,9 +311,26 @@ export function AddSecretDrawer({
                             new Map(currentOverrides).set(environment.environmentId, event.target.value),
                           )
                         }
-                        className={`${inputControl} mb-1.5 resize-y border-status-warning/50 font-mono text-sm leading-normal hover:border-status-warning ${shown ? "" : MASKED}`}
+                        aria-invalid={overrideProblems.has(environment.environmentId) || undefined}
+                        aria-describedby={
+                          overrideProblems.has(environment.environmentId) ? `${formId}-own-error-${environment.environmentId}` : undefined
+                        }
+                        className={`${inputControl} mb-1.5 resize-y font-mono text-sm leading-normal ${
+                          overrideProblems.has(environment.environmentId)
+                            ? "border-status-danger hover:border-status-danger"
+                            : "border-status-warning/50 hover:border-status-warning"
+                        } ${shown ? "" : MASKED}`}
                       />
                     )}
+                    {overrideProblems.has(environment.environmentId) ? (
+                      <p
+                        id={`${formId}-own-error-${environment.environmentId}`}
+                        role="alert"
+                        className="m-0 mb-1.5 text-sm text-status-danger"
+                      >
+                        {overrideProblems.get(environment.environmentId)}
+                      </p>
+                    ) : null}
                   </li>
                 );
               })}
