@@ -30,6 +30,20 @@ import {
   describeWriteFailure,
 } from "../apps/admin/src/lib/secrets/write-errors";
 
+/**
+ * A token's sealed name and id, as `createServiceToken` now requires. Opaque
+ * to the server, so any well-formed hex of the right widths will do here: a
+ * 20 byte name ciphertext, a 32 byte id ciphertext (16 + the tag), 12 byte
+ * nonces.
+ */
+const TOKEN_META = {
+  nameCiphertext: "ab".repeat(20),
+  nameNonce: "0c0b0a090807060504030201",
+  tokenIdCiphertext: "cd".repeat(32),
+  tokenIdNonce: "1c1b1a191817161514131211",
+  target: "server",
+} as const;
+
 export const modules = import.meta.glob("./**/*.ts");
 
 /**
@@ -126,6 +140,7 @@ async function issue(
   const minted = mintToken({ environment: "production" });
   const serviceTokenId = await t.mutation(api.tokens.createServiceToken, {
     sessionToken: actor.sessionToken,
+    ...TOKEN_META,
     environmentId,
     tokenId: minted.upload.tokenId,
     publicKey: minted.upload.publicKey,
@@ -160,6 +175,64 @@ describe("createServiceToken", () => {
     expect(row?.status).toBe("active");
   });
 
+  it("stores the sealed name and id, the target, and who created it", async () => {
+    const t = convexTest(schema, modules);
+    const alice = await seedUser(t, "alice@example.test");
+    const { environmentId } = await tenant(t, alice, "acme");
+    const { serviceTokenId } = await issue(t, alice, environmentId);
+
+    const row = await t.run(async (ctx) => getServiceToken(ctx, serviceTokenId));
+    expect(row).toMatchObject({
+      nameCiphertext: TOKEN_META.nameCiphertext,
+      nameNonce: TOKEN_META.nameNonce,
+      tokenIdCiphertext: TOKEN_META.tokenIdCiphertext,
+      tokenIdNonce: TOKEN_META.tokenIdNonce,
+      target: "server",
+      // Off the environment, as the grant's version is.
+      metaPdkVersion: 1,
+      // From the session. There is no argument that could set it.
+      createdBy: alice.userId,
+    });
+  });
+
+  it("refuses sealed metadata of the wrong shape, and writes nothing", async () => {
+    const t = convexTest(schema, modules);
+    const alice = await seedUser(t, "alice@example.test");
+    const { environmentId } = await tenant(t, alice, "acme");
+    const minted = mintToken({ environment: "production" });
+    const good = {
+      sessionToken: alice.sessionToken,
+      environmentId,
+      tokenId: minted.upload.tokenId,
+      publicKey: minted.upload.publicKey,
+      wrappedPDK: "cc".repeat(48),
+      pdkNonce: "0102030405060708090a0b0c",
+      pdkVersion: 1,
+      ...TOKEN_META,
+    };
+
+    for (const [bad, message] of [
+      // A sealed 16 byte id is exactly 32 bytes; 31 or 33 is not this id.
+      [{ tokenIdCiphertext: "cd".repeat(31) }, undefined],
+      [{ tokenIdCiphertext: "cd".repeat(33) }, undefined],
+      // An empty name seals to the tag alone.
+      [{ nameCiphertext: "ab".repeat(16) }, undefined],
+      [{ nameCiphertext: "ab".repeat(64 + 16 + 1) }, "Token names can be up to 64 characters."],
+      [{ nameNonce: "0c0b0a09080706050403020" }, undefined],
+      [{ tokenIdNonce: "" }, undefined],
+      [{ target: "laptop" }, undefined],
+    ] as const) {
+      const attempt = t.mutation(api.tokens.createServiceToken, { ...good, ...(bad as object) } as typeof good);
+      if (message === undefined) await expect(attempt).rejects.toThrow();
+      else await expect(attempt).rejects.toThrow(message);
+    }
+    const left = await t.run(async (ctx) => getServiceTokenByIdHash(ctx, tokenIdHash({ tokenId: minted.tokenId })));
+    expect(left).toBeNull();
+
+    // At the limit is accepted.
+    await t.mutation(api.tokens.createServiceToken, { ...good, nameCiphertext: "ab".repeat(64 + 16) });
+  });
+
   it("refuses a second token with the same id", async () => {
     const t = convexTest(schema, modules);
     const alice = await seedUser(t, "alice@example.test");
@@ -172,6 +245,7 @@ describe("createServiceToken", () => {
     await expect(
       t.mutation(api.tokens.createServiceToken, {
         sessionToken: alice.sessionToken,
+        ...TOKEN_META,
         environmentId,
         tokenId: minted.upload.tokenId,
         publicKey: minted.upload.publicKey,
@@ -193,6 +267,7 @@ describe("createServiceToken", () => {
     await expect(
       t.mutation(api.tokens.createServiceToken, {
         sessionToken: mallory.sessionToken,
+        ...TOKEN_META,
         environmentId,
         tokenId: minted.upload.tokenId,
         publicKey: minted.upload.publicKey,
@@ -217,6 +292,7 @@ describe("createServiceToken", () => {
       wrappedPDK: "cc".repeat(48),
       pdkNonce: "0102030405060708090a0b0c",
       pdkVersion: 1,
+      ...TOKEN_META,
     };
 
     for (const bad of [
@@ -281,6 +357,7 @@ describe("a token's wrapped project data key", () => {
     await expect(
       t.mutation(api.tokens.createServiceToken, {
         sessionToken: alice.sessionToken,
+        ...TOKEN_META,
         environmentId,
         tokenId: minted.upload.tokenId,
         publicKey: minted.upload.publicKey,
@@ -389,6 +466,7 @@ describe("a token's wrapped project data key", () => {
       await expect(
         t.mutation(api.tokens.createServiceToken, {
           sessionToken: alice.sessionToken,
+          ...TOKEN_META,
           environmentId,
           tokenId: minted.upload.tokenId,
           publicKey: minted.upload.publicKey,
@@ -409,6 +487,7 @@ describe("a token's wrapped project data key", () => {
     const refusal = await t
       .mutation(api.tokens.createServiceToken, {
         sessionToken: alice.sessionToken,
+        ...TOKEN_META,
         environmentId,
         tokenId: minted.upload.tokenId,
         publicKey: minted.upload.publicKey,
@@ -438,6 +517,7 @@ describe("a token's wrapped project data key", () => {
     // not one that refuses everything.
     await t.mutation(api.tokens.createServiceToken, {
       sessionToken: alice.sessionToken,
+      ...TOKEN_META,
       environmentId,
       tokenId: minted.upload.tokenId,
       publicKey: minted.upload.publicKey,
@@ -466,6 +546,7 @@ describe("a token's wrapped project data key", () => {
     await expect(
       t.mutation(api.tokens.createServiceToken, {
         sessionToken: mallory.sessionToken,
+        ...TOKEN_META,
         environmentId,
         tokenId: minted.upload.tokenId,
         publicKey: minted.upload.publicKey,
@@ -514,6 +595,7 @@ describe("a token's wrapped project data key", () => {
     await expect(
       t.mutation(api.tokens.createServiceToken, {
         sessionToken: bob.sessionToken,
+        ...TOKEN_META,
         environmentId,
         tokenId: minted.upload.tokenId,
         publicKey: minted.upload.publicKey,
@@ -543,6 +625,7 @@ describe("a token's wrapped project data key", () => {
     await expect(
       t.mutation(api.tokens.createServiceToken, {
         sessionToken: bob.sessionToken,
+        ...TOKEN_META,
         environmentId,
         tokenId: minted.upload.tokenId,
         publicKey: minted.upload.publicKey,

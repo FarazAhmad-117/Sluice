@@ -47,6 +47,11 @@ import {
 
 // The token id `mintToken` produces, and the width `tokenIdHash` enforces.
 const TOKEN_ID_BYTES = 16;
+// AES-GCM's tag, which every sealed blob carries on top of its plaintext.
+const TAG_BYTES = 16;
+// A token's name, as the person typed it, in UTF-8 bytes. Matches the
+// dashboard's own limit, so the server is the backstop, not the first refusal.
+const MAX_TOKEN_NAME_BYTES = 64;
 // Ed25519.
 const PUBLIC_KEY_BYTES = 32;
 const SIGNATURE_BYTES = 64;
@@ -57,6 +62,7 @@ const NONCE_BYTES = 12;
 const MIN_CIPHERTEXT_BYTES = 16;
 
 const DUPLICATE_TOKEN = "A service token with that id already exists.";
+const TOKEN_NAME_TOO_LONG = `Token names can be up to ${MAX_TOKEN_NAME_BYTES} characters.`;
 
 /**
  * The refusal when the presented notice is not signed by the organisation's
@@ -169,6 +175,13 @@ export const createServiceToken = mutation({
     // current version, never stored from here: see `STALE_PDK_VERSION`.
     pdkVersion: v.number(),
     expiresAt: v.optional(v.number()),
+    // The name and the plaintext id, sealed under the environment's project
+    // data key at `pdkVersion`. See `serviceTokens` in the schema.
+    nameCiphertext: v.string(),
+    nameNonce: v.string(),
+    tokenIdCiphertext: v.string(),
+    tokenIdNonce: v.string(),
+    target: v.union(v.literal("computer"), v.literal("server"), v.literal("ci"), v.literal("docker")),
   },
   returns: v.id("serviceTokens"),
   handler: async (ctx, args): Promise<Id<"serviceTokens">> => {
@@ -199,6 +212,16 @@ export const createServiceToken = mutation({
     assertHexBytes("publicKey", args.publicKey, PUBLIC_KEY_BYTES);
     assertHexBytes("pdkNonce", args.pdkNonce, NONCE_BYTES);
     assertHexAtLeast("wrappedPDK", args.wrappedPDK, MIN_CIPHERTEXT_BYTES);
+    assertHexBytes("nameNonce", args.nameNonce, NONCE_BYTES);
+    assertHexBytes("tokenIdNonce", args.tokenIdNonce, NONCE_BYTES);
+    // A sealed 16 byte id is exactly 16 bytes plus the tag; anything else is
+    // not the id this row's hash names.
+    assertHexBytes("tokenIdCiphertext", args.tokenIdCiphertext, TOKEN_ID_BYTES + TAG_BYTES);
+    // At least one character, at most the dashboard's limit.
+    assertHexAtLeast("nameCiphertext", args.nameCiphertext, 1 + TAG_BYTES);
+    if (args.nameCiphertext.length > (MAX_TOKEN_NAME_BYTES + TAG_BYTES) * 2) {
+      throw new ConvexError(TOKEN_NAME_TOO_LONG);
+    }
     if (args.expiresAt !== undefined) {
       assertNonNegativeSafeInteger("expiresAt", args.expiresAt);
     }
@@ -233,6 +256,15 @@ export const createServiceToken = mutation({
       epoch: environment.epoch,
       status: "active",
       ...(args.expiresAt === undefined ? {} : { expiresAt: args.expiresAt }),
+      nameCiphertext: args.nameCiphertext,
+      nameNonce: args.nameNonce,
+      tokenIdCiphertext: args.tokenIdCiphertext,
+      tokenIdNonce: args.tokenIdNonce,
+      // Equal to the version the client sealed under, by the compare-and-set
+      // above, exactly as the grant's version is.
+      metaPdkVersion: environment.pdkVersion,
+      target: args.target,
+      createdBy: user._id,
     });
 
     // THE GRANT IS WRITTEN HERE, IN THIS MUTATION, for the same reason

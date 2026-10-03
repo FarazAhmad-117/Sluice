@@ -318,6 +318,30 @@ export default defineSchema({
     status: v.union(v.literal("active"), v.literal("revoked")),
     lastSeenAt: v.optional(v.number()),
     expiresAt: v.optional(v.number()),
+
+    // WHAT A PERSON NEEDS BACK LATER, SEALED. The name they gave the token and
+    // its plaintext id, each sealed in the browser under the environment's
+    // project data key (`tokenMetaAssociatedData` in `@sluice/crypto`), so
+    // the dashboard can list tokens by name and sign a revocation for one it
+    // did not mint. The server cannot open either, so `tokenIdHash` above
+    // still keeps the ids non-enumerable to a database reader. Optional only
+    // because rows written before they existed have none; every new row
+    // carries all of them.
+    nameCiphertext: v.optional(v.string()),
+    nameNonce: v.optional(v.string()),
+    tokenIdCiphertext: v.optional(v.string()),
+    tokenIdNonce: v.optional(v.string()),
+    // The key generation both were sealed under, copied off the environment
+    // when the token was created.
+    metaPdkVersion: v.optional(v.number()),
+    // Where the person said this token would run. Plaintext: it only picks
+    // which setup instructions to show, and it tells a reader nothing a
+    // token's existence does not.
+    target: v.optional(
+      v.union(v.literal("computer"), v.literal("server"), v.literal("ci"), v.literal("docker")),
+    ),
+    // From the session, never from the caller.
+    createdBy: v.optional(v.id("users")),
   })
     .index("by_token_id_hash", ["tokenIdHash"])
     .index("by_environment", ["environmentId"])
