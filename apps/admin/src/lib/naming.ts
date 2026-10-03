@@ -12,7 +12,7 @@
  *
  * The dashboard PROPOSES a slug from the project name (`slugFromName` in
  * `lib/projects/create-project.ts`) and SHOWS it before submit, in the hint
- * under the name ("sluice run --project <slug>"), with a "Change" control that
+ * under the name ("Its address: /projects/<slug>"), with a "Change" control that
  * opens it as its own field. Proposing is a canonicalisation and it is not
  * injective: `a-b`, `a_b`, `a b` and `A/B` all collapse to `a-b` or `ab`, so
  * two different names can propose one slug. That is why the proposal is always

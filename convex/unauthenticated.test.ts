@@ -16,6 +16,20 @@ import * as environmentsModule from "./environments";
 import * as secretsModule from "./secrets";
 import * as tokensModule from "./tokens";
 
+/**
+ * A token's sealed name and id, as `createServiceToken` now requires. Opaque
+ * to the server, so any well-formed hex of the right widths will do here: a
+ * 20 byte name ciphertext, a 32 byte id ciphertext (16 + the tag), 12 byte
+ * nonces.
+ */
+const TOKEN_META = {
+  nameCiphertext: "ab".repeat(20),
+  nameNonce: "0c0b0a090807060504030201",
+  tokenIdCiphertext: "cd".repeat(32),
+  tokenIdNonce: "1c1b1a191817161514131211",
+  target: "server",
+} as const;
+
 export const modules = import.meta.glob("./**/*.ts");
 
 /**
@@ -253,6 +267,7 @@ async function world(t: Harness): Promise<World> {
   const victim = mintToken({ environment: "production" });
   await t.mutation(api.tokens.createServiceToken, {
     sessionToken: alice.sessionToken,
+    ...TOKEN_META,
     environmentId,
     tokenId: victim.upload.tokenId,
     publicKey: victim.upload.publicKey,
@@ -298,6 +313,10 @@ const CALLS: Record<
   (w: World, sessionToken: string) => Record<string, unknown>
 > = {
   "activity.listProjectActivity": (w, sessionToken) => ({
+    sessionToken,
+    projectId: w.projectId,
+  }),
+  "tokens.listProjectTokens": (w, sessionToken) => ({
     sessionToken,
     projectId: w.projectId,
   }),
@@ -456,6 +475,7 @@ const CALLS: Record<
   }),
   "tokens.createServiceToken": (w, sessionToken) => ({
     sessionToken,
+    ...TOKEN_META,
     environmentId: w.environmentId,
     tokenId: w.spare.tokenId,
     publicKey: w.spare.publicKey,
@@ -492,10 +512,10 @@ const FUNCTIONS = exportedFunctions();
 
 describe("the enumeration this file is built on", () => {
   it("finds every public function in the hierarchy", () => {
-    // Twenty-four, written as a number as well as a list, so that an
+    // Twenty-five, written as a number as well as a list, so that an
     // enumeration which silently starts returning nothing cannot make every
     // assertion below pass vacuously.
-    expect(FUNCTIONS.length).toBe(24);
+    expect(FUNCTIONS.length).toBe(25);
     expect(FUNCTIONS).toEqual([
       "activity.listProjectActivity",
       "environments.createEnvironment",
@@ -524,6 +544,7 @@ describe("the enumeration this file is built on", () => {
       "secrets.updateSecret",
       "secrets.updateSharedSecret",
       "tokens.createServiceToken",
+      "tokens.listProjectTokens",
       "tokens.revokeServiceToken",
     ]);
   });

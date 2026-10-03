@@ -53,6 +53,23 @@ export async function listServiceTokensByEnvironment(
     .collect();
 }
 
+/**
+ * An environment's tokens, newest first, at most `limit` of them. The listing
+ * the dashboard shows, bounded so a project with a runaway CI loop minting
+ * tokens cannot make one query read without end.
+ */
+export async function listNewestServiceTokensByEnvironment(
+  ctx: QueryCtx,
+  environmentId: Id<"environments">,
+  limit: number,
+): Promise<Doc<"serviceTokens">[]> {
+  return await ctx.db
+    .query("serviceTokens")
+    .withIndex("by_environment", (q) => q.eq("environmentId", environmentId))
+    .order("desc")
+    .take(limit);
+}
+
 export async function insertServiceToken(
   ctx: MutationCtx,
   doc: WithoutSystemFields<Doc<"serviceTokens">>,

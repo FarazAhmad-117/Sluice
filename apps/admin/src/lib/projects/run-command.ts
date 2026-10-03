@@ -2,14 +2,15 @@
  * THE COMMAND THE DASHBOARD TELLS A PERSON TO RUN, IN ONE PLACE.
  *
  * Shown on the Overview ("Run locally", and step three of the checklist) and
- * at the foot of the secret detail panel, as the approved Round 3 mocks draw
- * it. Kept in one function so that when the CLI's flags change, every place
- * that prints the command changes with them.
+ * at the foot of the secret detail panel. Kept in one function so that when
+ * the CLI's interface changes, every place that prints the command changes
+ * with it.
  *
- * KNOWN GAP, STATED HERE SO IT IS NOT FORGOTTEN: `packages/cli` today reads
- * its project and environment from a service token (`SLUICE_TOKEN`) and does
- * not parse `--project` or `--env`; and the dashboard cannot mint a token yet.
+ * It names no project and no environment because the CLI takes neither: the
+ * service token in `SLUICE_TOKEN` IS the environment (`packages/cli/src/argv.ts`
+ * parses `run -- <command>` and nothing else). Each environment's setup page
+ * hands out that token and the lines that set it.
  */
-export function runCommand(projectSlug: string, environmentName: string): string {
-  return `sluice run --project ${projectSlug} --env ${environmentName} -- npm run dev`;
+export function runCommand(): string {
+  return "sluice run -- npm run dev";
 }

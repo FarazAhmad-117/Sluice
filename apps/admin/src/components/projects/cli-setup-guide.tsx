@@ -1,5 +1,6 @@
 import { useId, useState } from "react";
 import type { ReactNode } from "react";
+import { Button } from "@/components/ui/button";
 import { CommandBlock } from "@/components/ui/copy-button";
 import { IconExternal } from "@/components/ui/icons";
 import { Segmented } from "@/components/ui/segmented";
@@ -39,23 +40,15 @@ function initialMethod(): InstallMethodId {
 export function CliSetupGuide({
   runCommand,
   environmentName,
+  setupTo,
   onAnnounce,
 }: {
   readonly runCommand: string;
   readonly environmentName: string;
+  /** Where "Create a token for this computer" goes: the environment's setup flow. */
+  readonly setupTo: string;
   readonly onAnnounce?: (message: string) => void;
 }) {
-  const id = useId();
-  const [method, setMethod] = useState<InstallMethodId>(initialMethod);
-  const chosen = installMethod(method);
-  const choose = (next: InstallMethodId) => {
-    setMethod(next);
-    try {
-      localStorage.setItem(INSTALL_METHOD_KEY, next);
-    } catch {
-      // Not remembered; the tab still changes.
-    }
-  };
   const copy = { copyable: CLI_RELEASED, ...(onAnnounce === undefined ? {} : { onDone: onAnnounce }) };
 
   return (
@@ -78,31 +71,17 @@ export function CliSetupGuide({
       )}
       <ol className="m-0 flex list-none flex-col gap-5 p-0">
         <GuideStep number={1} title="Install the CLI">
-          <Segmented
-            variant="underline"
-            label="Install with"
-            idPrefix={`${id}-install`}
-            panelId={`${id}-install-panel`}
-            options={INSTALL_METHODS.map((option) => ({ value: option.id, label: option.label }))}
-            value={method}
-            onChange={choose}
-          />
-          <div
-            id={`${id}-install-panel`}
-            role="tabpanel"
-            aria-labelledby={`${id}-install-${method}`}
-            className="flex flex-col gap-2 pt-1"
-          >
-            <CommandBlock command={chosen.command} label={`Copy the ${chosen.label} install command`} {...copy} />
-            <p className="m-0 text-[13px] text-text-muted">
-              {chosen.note} Check it worked with <code className="font-mono text-[12.5px] text-text-body">sluice --version</code>.
-            </p>
-          </div>
+          <InstallCliTabs {...(onAnnounce === undefined ? {} : { onAnnounce })} />
         </GuideStep>
-        <GuideStep number={2} title="Connect this computer">
-          <CommandBlock command="sluice login" label="Copy the login command" {...copy} />
+        <GuideStep number={2} title="Give this computer a token">
+          <div>
+            <Button size="sm" variant="secondary" to={setupTo}>
+              Create a token for this computer
+            </Button>
+          </div>
           <p className="m-0 text-[13px] text-text-muted">
-            Opens your browser so you can approve this computer. Its key stays on this machine.
+            Its own token, so you can revoke this computer without touching anything else. The setup page shows the
+            lines to add to your shell.
           </p>
         </GuideStep>
         <GuideStep number={3} title={`Run your app with ${environmentName} secrets`}>
@@ -114,6 +93,50 @@ export function CliSetupGuide({
         </GuideStep>
       </ol>
     </div>
+  );
+}
+
+/**
+ * The install command for every channel, as tabs, opening on the one that
+ * fits this machine and remembering the person's pick. Used by the Overview's
+ * guide and by each environment's setup flow.
+ */
+export function InstallCliTabs({ onAnnounce }: { readonly onAnnounce?: (message: string) => void }) {
+  const id = useId();
+  const [method, setMethod] = useState<InstallMethodId>(initialMethod);
+  const chosen = installMethod(method);
+  const choose = (next: InstallMethodId) => {
+    setMethod(next);
+    try {
+      localStorage.setItem(INSTALL_METHOD_KEY, next);
+    } catch {
+      // Not remembered; the tab still changes.
+    }
+  };
+  const copy = { copyable: CLI_RELEASED, ...(onAnnounce === undefined ? {} : { onDone: onAnnounce }) };
+  return (
+    <>
+      <Segmented
+        variant="underline"
+        label="Install with"
+        idPrefix={`${id}-install`}
+        panelId={`${id}-install-panel`}
+        options={INSTALL_METHODS.map((option) => ({ value: option.id, label: option.label }))}
+        value={method}
+        onChange={choose}
+      />
+      <div
+        id={`${id}-install-panel`}
+        role="tabpanel"
+        aria-labelledby={`${id}-install-${method}`}
+        className="flex flex-col gap-2 pt-1"
+      >
+        <CommandBlock command={chosen.command} label={`Copy the ${chosen.label} install command`} {...copy} />
+        <p className="m-0 text-[13px] text-text-muted">
+          {chosen.note} Check it worked with <code className="font-mono text-[12.5px] text-text-body">sluice --version</code>.
+        </p>
+      </div>
+    </>
   );
 }
 

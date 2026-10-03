@@ -48,6 +48,20 @@ import { decryptSecrets, readRevocation } from "../packages/cli/src/bundle";
 import { TokenIdentity } from "../packages/cli/src/config";
 import { NO_PERSISTED_FLOOR, SluiceCore } from "../packages/sdk/src/index";
 
+/**
+ * A token's sealed name and id, as `createServiceToken` now requires. Opaque
+ * to the server, so any well-formed hex of the right widths will do here: a
+ * 20 byte name ciphertext, a 32 byte id ciphertext (16 + the tag), 12 byte
+ * nonces.
+ */
+const TOKEN_META = {
+  nameCiphertext: "ab".repeat(20),
+  nameNonce: "0c0b0a090807060504030201",
+  tokenIdCiphertext: "cd".repeat(32),
+  tokenIdNonce: "1c1b1a191817161514131211",
+  target: "server",
+} as const;
+
 export const modules = import.meta.glob("./**/*.ts");
 
 /**
@@ -246,6 +260,7 @@ async function provision(t: ReturnType<typeof convexTest>) {
   );
   await t.mutation(api.tokens.createServiceToken, {
     sessionToken,
+    ...TOKEN_META,
     environmentId,
     tokenId: minted.upload.tokenId,
     publicKey: minted.upload.publicKey,

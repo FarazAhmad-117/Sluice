@@ -7,10 +7,13 @@ import { AppLayout } from "@/components/layout/app-layout";
 import LoginRoute from "@/routes/login";
 import NewProjectRoute from "@/routes/new-project";
 import NotFoundRoute from "@/routes/not-found";
+import EnvironmentSetupRoute from "@/routes/environment-setup";
 import ProjectActivityRoute from "@/routes/project-activity";
 import ProjectCompareRoute from "@/routes/project-compare";
+import ProjectEnvironmentsRoute from "@/routes/project-environments";
 import ProjectOverviewRoute from "@/routes/project-overview";
 import ProjectSecretsRoute from "@/routes/project-secrets";
+import ProjectTokensRoute from "@/routes/project-tokens";
 import ProjectsRoute from "@/routes/projects";
 import SignupRoute from "@/routes/signup";
 
@@ -89,6 +92,12 @@ export const router = createBrowserRouter([
               { path: "projects/:projectSlug/secrets", element: <ProjectSecretsRoute /> },
               { path: "projects/:projectSlug/compare", element: <ProjectCompareRoute /> },
               { path: "projects/:projectSlug/activity", element: <ProjectActivityRoute /> },
+              { path: "projects/:projectSlug/environments", element: <ProjectEnvironmentsRoute /> },
+              {
+                path: "projects/:projectSlug/environments/:environmentName/setup",
+                element: <EnvironmentSetupRoute />,
+              },
+              { path: "projects/:projectSlug/tokens", element: <ProjectTokensRoute /> },
             ],
           },
         ],

@@ -133,8 +133,9 @@ export {
   revocationKeyAssociatedData,
   secretAssociatedData,
   tokenIdHash,
+  tokenMetaAssociatedData,
 } from "./protocol";
-export type { PDKGranteeType, SecretField } from "./protocol";
+export type { PDKGranteeType, SecretField, TokenMetaField } from "./protocol";
 
 /**
  * The account identity's wire formats: the auth verifier, the wrapped key blob

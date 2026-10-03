@@ -10,6 +10,7 @@ import {
   getEnvironmentByUid,
   insertEnvironment,
   insertPDKGrant,
+  listEnvironmentsByProject,
 } from "../repo/environments";
 
 /**
@@ -32,6 +33,15 @@ import {
 const DUPLICATE_NAME =
   "An environment with that name already exists in this project.";
 const DUPLICATE_UID = "An environment with that id already exists.";
+
+/**
+ * The most environments one project can hold. Each one is a key to keep, a
+ * row in every Compare table and a tab in the dashboard; past a couple of
+ * dozen it is a naming scheme, not environments. Checked here so that both
+ * creation paths agree.
+ */
+export const MAX_ENVIRONMENTS_PER_PROJECT = 20;
+const TOO_MANY_ENVIRONMENTS = `A project can have up to ${MAX_ENVIRONMENTS_PER_PROJECT} environments.`;
 
 /**
  * The starting values. Neither is chosen by the caller.
@@ -109,6 +119,11 @@ export async function insertEnvironmentWithGrant(
   // `createProjectWithEnvironments` call.
   if ((await getEnvironmentByName(ctx, project._id, name)) !== null) {
     throw new ConvexError(DUPLICATE_NAME);
+  }
+  // Counted inside the transaction, so it also sees environments inserted
+  // earlier in the same `createProjectWithEnvironments` call.
+  if ((await listEnvironmentsByProject(ctx, project._id)).length >= MAX_ENVIRONMENTS_PER_PROJECT) {
+    throw new ConvexError(TOO_MANY_ENVIRONMENTS);
   }
   // Deployment-wide, not per project or per org: the uid names the
   // environment in ciphertext bindings and must mean one environment

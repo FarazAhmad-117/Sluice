@@ -388,7 +388,7 @@ function SecretsPage({ slug, data }: { readonly slug: string; readonly data: Rea
                 },
           deleteLabel: currentRow?.secret.shareUid === undefined ? "Delete" : "Delete everywhere",
           onAddHere: (environmentId) => openAdd({ environmentId, name: selected.name }),
-          runCommand: runCommand(slug, envName),
+          runCommand: runCommand(),
           runEnvironment: envName,
         };
   const editingRow = editing === null ? undefined : rowFor(matrix, editing);

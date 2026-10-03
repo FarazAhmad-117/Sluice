@@ -160,6 +160,13 @@ const PDK_AAD_PREFIX = "sluice/pdk/v2|";
  */
 const REVOCATION_KEY_AAD_PREFIX = "sluice/revocation-key/v2|";
 
+/**
+ * The associated data prefix for a service token's sealed metadata. NOT
+ * exported, for the same reason as the four above: reaching it means calling
+ * {@link tokenMetaAssociatedData}.
+ */
+const TOKEN_META_AAD_PREFIX = "sluice/token-meta/v1|";
+
 /** The separator, written once so no call site spells it. */
 const SEPARATOR = "|";
 
@@ -660,6 +667,72 @@ export function revocationKeyAssociatedData(params: {
   // fixed-width shapes that cannot contain the separator. No two distinct
   // inputs produce one string.
   return utf8.encode(REVOCATION_KEY_AAD_PREFIX + orgUid + SEPARATOR + granteeUid);
+}
+
+/**
+ * The two pieces of a service token a person needs back later, and there are
+ * exactly two. Same reasoning as {@link GRANTEE_TYPES}.
+ */
+export type TokenMetaField = "name" | "tokenId";
+const TOKEN_META_FIELDS: readonly string[] = ["name", "tokenId"];
+
+/**
+ * THE ASSOCIATED DATA RULE FOR A SERVICE TOKEN'S SEALED NAME AND ID.
+ *
+ * `serviceTokens.nameCiphertext` and `serviceTokens.tokenIdCiphertext` are
+ * sealed with AES-GCM under the environment's project data key, under
+ * associated data of exactly:
+ *
+ *     utf8("sluice/token-meta/v1|" + environmentUid + "|" + decimal(pdkVersion)
+ *          + "|" + tokenIdHash + "|" + field)
+ *
+ * WHY THE ID IS SEALED AND STORED AT ALL, when {@link tokenIdHash} exists so
+ * the server need not keep it. A revocation notice is signed over the
+ * PLAINTEXT id, and a token is revoked from a browser that, days later, did
+ * not mint it. Without the id stored somewhere a member can read, the only
+ * way to revoke a lost token is to have kept the token. Sealed under the
+ * environment's key, it is readable by exactly the people who could already
+ * read that environment's secrets, and a database reader still cannot
+ * enumerate ids: the property the hash was bought for survives.
+ *
+ * WHY THE HASH IS IN HERE. It is the row's identity on the server. Binding it
+ * means a sealed id cannot be copied onto another token's row: opened there,
+ * it fails, so a browser can never sign a revocation for token B believing it
+ * is revoking token A. And the browser can check the opened id against the
+ * row's hash, which the dashboard does before it signs.
+ *
+ * WHY THE ENVIRONMENT, THE VERSION AND THE FIELD: as {@link pdkAssociatedData}
+ * and {@link secretAssociatedData} argue. A blob moved between environments,
+ * served under a relabelled key generation, or swapped between the name and
+ * id slots fails to open.
+ *
+ * WHY THIS ENCODING IS INJECTIVE: every component is a constant, a
+ * fixed-shape id, decimal digits, a fixed-shape hash, or one of two literals;
+ * none can contain `|`, and the field comes last, after a separator.
+ */
+export function tokenMetaAssociatedData(params: {
+  environmentUid: string;
+  pdkVersion: number;
+  tokenIdHash: string;
+  field: TokenMetaField;
+}): Uint8Array {
+  const environmentUid = assertId("env", "environmentUid", params.environmentUid);
+  const pdkVersion = assertVersion("pdkVersion", params.pdkVersion);
+  const hash = assertTokenHash(params.tokenIdHash);
+  const { field } = params;
+  if (typeof field !== "string" || !TOKEN_META_FIELDS.includes(field)) {
+    throw new Error("field must be name or tokenId");
+  }
+  return utf8.encode(
+    TOKEN_META_AAD_PREFIX +
+      environmentUid +
+      SEPARATOR +
+      pdkVersion +
+      SEPARATOR +
+      hash +
+      SEPARATOR +
+      field,
+  );
 }
 
 /**

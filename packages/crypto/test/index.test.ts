@@ -114,6 +114,7 @@ const PUBLIC_SURFACE = [
   "signRevocation",
   "toHex",
   "tokenIdHash",
+  "tokenMetaAssociatedData",
   "unseal",
   "userKeyAssociatedData",
   "utf8",

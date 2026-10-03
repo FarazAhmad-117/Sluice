@@ -95,14 +95,23 @@ export interface Checklist {
 
 /**
  * "Create the project" is done by being here. "Add your secrets" is done when
- * the project holds one. "Run your app" is the person's own claim, made with
- * "Mark as done" and remembered in this browser. "Connect production" needs
- * service tokens, which do not exist yet, so it is never done.
+ * the project holds one. "Run your app" is done when a development token has
+ * connected, or on the person's own claim ("Mark as done", remembered in this
+ * browser). "Connect production" is done when a token outside development has
+ * connected: made is not enough, because a token nobody has used yet proves
+ * nothing is running.
  */
-export function checklist(input: { readonly secretCount: number | undefined; readonly ranLocally: boolean }): Checklist {
+export function checklist(input: {
+  readonly secretCount: number | undefined;
+  readonly ranLocally: boolean;
+  /** One entry per service token: its environment, and whether it has ever connected. */
+  readonly connections: readonly { readonly environmentName: string; readonly connected: boolean }[];
+}): Checklist {
   const done = new Set<ChecklistStep>(["create"]);
   if (input.secretCount !== undefined && input.secretCount > 0) done.add("secrets");
-  if (input.ranLocally) done.add("run");
+  const connected = input.connections.filter((connection) => connection.connected);
+  if (input.ranLocally || connected.some((connection) => connection.environmentName === DEVELOPMENT)) done.add("run");
+  if (connected.some((connection) => connection.environmentName !== DEVELOPMENT)) done.add("production");
   return { done, total: 4 };
 }
 

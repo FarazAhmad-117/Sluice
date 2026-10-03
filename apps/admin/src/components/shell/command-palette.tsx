@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import { useQuery } from "convex/react";
 import { useNavigate } from "react-router";
 import { api } from "@convex/_generated/api";
-import { IconActivity, IconColumns, IconFolder, IconKey, IconLayers, IconOverview, IconPlus, IconSearch } from "@/components/ui/icons";
+import { IconActivity, IconColumns, IconFolder, IconKey, IconLayers, IconOverview, IconPlus, IconSearch, IconTicket } from "@/components/ui/icons";
 import { useAuth } from "@/lib/auth/auth-context";
 import { useCurrentOrg } from "@/lib/orgs/use-current-org";
 import type { ProjectScope } from "@/lib/projects/project-context";
@@ -84,6 +84,8 @@ export function CommandPalette({
         { id: "page-secrets", group: "Pages", label: "Secrets", hint: name, icon: <IconKey className={ICON} />, to: `${base}/secrets`, keywords: ["keys", "values", "env"] },
         { id: "page-compare", group: "Pages", label: "Compare", hint: name, icon: <IconColumns className={ICON} />, to: `${base}/compare`, keywords: ["matrix", "missing", "diff"] },
         { id: "page-activity", group: "Pages", label: "Activity", hint: name, icon: <IconActivity className={ICON} />, to: `${base}/activity`, keywords: ["audit", "log", "history"] },
+        { id: "page-environments", group: "Pages", label: "Environments", hint: name, icon: <IconLayers className={ICON} />, to: `${base}/environments`, keywords: ["connect", "setup", "server", "deploy"] },
+        { id: "page-tokens", group: "Pages", label: "Tokens", hint: name, icon: <IconTicket className={ICON} />, to: `${base}/tokens`, keywords: ["revoke", "service", "access", "ci"] },
       );
       for (const environment of data?.environments ?? []) {
         out.push({

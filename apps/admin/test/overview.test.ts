@@ -65,17 +65,40 @@ describe("environmentStats", () => {
 
 describe("checklist", () => {
   it("is one of four done for a project with no secrets", () => {
-    const list = checklist({ secretCount: 0, ranLocally: false });
+    const list = checklist({ secretCount: 0, ranLocally: false, connections: [] });
     expect([...list.done]).toEqual(["create"]);
     expect(list.total).toBe(4);
   });
   it("counts secrets only once they are known", () => {
-    expect(checklist({ secretCount: undefined, ranLocally: false }).done.has("secrets")).toBe(false);
-    expect(checklist({ secretCount: 3, ranLocally: false }).done.has("secrets")).toBe(true);
+    expect(checklist({ secretCount: undefined, ranLocally: false, connections: [] }).done.has("secrets")).toBe(false);
+    expect(checklist({ secretCount: 3, ranLocally: false, connections: [] }).done.has("secrets")).toBe(true);
   });
-  it("takes the person's word for running locally, and never marks production", () => {
-    const list = checklist({ secretCount: 3, ranLocally: true });
+  it("takes the person's word for running locally", () => {
+    const list = checklist({ secretCount: 3, ranLocally: true, connections: [] });
     expect(list.done.size).toBe(3);
     expect(list.done.has("production")).toBe(false);
+  });
+  it("marks running done once a development token has connected, whatever the person said", () => {
+    const list = checklist({
+      secretCount: 3,
+      ranLocally: false,
+      connections: [{ environmentName: "development", connected: true }],
+    });
+    expect(list.done.has("run")).toBe(true);
+    expect(list.done.has("production")).toBe(false);
+  });
+  it("marks production done once a token outside development has connected, not merely been made", () => {
+    const made = checklist({
+      secretCount: 3,
+      ranLocally: false,
+      connections: [{ environmentName: "production", connected: false }],
+    });
+    expect(made.done.has("production")).toBe(false);
+    const connected = checklist({
+      secretCount: 3,
+      ranLocally: false,
+      connections: [{ environmentName: "staging", connected: true }],
+    });
+    expect(connected.done.has("production")).toBe(true);
   });
 });

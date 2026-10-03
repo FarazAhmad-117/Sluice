@@ -99,7 +99,7 @@ function walk(dir: string, out: string[] = [], extensions = SOURCE_EXTENSIONS): 
  */
 const OWNED_LABEL = new RegExp(
   "sluice" +
-    "/(secret|pdk|revocation-key|revocation|user-key|token-id|auth|unwrap|auth-verifier|muk-salt|argon2-conformance)/v" +
+    "/(secret|pdk|revocation-key|revocation|user-key|token-id|token-meta|auth|unwrap|auth-verifier|muk-salt|argon2-conformance)/v" +
     "\\d",
 );
 
@@ -115,6 +115,7 @@ const OWNED_DOMAINS = [
   "revocation",
   "user-key",
   "token-id",
+  "token-meta",
   "auth",
   "unwrap",
   "auth-verifier",

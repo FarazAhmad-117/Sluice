@@ -203,6 +203,26 @@ describe("environments authorisation", () => {
 // ---------------------------------------------------------------------------
 
 describe("createEnvironment", () => {
+  it("refuses a project's twenty-first environment, and writes nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, projectA } = await twoTenants(t);
+    const create = (name: string) =>
+      t.mutation(api.environments.createEnvironment, {
+        sessionToken: alice.sessionToken,
+        environmentUid: newId("env"),
+        projectId: projectA,
+        name,
+        ...wrap,
+      });
+    for (let i = 1; i <= 20; i++) await create(`env-${i}`);
+    await expect(create("env-21")).rejects.toThrow("A project can have up to 20 environments.");
+    const listed = await t.query(api.environments.listEnvironments, {
+      sessionToken: alice.sessionToken,
+      projectId: projectA,
+    });
+    expect(listed).toHaveLength(20);
+  });
+
   it("initialises pdkVersion at 1 and epoch at 0", async () => {
     const t = convexTest(schema, modules);
     const { alice, projectA } = await twoTenants(t);
