@@ -681,6 +681,10 @@ describe("the ciphertext-only surface", () => {
       "valueCiphertext",
       "valueNonce",
       "createdAt",
+      // When the secret last changed: the current row's `_creationTime`,
+      // because an update inserts a new row. A timestamp, not a name or a
+      // value, and the dashboard shows it per row.
+      "updatedAt",
       "supersededAt",
       // Shared-secret grouping metadata. Plaintext on purpose and bound into
       // no associated data: a random `shr_` id and a boolean, neither of which
@@ -688,9 +692,9 @@ describe("the ciphertext-only surface", () => {
       // `packages/crypto/src/ids.ts`.
       "shareUid",
       "overridden",
-      // `createSharedSecret` and `deleteSharedSecret`: the project a group
-      // spans, and the array of per-environment rows, each of which is made
-      // of the fields above.
+      // `createSharedSecret`, `updateSharedSecret` and `deleteSharedSecret`:
+      // the project a group spans, and the array of per-environment rows,
+      // each of which is made of the fields above.
       "projectId",
       "rows",
     ]);
@@ -699,6 +703,7 @@ describe("the ciphertext-only surface", () => {
       "createSecret",
       "createSharedSecret",
       "updateSecret",
+      "updateSharedSecret",
       "deleteSecret",
       "deleteSharedSecret",
       "getSecret",
@@ -1793,6 +1798,7 @@ describe("the secrets surface", () => {
       "listSecretVersions",
       "listSecrets",
       "updateSecret",
+      "updateSharedSecret",
     ]);
   });
 });
@@ -2257,4 +2263,207 @@ describe("end to end", () => {
     // real failure.
     120_000,
   );
+});
+
+// ---------------------------------------------------------------------------
+// How large a secret may be.
+// ---------------------------------------------------------------------------
+
+/**
+ * THE CAPS, AT THEIR BOUNDARIES, ON EVERY PATH THAT WRITES A SEALED ROW.
+ *
+ * A value of 64 KiB and a name of 256 bytes are the largest plaintexts. The
+ * server sees only hex ciphertext, which is the plaintext plus a 16 byte
+ * GCM tag, two characters per byte, so the largest accepted ciphertexts are
+ * (65536 + 16) * 2 and (256 + 16) * 2 characters, and one byte more is
+ * refused. Spelled out here rather than imported, so a cap that drifts in
+ * the implementation fails this suite instead of moving with it.
+ */
+describe("size caps", () => {
+  const VALUE_TOO_LARGE = "A secret value can be at most 64 KB.";
+  const NAME_TOO_LONG = "A secret name can be at most 256 characters.";
+  const MAX_VALUE = "bb".repeat(65536 + 16);
+  const MAX_NAME = "aa".repeat(256 + 16);
+  const OVER_VALUE = "bb".repeat(65536 + 17);
+  const OVER_NAME = "aa".repeat(256 + 17);
+
+  let counter = 0;
+  function fresh() {
+    counter += 1;
+    const n = counter.toString(16).padStart(4, "0");
+    return {
+      nameNonce: `c1${n}c1c1c1c1c1c1c1c1c1`,
+      valueNonce: `d2${n}d2d2d2d2d2d2d2d2d2`,
+    };
+  }
+
+  type Sealed = { nameCiphertext: string; valueCiphertext: string };
+  type Write = (t: Harness, sealed: Sealed) => Promise<unknown>;
+
+  async function setup(t: Harness) {
+    return await world(t);
+  }
+
+  const paths: Array<[string, (w: Awaited<ReturnType<typeof world>>) => Promise<Write>]> = [
+    [
+      "createSecret",
+      async (w) => (t, sealed) =>
+        t.mutation(
+          api.secrets.createSecret,
+          secretArgs(w.alice, w.a.production, { ...fresh(), ...sealed }),
+        ),
+    ],
+    [
+      "updateSecret",
+      async (w) => (t, sealed) =>
+        t
+          .mutation(
+            api.secrets.createSecret,
+            secretArgs(w.alice, w.a.production, fresh()),
+          )
+          .then(({ secretId }) =>
+            t.mutation(api.secrets.updateSecret, {
+              sessionToken: w.alice.sessionToken,
+              secretId,
+              version: 2,
+              pdkVersion: 1,
+              ...fresh(),
+              ...sealed,
+            }),
+          ),
+    ],
+    [
+      "createSharedSecret",
+      async (w) => (t, sealed) =>
+        t.mutation(api.secrets.createSharedSecret, {
+          sessionToken: w.alice.sessionToken,
+          projectId: w.a.projectId,
+          shareUid: newId("shr"),
+          rows: [w.a.production, w.a.staging].map((environmentId, i) => ({
+            environmentId,
+            secretUid: newId("sec"),
+            version: 1,
+            pdkVersion: 1,
+            overridden: false,
+            ...fresh(),
+            nameCiphertext: NAME_CIPHERTEXT,
+            valueCiphertext: VALUE_CIPHERTEXT,
+            // The oversized fields go on the second row, so a cap checked
+            // only on the first row of a group would not pass this test.
+            ...(i === 1 ? sealed : {}),
+          })),
+        }),
+    ],
+    [
+      "updateSharedSecret",
+      async (w) => (t, sealed) => {
+        const shareUid = newId("shr");
+        return t
+          .mutation(api.secrets.createSharedSecret, {
+            sessionToken: w.alice.sessionToken,
+            projectId: w.a.projectId,
+            shareUid,
+            rows: [w.a.production, w.a.staging].map((environmentId) => ({
+              environmentId,
+              secretUid: newId("sec"),
+              version: 1,
+              pdkVersion: 1,
+              overridden: false,
+              nameCiphertext: NAME_CIPHERTEXT,
+              valueCiphertext: VALUE_CIPHERTEXT,
+              ...fresh(),
+            })),
+          })
+          .then((created) =>
+            t.mutation(api.secrets.updateSharedSecret, {
+              sessionToken: w.alice.sessionToken,
+              projectId: w.a.projectId,
+              shareUid,
+              rows: created.map((c, i) => ({
+                secretId: c.secretId,
+                version: 2,
+                pdkVersion: 1,
+                nameCiphertext: NAME_CIPHERTEXT,
+                valueCiphertext: VALUE_CIPHERTEXT,
+                ...fresh(),
+                ...(i === 1 ? sealed : {}),
+              })),
+            }),
+          );
+      },
+    ],
+  ];
+
+  it.each(paths)("%s accepts exactly the largest name and value", async (_name, make) => {
+    const t = convexTest(schema, modules);
+    const write = await make(await setup(t));
+    await expect(
+      write(t, { nameCiphertext: MAX_NAME, valueCiphertext: MAX_VALUE }),
+    ).resolves.toBeDefined();
+  });
+
+  it.each(paths)("%s refuses a value one byte over the cap", async (_name, make) => {
+    const t = convexTest(schema, modules);
+    const write = await make(await setup(t));
+    await expect(
+      write(t, { nameCiphertext: MAX_NAME, valueCiphertext: OVER_VALUE }),
+    ).rejects.toThrow(VALUE_TOO_LARGE);
+  });
+
+  it.each(paths)("%s refuses a name one byte over the cap", async (_name, make) => {
+    const t = convexTest(schema, modules);
+    const write = await make(await setup(t));
+    await expect(
+      write(t, { nameCiphertext: OVER_NAME, valueCiphertext: MAX_VALUE }),
+    ).rejects.toThrow(NAME_TOO_LONG);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// When a secret last changed.
+// ---------------------------------------------------------------------------
+
+describe("updatedAt", () => {
+  /**
+   * An update inserts a new row, so the current row's creation time IS the
+   * moment the secret last changed. The dashboard shows it per row; nothing
+   * about it is a name or a value.
+   */
+  it("is the current row's creation time, and moves forward on an update", async () => {
+    const t = convexTest(schema, modules);
+    const { alice, a } = await world(t);
+    const { secretId } = await t.mutation(
+      api.secrets.createSecret,
+      secretArgs(alice, a.production),
+    );
+    const [before] = await t.query(api.secrets.listSecrets, {
+      sessionToken: alice.sessionToken,
+      environmentId: a.production,
+    });
+    const created = await t.run(async (ctx) => getSecretRow(ctx, secretId));
+    expect(before?.updatedAt).toBe(created?._creationTime);
+
+    const updated = await t.mutation(api.secrets.updateSecret, {
+      sessionToken: alice.sessionToken,
+      secretId,
+      version: 2,
+      pdkVersion: 1,
+      nameCiphertext: NAME_CIPHERTEXT,
+      nameNonce: "c0c1c2c3c4c5c6c7c8c9cacb",
+      valueCiphertext: VALUE_CIPHERTEXT,
+      valueNonce: "cbcac9c8c7c6c5c4c3c2c1c0",
+    });
+    const [after] = await t.query(api.secrets.listSecrets, {
+      sessionToken: alice.sessionToken,
+      environmentId: a.production,
+    });
+    const replacement = await t.run(async (ctx) =>
+      getSecretRow(ctx, updated.secretId),
+    );
+    expect(after?.secretId).toBe(updated.secretId);
+    expect(after?.updatedAt).toBe(replacement?._creationTime);
+    expect(after?.updatedAt).toBeGreaterThanOrEqual(
+      before?.updatedAt ?? Number.POSITIVE_INFINITY,
+    );
+  });
 });
