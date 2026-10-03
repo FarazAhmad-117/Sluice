@@ -5,6 +5,7 @@ import { IconClose, IconEye, IconEyeOff, IconPlus } from "@/components/ui/icons"
 import { ScopePill } from "@/components/ui/pill";
 import { focusRing } from "@/components/ui/styles";
 import { middleTruncate } from "@/lib/format/id";
+import { CLI_RELEASED } from "@/lib/projects/install";
 import { VALUE_MASK } from "@/lib/secrets/decrypt";
 import type { CompareCell } from "@/lib/secrets/compare";
 import type { Reveals } from "@/lib/secrets/use-reveals";
@@ -169,10 +170,18 @@ export function SecretDetailBody({ props }: { readonly props: DetailProps }) {
       <div className="min-h-5 grow" />
       <div className="m-5 flex flex-col gap-1 rounded-[10px] border border-hairline bg-surface-deep py-2 pr-1.5 pl-3.5">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-xs text-text-muted">Run with {props.runEnvironment} secrets</span>
-          <CopyButton text={props.runCommand} label="Copy the run command" onDone={props.onAnnounce} />
+          <span className="text-xs text-text-muted">
+            Run with {props.runEnvironment} secrets{CLI_RELEASED ? null : " · CLI not released yet"}
+          </span>
+          {CLI_RELEASED ? (
+            <CopyButton text={props.runCommand} label="Copy the run command" onDone={props.onAnnounce} />
+          ) : (
+            <span className="min-h-8" />
+          )}
         </div>
-        <code className="pr-2 pb-1.5 font-mono text-[12.5px] leading-relaxed break-words text-text-primary">
+        <code
+          className={`pr-2 pb-1.5 font-mono text-[12.5px] leading-relaxed break-words ${CLI_RELEASED ? "text-text-primary" : "text-text-muted"}`}
+        >
           {props.runCommand}
         </code>
       </div>

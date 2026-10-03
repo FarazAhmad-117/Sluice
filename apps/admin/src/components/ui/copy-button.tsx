@@ -56,17 +56,24 @@ export function CommandBlock({
   command,
   label,
   onDone,
+  copyable = true,
 }: {
   readonly command: string;
   readonly label: string;
   readonly onDone?: (message: string) => void;
+  /** False for a command that cannot work yet: shown, muted, with no Copy button. */
+  readonly copyable?: boolean;
 }) {
   return (
     <div className="flex items-start gap-1 rounded-input border border-hairline bg-surface-deep py-1 pr-1 pl-3">
-      <code className="min-w-0 grow py-2 font-mono text-[12.5px] leading-relaxed break-words text-text-primary">
+      <code
+        className={`min-w-0 grow py-2 font-mono text-[12.5px] leading-relaxed break-words ${
+          copyable ? "text-text-primary" : "pr-2 text-text-muted"
+        }`}
+      >
         {command}
       </code>
-      <CopyButton text={command} label={label} {...(onDone === undefined ? {} : { onDone })} />
+      {copyable ? <CopyButton text={command} label={label} {...(onDone === undefined ? {} : { onDone })} /> : null}
     </div>
   );
 }

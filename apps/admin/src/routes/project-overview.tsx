@@ -11,6 +11,8 @@ import { Skeleton } from "@/components/ui/feedback";
 import { IconArrowRight, IconCheck, IconPlus } from "@/components/ui/icons";
 import { focusRing, pageGutter } from "@/components/ui/styles";
 import { ActivityRow, ActivitySkeletonRows } from "@/components/activity/activity-row";
+import { CliSetupGuide } from "@/components/projects/cli-setup-guide";
+import { CLI_RELEASED } from "@/lib/projects/install";
 import { useProjectActivity } from "@/lib/activity/use-project-activity";
 import { createdLabel } from "@/lib/format/time";
 import { useNow } from "@/lib/format/use-now";
@@ -85,6 +87,7 @@ function OverviewPage({ slug, data }: { readonly slug: string; readonly data: Re
   const { openAdd } = useProjectActions();
   const now = useNow();
   const [ranLocally, setRanLocally] = useState(() => readRan(data.project.projectId));
+  const [runOpen, setRunOpen] = useState(false);
   const allListed = !data.listings.some((listing) => listing.loading || listing.rows === null);
   const secretCount = allListed ? countProjectSecrets(data.listings.map((listing) => listing.rows ?? [])) : undefined;
   const createdAt = data.project.createdAt;
@@ -131,6 +134,8 @@ function OverviewPage({ slug, data }: { readonly slug: string; readonly data: Re
                   environmentName={runEnvironment?.name ?? DEVELOPMENT}
                   secretCount={secretCount}
                   ranLocally={ranLocally}
+                  runOpen={runOpen}
+                  onRunOpen={setRunOpen}
                   onRanLocally={(done) => {
                     writeRan(data.project.projectId, done);
                     setRanLocally(done);
@@ -144,7 +149,15 @@ function OverviewPage({ slug, data }: { readonly slug: string; readonly data: Re
 
           <aside aria-label="Project details" className="flex min-w-0 flex-col gap-4">
             {runEnvironment === null ? null : (
-              <RunLocally command={runCommand(slug, runEnvironment.name)} />
+              <RunLocally
+                command={runCommand(slug, runEnvironment.name)}
+                onShowSteps={() => {
+                  setRunOpen(true);
+                  requestAnimationFrame(() =>
+                    document.getElementById(RUN_SETUP_ID)?.scrollIntoView({ behavior: "smooth", block: "start" }),
+                  );
+                }}
+              />
             )}
             <RecentActivity projectId={data.project.projectId} slug={slug} />
           </aside>
@@ -161,6 +174,9 @@ function OverviewPage({ slug, data }: { readonly slug: string; readonly data: Re
   );
 }
 
+/** The checklist's run step, which "Install and set up" scrolls to. */
+const RUN_SETUP_ID = "overview-run-setup";
+
 const CARD = "rounded-card border border-hairline bg-surface-panel";
 
 function Checklist({
@@ -169,6 +185,8 @@ function Checklist({
   environmentName,
   secretCount,
   ranLocally,
+  runOpen: expanded,
+  onRunOpen: setExpanded,
   onRanLocally,
   onAddSecret,
 }: {
@@ -177,12 +195,13 @@ function Checklist({
   readonly environmentName: string;
   readonly secretCount: number | undefined;
   readonly ranLocally: boolean;
+  readonly runOpen: boolean;
+  readonly onRunOpen: (open: boolean) => void;
   readonly onRanLocally: (done: boolean) => void;
   readonly onAddSecret: () => void;
 }) {
   const { announce } = useShell();
   const state = checklist({ secretCount, ranLocally });
-  const [expanded, setExpanded] = useState(false);
   const runId = useId();
   const order: ChecklistStep[] = ["create", "secrets", "run", "production"];
   const next = order.find((step) => step !== "production" && !state.done.has(step));
@@ -228,25 +247,28 @@ function Checklist({
           }
         />
         <Step
+          id={RUN_SETUP_ID}
           done={ranLocally}
           current={next === "run"}
           title="Run your app with these secrets"
-          description={`Install the CLI and start ${environmentName} through Sluice. No .env file needed.`}
+          description={`Install the CLI, connect this computer, and start ${environmentName} through Sluice. No .env file needed.`}
           aside={
             <Button
               size="sm"
               variant={next === "run" && !expanded ? "primary" : "secondary"}
               aria-expanded={expanded}
               aria-controls={`${runId}-run`}
-              onClick={() => setExpanded((open) => !open)}
+              onClick={() => setExpanded(!expanded)}
             >
-              {expanded ? "Hide" : ranLocally ? "Show command" : `Set up ${environmentName}`}
+              {expanded ? "Hide" : ranLocally ? "Show steps" : `Set up ${environmentName}`}
             </Button>
           }
         >
           {expanded ? (
-            <div id={`${runId}-run`} className="flex flex-col gap-3 pt-3">
-              <CommandBlock command={runCommand(slug, environmentName)} label="Copy the run command" onDone={announce} />
+            <div id={`${runId}-run`} className="flex flex-col gap-4 pt-4">
+              <CliSetupGuide runCommand={runCommand(slug, environmentName)} environmentName={environmentName} onAnnounce={announce} />
+              {/* Nobody can have run it before the CLI ships, so there is nothing to mark. */}
+              {CLI_RELEASED ? (
               <div>
                 <button
                   type="button"
@@ -259,6 +281,7 @@ function Checklist({
                   {ranLocally ? "Mark as not done" : "Mark as done"}
                 </button>
               </div>
+              ) : null}
             </div>
           ) : null}
         </Step>
@@ -275,6 +298,7 @@ function Checklist({
 }
 
 function Step({
+  id,
   done,
   current,
   title,
@@ -282,6 +306,7 @@ function Step({
   aside,
   children,
 }: {
+  readonly id?: string;
   readonly done: boolean;
   readonly current: boolean;
   readonly title: string;
@@ -290,7 +315,7 @@ function Step({
   readonly children?: ReactNode;
 }) {
   return (
-    <li className={`border-t border-hairline px-5 py-3.5 first:border-t-0 ${current ? "bg-surface-card" : ""}`}>
+    <li id={id} className={`scroll-mt-20 border-t border-hairline px-5 py-3.5 first:border-t-0 ${current ? "bg-surface-card" : ""}`}>
       <div className="flex items-center gap-3.5">
         {done ? (
           <span className="flex size-[22px] shrink-0 items-center justify-center rounded-full bg-status-healthy text-surface-base">
@@ -401,15 +426,24 @@ function Stat({
   );
 }
 
-function RunLocally({ command }: { readonly command: string }) {
+function RunLocally({ command, onShowSteps }: { readonly command: string; readonly onShowSteps: () => void }) {
   const { announce } = useShell();
   return (
     <section aria-labelledby="overview-run" className={`${CARD} flex flex-col gap-2.5 px-[18px] py-4`}>
       <h2 id="overview-run" className="m-0 text-[15px] font-semibold text-text-primary">
         Run locally
       </h2>
-      <CommandBlock command={command} label="Copy the run command" onDone={announce} />
-      <p className="m-0 text-[13px] text-text-muted">Works with any command: python, go, rails, docker.</p>
+      <CommandBlock command={command} label="Copy the run command" onDone={announce} copyable={CLI_RELEASED} />
+      <p className="m-0 text-[13px] text-text-muted">
+        {CLI_RELEASED ? "Works with any command: python, go, rails, docker." : "The CLI isn’t released yet."}{" "}
+        <button
+          type="button"
+          onClick={onShowSteps}
+          className={`-mx-1 inline-flex min-h-11 cursor-pointer items-center rounded-input px-1 font-medium text-brand hover:text-brand-hover lg:min-h-0 lg:pointer-coarse:min-h-11 ${focusRing}`}
+        >
+          Install and set up
+        </button>
+      </p>
     </section>
   );
 }
