@@ -46,6 +46,8 @@ interface HarnessOptions {
   readonly baseEnv?: Record<string, string | undefined>;
   /** Wire `onFatal` to a real `fatalHandler`, exactly as `run.ts` does. */
   readonly fatal?: boolean;
+  /** A clock other than the exact one, e.g. timers that fire early. */
+  readonly timers?: FakeTimers;
 }
 
 /**
@@ -65,7 +67,7 @@ function recorder(
 }
 
 function harness(fixture: Fixture, org: Org, options: HarnessOptions = {}): Harness {
-  const timers = new FakeTimers();
+  const timers = options.timers ?? new FakeTimers();
   const source = new FakeSource();
   const handshaker = new FakeHandshaker(() => timers.now());
   const child = new FakeChild();
@@ -586,6 +588,28 @@ describe("Shell: availability, section 4.3", () => {
     await h.tick(11_000);
     expect(h.exits).toEqual([1]);
     expect(h.child.started).toBe(false);
+    expect(h.logger.has("boot-failed")).toBe(true);
+  });
+
+  /**
+   * Node on Linux can run a timer a millisecond before `Date.now()` says its
+   * delay has passed. The boot deadline is armed as one timer, so a timer that
+   * fires early asks the core "has the boot timeout elapsed?" one millisecond
+   * too soon, hears "no", and nothing asks again until the routine tick 15s
+   * later. CI caught it as a 10s wait timing out in end-to-end.test.ts.
+   */
+  it("fails to start by the boot deadline even when timers fire early", async () => {
+    class EarlyTimers extends FakeTimers {
+      override setTimeout(callback: () => void, ms: number) {
+        return super.setTimeout(callback, Math.max(ms - 1, 0));
+      }
+    }
+    const h = harness(fixture, org, { bootTimeoutMs: 10_000, timers: new EarlyTimers() });
+    h.handshaker.failures = 100;
+    h.shell.start();
+    await h.tick(10_050);
+    // Well before the 15s routine tick that used to be the only second chance.
+    expect(h.exits).toEqual([1]);
     expect(h.logger.has("boot-failed")).toBe(true);
   });
 
