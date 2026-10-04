@@ -308,15 +308,29 @@ export class Shell {
     // most likely to be the one that was compromised. Until there is an
     // encrypted cache with a key that is not also on that disk, this shell has
     // no cache, and boot with no network correctly fails to start.
-    this.#enqueue({ type: "boot", cache: null, now: this.#timers.now() });
+    const bootAt = this.#timers.now();
+    this.#enqueue({ type: "boot", cache: null, now: bootAt });
 
-    // A tick at exactly the boot deadline, so a boot timeout shorter than the
-    // routine tick is still reached on time. The core decides what it means;
-    // this only guarantees it is asked at the right moment. Harmless once boot
-    // has succeeded: `tick` produces no decisions in a running core.
-    this.#timers.setTimeout(() => {
+    // A tick at the boot deadline, so a boot timeout shorter than the routine
+    // tick is still reached on time. The core decides what it means; this only
+    // guarantees it is asked at the right moment. Harmless once boot has
+    // succeeded: `tick` produces no decisions in a running core.
+    //
+    // RE-ARMED IF IT FIRES EARLY. Node on Linux can run a timer a millisecond
+    // before `now()` says its delay has passed, and the core measures the
+    // deadline with `now()`. Asked a millisecond early it says "not yet", and
+    // without this nothing would ask again until the routine tick, 15 seconds
+    // later. The extra millisecond keeps a clock that keeps firing early from
+    // re-arming forever.
+    const bootTick = () => {
+      const remaining = this.#bootTimeoutMs - (this.#timers.now() - bootAt);
+      if (remaining > 0) {
+        this.#timers.setTimeout(bootTick, remaining + 1);
+        return;
+      }
       this.#enqueue({ type: "tick", now: this.#timers.now() });
-    }, this.#bootTimeoutMs);
+    };
+    this.#timers.setTimeout(bootTick, this.#bootTimeoutMs);
 
     void this.#refreshCredential();
   }
