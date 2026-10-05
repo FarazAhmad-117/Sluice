@@ -33,9 +33,16 @@ if ($env:SLUICE_DOWNLOAD_BASE) {
 $Tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("sluice-" + [System.Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $Tmp | Out-Null
 try {
+  # PowerShell 7's Invoke-WebRequest refuses file:// URLs, so a local mirror
+  # is copied instead.
+  function Fetch($Name) {
+    $Out = Join-Path $Tmp $Name
+    if ($Base -like 'file://*') { Copy-Item -LiteralPath ([Uri]"$Base/$Name").LocalPath -Destination $Out }
+    else { Invoke-WebRequest -UseBasicParsing -Uri "$Base/$Name" -OutFile $Out }
+  }
   Say "downloading $Archive"
-  Invoke-WebRequest -UseBasicParsing -Uri "$Base/$Archive" -OutFile (Join-Path $Tmp $Archive)
-  Invoke-WebRequest -UseBasicParsing -Uri "$Base/SHA256SUMS" -OutFile (Join-Path $Tmp 'SHA256SUMS')
+  Fetch $Archive
+  Fetch 'SHA256SUMS'
 
   $Line = Get-Content (Join-Path $Tmp 'SHA256SUMS') | Where-Object { $_ -match "\s$([regex]::Escape($Archive))$" } | Select-Object -First 1
   if (-not $Line) { throw "SHA256SUMS has no entry for $Archive" }

@@ -75,7 +75,7 @@ jobs:
     name: Install and run (${{ matrix.name }})
     needs: build
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
           - { name: linux-x64, os: ubuntu-latest }
