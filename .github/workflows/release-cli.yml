@@ -81,7 +81,8 @@ jobs:
           - { name: linux-x64, os: ubuntu-latest }
           - { name: linux-arm64, os: ubuntu-24.04-arm }
           - { name: darwin-arm64, os: macos-latest }
-          - { name: darwin-x64, os: macos-13 }
+          # macos-13 is retired; this is GitHub's remaining Intel image.
+          - { name: darwin-x64, os: macos-15-intel }
           - { name: windows-x64, os: windows-latest }
     runs-on: ${{ matrix.os }}
     env:
@@ -111,7 +112,10 @@ jobs:
 
       - name: It reports this release
         shell: bash
-        run: sluice --version | tee /dev/stderr | grep -F "sluice $VERSION "
+        run: |
+          out="$(sluice --version)"
+          echo "$out"
+          echo "$out" | grep -F "sluice $VERSION "
 
       # With no configuration it must refuse with the configuration exit code
       # (2) and never start the command.
@@ -135,6 +139,18 @@ jobs:
             exit 1
           fi
           test ! -e "$RUNNER_TEMP/tampered/bin/sluice"
+      - name: A tampered download is refused (install.ps1)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Copy-Item -Recurse release tampered
+          Add-Content tampered/sluice-windows-x64.zip 'x'
+          $env:SLUICE_DOWNLOAD_BASE = 'file:///' + (Resolve-Path tampered).Path.Replace([char]92, [char]47)
+          $env:SLUICE_INSTALL = Join-Path $env:RUNNER_TEMP 'tampered'
+          $refused = $false
+          try { ./install.ps1 } catch { $refused = $true; Write-Host "refused: $_" }
+          if (-not $refused) { throw 'install.ps1 accepted a bad checksum' }
+          if (Test-Path (Join-Path $env:SLUICE_INSTALL 'bin/sluice.exe')) { throw 'install.ps1 left sluice.exe behind' }
 
   publish:
     name: Publish
